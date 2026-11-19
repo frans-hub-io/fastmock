@@ -64,6 +64,7 @@ section for what you do.
 | [Helm chart](operations/helm.md) | Install, upgrade, every value, production checklist, Gateway API, NetworkPolicy. |
 | [Operator](operations/operator.md) | `FastMock` and `MockApi` resources, status conditions, policies, RBAC, CRD upgrades. |
 | [Security](operations/security.md) | Tokens and roles, origins, TLS, storage connections, egress, secrets, redaction, limits, audit, hardening checklist. |
+| [Several clusters](operations/multi-cluster.md) | Running FastMock in several clusters on shared PostgreSQL and Valkey: what is shared, requirements, limits. |
 | [Database](operations/database.md) | How migrations run, running them as a separate Job, migration policy, supported PostgreSQL and Valkey versions, PostgreSQL major upgrades. |
 | [Observability](operations/observability.md) | Every metric, PromQL examples, alerts, Grafana dashboard, tracing, logs, health checks. |
 | [Troubleshooting](operations/troubleshooting.md) | Symptom, cause and fix for the common problems. |
