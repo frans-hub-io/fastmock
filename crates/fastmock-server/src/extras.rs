@@ -76,6 +76,7 @@ impl KafkaHub {
                 bootstrap: b,
                 client_id: "fastmock".into(),
                 security: cfg.kafka_security.clone(),
+                create_topics: cfg.kafka_create_topics,
             }),
             registry: cfg
                 .kafka_schema_registry

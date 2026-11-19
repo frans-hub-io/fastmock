@@ -72,6 +72,10 @@ messaging:
       passwordKey: password
     allowedTopics: []
     contractTopics: []
+    createTopics:
+      enabled: false
+      partitions: 1
+      replication: -1
 
 shutdownDelay: 5s
 terminationGracePeriodSeconds: 45

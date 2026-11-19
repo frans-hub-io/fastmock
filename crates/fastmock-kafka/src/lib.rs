@@ -423,10 +423,30 @@ pub struct KafkaSettings {
     pub bootstrap: Vec<String>,
     pub client_id: String,
     pub security: KafkaSecurity,
+    /// Create missing topics on first publish instead of failing.
+    pub create_topics: Option<TopicCreation>,
+}
+
+/// Settings for topics created on first publish.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TopicCreation {
+    pub partitions: i32,
+    /// `-1` lets the broker apply `default.replication.factor`.
+    pub replication: i16,
+}
+
+impl Default for TopicCreation {
+    fn default() -> Self {
+        Self {
+            partitions: 1,
+            replication: -1,
+        }
+    }
 }
 
 pub struct KafkaPublisher {
     client: Client,
+    create_topics: Option<TopicCreation>,
     partitions: Mutex<HashMap<String, i32>>,
     clients: Mutex<HashMap<(String, i32), Arc<PartitionClient>>>,
 }
@@ -441,6 +461,7 @@ impl KafkaPublisher {
             .context("connecting to Kafka timed out")??;
         Ok(Self {
             client,
+            create_topics: s.create_topics,
             partitions: Mutex::new(HashMap::new()),
             clients: Mutex::new(HashMap::new()),
         })
@@ -450,14 +471,53 @@ impl KafkaPublisher {
         if let Some(n) = self.partitions.lock().await.get(topic) {
             return Ok(*n);
         }
-        let topics = self.client.list_topics().await?;
-        let n = topics
-            .iter()
+        let found = self
+            .client
+            .list_topics()
+            .await?
+            .into_iter()
             .find(|t| t.name == topic)
-            .map(|t| t.partitions.len() as i32)
-            .with_context(|| format!("Kafka topic {topic} does not exist"))?;
+            .map(|t| t.partitions.len() as i32);
+        let n = match (found, self.create_topics) {
+            (Some(n), _) => n,
+            (None, Some(c)) => self.create_topic(topic, c).await?,
+            (None, None) => anyhow::bail!(
+                "Kafka topic {topic} does not exist (set FASTMOCK_KAFKA_CREATE_TOPICS=true to create it)"
+            ),
+        };
         self.partitions.lock().await.insert(topic.to_string(), n);
         Ok(n)
+    }
+
+    async fn create_topic(&self, topic: &str, c: TopicCreation) -> anyhow::Result<i32> {
+        let controller = self.client.controller_client()?;
+        match controller
+            .create_topic(topic.to_string(), c.partitions, c.replication, 30_000)
+            .await
+        {
+            Ok(()) => tracing::info!(
+                topic,
+                partitions = c.partitions,
+                replication = c.replication,
+                "created Kafka topic"
+            ),
+            Err(e) if e.to_string().contains("TopicAlreadyExists") => {}
+            Err(e) => return Err(e).with_context(|| format!("creating Kafka topic {topic}")),
+        }
+        for _ in 0..20 {
+            if let Some(t) = self
+                .client
+                .list_topics()
+                .await?
+                .into_iter()
+                .find(|t| t.name == topic)
+                && !t.partitions.is_empty()
+            {
+                return Ok(t.partitions.len() as i32);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        anyhow::bail!("Kafka topic {topic} was created but its metadata did not appear")
     }
 
     async fn partition_client(

@@ -789,6 +789,7 @@ async fn run_async_case(app: &AppState, input: &RunInput, case: &AsyncCase) -> O
                 bootstrap,
                 client_id: "fastmock-contract".into(),
                 security: app.cfg.kafka_security.clone(),
+                create_topics: None,
             }),
         )
         .await

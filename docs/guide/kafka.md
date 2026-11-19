@@ -13,6 +13,7 @@ For mocking event-driven APIs described by AsyncAPI documents, see [AsyncAPI](as
 | `FASTMOCK_KAFKA_BOOTSTRAP` | Bootstrap servers, comma-separated `host:port`. Required for publishing. |
 | `FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL` | Confluent-compatible Schema Registry, required for Avro messages. |
 | `FASTMOCK_KAFKA_ALLOWED_TOPICS` | Optional allow-list: exact topic names or prefixes ending in `*` (`orders.*`). Recommended in shared clusters. It controls publishing only. |
+| `FASTMOCK_KAFKA_CREATE_TOPICS` | `true` creates a missing topic on its first message instead of failing, with `FASTMOCK_KAFKA_TOPIC_PARTITIONS` (default `1`) partitions and `FASTMOCK_KAFKA_TOPIC_REPLICATION` (default `-1`, the broker's default) replicas. Topics outside `FASTMOCK_KAFKA_ALLOWED_TOPICS` are never created. Off by default; the principal needs the `CREATE` permission. |
 | `FASTMOCK_KAFKA_CONTRACT_TOPICS` | Topics that AsyncAPI [contract tests](contract-testing.md#what-an-asyncapi-run-does) may read; empty (the default) disables reading. |
 | `FASTMOCK_KAFKA_SECURITY_PROTOCOL` and the `FASTMOCK_KAFKA_SASL_*`, `FASTMOCK_KAFKA_TLS_*` variables | TLS and SASL, see [Secure connections](#secure-connections). |
 
@@ -216,7 +217,7 @@ Example:
 |---|---|
 | `FASTMOCK_KAFKA_BOOTSTRAP is not configured` | Set the bootstrap servers. |
 | `connecting to Kafka timed out` | Network, or a TLS or SASL error; see the preceding `Failed to connect to broker` warnings ([Secure connections](#secure-connections)). |
-| `Kafka topic X does not exist` | Create the topic; FastMock does not create topics. |
+| `Kafka topic X does not exist` | Create the topic, or set `FASTMOCK_KAFKA_CREATE_TOPICS=true`. Brokers with `auto.create.topics.enable` do not help: FastMock looks the topic up before it publishes. |
 | `avroSchema needs FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL` | Configure the registry. |
 | `schema registry returned 409 ...` | The schema is not compatible with the latest version of `<topic>-value` under the registry's compatibility rules. |
 | `topic is not in FASTMOCK_KAFKA_ALLOWED_TOPICS` | Add the topic or a matching prefix. |

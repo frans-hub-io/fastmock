@@ -132,6 +132,7 @@ async fn round_trip(name: &str, bootstrap: String, security: KafkaSecurity) {
         bootstrap: vec![bootstrap.clone()],
         client_id: "fastmock-test".into(),
         security: security.clone(),
+        create_topics: None,
     })
     .await
     .unwrap();
@@ -248,6 +249,7 @@ async fn rejected(bootstrap: &str, security: KafkaSecurity) -> (String, String) 
             bootstrap: vec![bootstrap.to_string()],
             client_id: "fastmock-test".into(),
             security,
+            create_topics: None,
         }),
     )
     .await;

@@ -81,6 +81,11 @@ data:
   {{- with $kafka.allowedTopics }}
   FASTMOCK_KAFKA_ALLOWED_TOPICS: {{ join "," . | quote }}
   {{- end }}
+  {{- if $kafka.createTopics.enabled }}
+  FASTMOCK_KAFKA_CREATE_TOPICS: "true"
+  FASTMOCK_KAFKA_TOPIC_PARTITIONS: {{ $kafka.createTopics.partitions | int | quote }}
+  FASTMOCK_KAFKA_TOPIC_REPLICATION: {{ $kafka.createTopics.replication | int | quote }}
+  {{- end }}
   {{- with $kafka.contractTopics }}
   FASTMOCK_KAFKA_CONTRACT_TOPICS: {{ join "," . | quote }}
   {{- end }}

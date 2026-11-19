@@ -208,6 +208,9 @@ templates cannot read them.
 | `FASTMOCK_KAFKA_SCHEMA_REGISTRY_USERNAME` | string | none | HTTP basic authentication for the registry. Set together with the password. |
 | `FASTMOCK_KAFKA_SCHEMA_REGISTRY_PASSWORD` | string | none | Registry password. Never logged. |
 | `FASTMOCK_KAFKA_ALLOWED_TOPICS` | list | none (any topic) | Topics stub messages may publish to: exact names or prefixes ending in `*` (`orders.*`). It does not grant reading. |
+| `FASTMOCK_KAFKA_CREATE_TOPICS` | boolean | `false` | Create a missing topic on its first message (only topics allowed by `FASTMOCK_KAFKA_ALLOWED_TOPICS`). |
+| `FASTMOCK_KAFKA_TOPIC_PARTITIONS` | integer | `1` | Partitions of created topics; needs `FASTMOCK_KAFKA_CREATE_TOPICS=true`. |
+| `FASTMOCK_KAFKA_TOPIC_REPLICATION` | integer | `-1` | Replication factor of created topics, `-1` for the broker default; needs `FASTMOCK_KAFKA_CREATE_TOPICS=true`. |
 | `FASTMOCK_KAFKA_CONTRACT_TOPICS` | list | none (reading disabled) | Topics AsyncAPI contract tests may read: exact names or prefixes ending in `*`. A prefix entry never matches internal topics starting with `_` unless the prefix starts with `_`. Without it, AsyncAPI contract tests answer `400`. |
 
 The security settings are checked at start-up: an unknown protocol or mechanism, missing credentials, a

@@ -16,6 +16,8 @@ messaging:
   kafka:
     allowedTopics:
       - "orders.*"
+    createTopics:
+      enabled: true
 
 networkPolicy:
   enabled: true

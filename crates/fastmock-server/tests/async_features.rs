@@ -915,3 +915,87 @@ async fn async_mocks_publish_to_kafka_from_one_leader() {
     let _ = a.shutdown.send(true);
     let _ = b.shutdown.send(true);
 }
+
+#[tokio::test]
+async fn stub_messages_create_missing_topics_when_enabled() {
+    let Some(bootstrap) = std::env::var("FASTMOCK_TEST_KAFKA").ok() else {
+        eprintln!("FASTMOCK_TEST_KAFKA not set: skipped");
+        return;
+    };
+    let topic = format!("fm-create-{}", uuid::Uuid::new_v4().simple());
+    let mut cfg = Config::for_tests(StorageKind::Memory, tokens());
+    cfg.kafka_bootstrap = Some(vec![bootstrap.clone()]);
+    cfg.kafka_allowed_topics = Some(vec!["fm-create-*".into()]);
+    cfg.kafka_create_topics = Some(fastmock_kafka::TopicCreation {
+        partitions: 2,
+        replication: -1,
+    });
+    let h = Harness::start(cfg).await;
+    let (st, v) = h
+        .call(
+            reqwest::Method::POST,
+            "/stubs",
+            Some(json!({"request": {"method": "POST", "urlPath": "/orders"},
+                "response": {"status": 202},
+                "messages": [
+                    {"topic": topic, "key": "{{request.json.id}}", "jsonValue": {"id": "{{request.json.id}}"}},
+                    {"topic": "outside-allowlist", "jsonValue": {"never": true}}
+                ]})),
+        )
+        .await;
+    assert_eq!(st, 201, "{v}");
+    let http = reqwest::Client::new();
+    for id in ["a", "b"] {
+        let r = http
+            .post(format!("{}/orders", h.data))
+            .json(&json!({"id": id}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 202);
+    }
+
+    let client = fastmock_kafka::KafkaPublisher::connect(&fastmock_kafka::KafkaSettings {
+        bootstrap: vec![bootstrap],
+        client_id: "fastmock-test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let mut cursor = None;
+    for _ in 0..50 {
+        if let Ok(c) = client
+            .cursor(&topic, fastmock_kafka::StartFrom::Earliest)
+            .await
+        {
+            cursor = Some(c);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let mut cursor = cursor.expect("topic was created by FastMock");
+    let mut got = Vec::new();
+    for _ in 0..20 {
+        got.extend(count_messages(&client, &mut cursor, Duration::from_millis(300)).await);
+        if got.len() >= 2 {
+            break;
+        }
+    }
+    let mut ids: Vec<String> = got
+        .iter()
+        .map(|r| String::from_utf8(r.key.clone().unwrap()).unwrap())
+        .collect();
+    ids.sort();
+    assert_eq!(ids, ["a", "b"]);
+    assert!(
+        got.iter().all(|r| r.partition < 2),
+        "topic created with 2 partitions"
+    );
+    let missing = client
+        .cursor("outside-allowlist", fastmock_kafka::StartFrom::Earliest)
+        .await;
+    assert!(
+        missing.is_err(),
+        "topics outside the allow-list are not created"
+    );
+}

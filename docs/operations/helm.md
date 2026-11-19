@@ -243,6 +243,7 @@ helm uninstall fastmock -n mocks
 | `messaging.kafka.schemaRegistry.url` | `""` | `FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL`. |
 | `messaging.kafka.schemaRegistry.username`, `.existingSecret`, `.passwordKey` | `""`, `""`, `password` | Basic authentication for the registry. |
 | `messaging.kafka.allowedTopics` | `[]` | `FASTMOCK_KAFKA_ALLOWED_TOPICS` |
+| `messaging.kafka.createTopics.enabled`, `.partitions`, `.replication` | `false`, `1`, `-1` | Create a missing topic on its first message (`FASTMOCK_KAFKA_CREATE_TOPICS`); only topics allowed by `allowedTopics`. `-1` uses the broker's default replication. Useful with `kafka.enabled`. |
 | `messaging.kafka.contractTopics` | `[]` (reading disabled) | `FASTMOCK_KAFKA_CONTRACT_TOPICS`: topics AsyncAPI contract tests may read. |
 | `kafka.enabled` | `false` | Install the CloudPirates `kafka` chart (one broker, KRaft) and connect FastMock to it with SASL/PLAIN. |
 | `kafka.auth.existingSecret` | `""` (required when enabled) | Secret with `client-password`, `inter-broker-password` and `controller-password`. |

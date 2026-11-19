@@ -193,6 +193,7 @@ pub struct Config {
     pub stub_secrets: Vec<String>,
     pub recording_max_stubs: i64,
     pub kafka_allowed_topics: Option<Vec<String>>,
+    pub kafka_create_topics: Option<fastmock_kafka::TopicCreation>,
     pub shutdown_delay: Duration,
     pub header_read_timeout: Duration,
     pub contract_secrets: Vec<ContractSecret>,
@@ -339,6 +340,29 @@ where
             .parse::<T>()
             .map_err(|e| anyhow::anyhow!("FASTMOCK_{name}: {e}")),
     }
+}
+
+fn kafka_topic_creation() -> anyhow::Result<Option<fastmock_kafka::TopicCreation>> {
+    let partitions: i32 = parse("KAFKA_TOPIC_PARTITIONS", 1)?;
+    let replication: i16 = parse("KAFKA_TOPIC_REPLICATION", -1)?;
+    if !bool_env("KAFKA_CREATE_TOPICS", false)? {
+        if env("KAFKA_TOPIC_PARTITIONS").is_some() || env("KAFKA_TOPIC_REPLICATION").is_some() {
+            bail!(
+                "FASTMOCK_KAFKA_TOPIC_PARTITIONS and FASTMOCK_KAFKA_TOPIC_REPLICATION need FASTMOCK_KAFKA_CREATE_TOPICS=true"
+            );
+        }
+        return Ok(None);
+    }
+    if partitions < 1 {
+        bail!("FASTMOCK_KAFKA_TOPIC_PARTITIONS must be at least 1");
+    }
+    if replication == 0 || replication < -1 {
+        bail!("FASTMOCK_KAFKA_TOPIC_REPLICATION must be -1 (broker default) or at least 1");
+    }
+    Ok(Some(fastmock_kafka::TopicCreation {
+        partitions,
+        replication,
+    }))
 }
 
 fn bool_env(name: &str, default: bool) -> anyhow::Result<bool> {
@@ -540,6 +564,7 @@ impl Config {
             stub_secrets: vec![],
             recording_max_stubs: 1000,
             kafka_allowed_topics: None,
+            kafka_create_topics: None,
             shutdown_delay: Duration::ZERO,
             header_read_timeout: Duration::from_secs(30),
             contract_secrets: vec![],
@@ -659,6 +684,7 @@ impl Config {
             stub_secrets: env("STUB_SECRETS").map(|v| list(&v)).unwrap_or_default(),
             recording_max_stubs: parse("RECORDING_MAX_STUBS", 1000i64)?.max(1),
             kafka_allowed_topics: env("KAFKA_ALLOWED_TOPICS").map(|v| list(&v)),
+            kafka_create_topics: kafka_topic_creation()?,
             shutdown_delay: dur("SHUTDOWN_DELAY", "5s")?,
             header_read_timeout: dur("HEADER_READ_TIMEOUT", "30s")?,
             contract_secrets: parse_contract_secrets(
