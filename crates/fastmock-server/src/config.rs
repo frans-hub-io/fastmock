@@ -48,6 +48,8 @@ pub struct Config {
     pub tls: Option<TlsSettings>,
     pub kafka_bootstrap: Option<Vec<String>>,
     pub kafka_schema_registry: Option<String>,
+    pub kafka_security: fastmock_kafka::KafkaSecurity,
+    pub kafka_schema_registry_options: fastmock_kafka::RegistryOptions,
     pub plugin_overrides:
         std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     pub max_inflight_body_bytes: usize,
@@ -233,6 +235,134 @@ fn dur(name: &str, default: &str) -> anyhow::Result<Duration> {
         .with_context(|| format!("FASTMOCK_{name}"))
 }
 
+/// Reads the `FASTMOCK_KAFKA_*` security variables through `get` (which takes the name
+/// without the `FASTMOCK_` prefix) and checks them, including the PEM files.
+pub fn parse_kafka_security(
+    get: &dyn Fn(&str) -> Option<String>,
+    registry_url: Option<&str>,
+) -> anyhow::Result<(
+    fastmock_kafka::KafkaSecurity,
+    fastmock_kafka::RegistryOptions,
+)> {
+    use fastmock_kafka::{
+        BasicAuth, ClientCertFiles, KafkaSecurity, RegistryOptions, SaslSettings, SecurityProtocol,
+        TlsFiles,
+    };
+    let protocol: SecurityProtocol = match get("KAFKA_SECURITY_PROTOCOL") {
+        None => SecurityProtocol::Plaintext,
+        Some(v) => v
+            .parse()
+            .map_err(|e| anyhow::anyhow!("FASTMOCK_KAFKA_SECURITY_PROTOCOL: {e}"))?,
+    };
+    let sasl_vars = [
+        "KAFKA_SASL_MECHANISM",
+        "KAFKA_SASL_USERNAME",
+        "KAFKA_SASL_PASSWORD",
+    ];
+    let sasl = if protocol.uses_sasl() {
+        let need = |name: &str| {
+            get(name).with_context(|| {
+                format!(
+                    "FASTMOCK_{name} is required for FASTMOCK_KAFKA_SECURITY_PROTOCOL={protocol}"
+                )
+            })
+        };
+        let mechanism = need("KAFKA_SASL_MECHANISM")?
+            .parse()
+            .map_err(|e| anyhow::anyhow!("FASTMOCK_KAFKA_SASL_MECHANISM: {e}"))?;
+        Some(SaslSettings {
+            mechanism,
+            username: need("KAFKA_SASL_USERNAME")?.trim().to_string(),
+            password: need("KAFKA_SASL_PASSWORD")?,
+        })
+    } else {
+        let set: Vec<String> = sasl_vars
+            .iter()
+            .filter(|n| get(n).is_some())
+            .map(|n| format!("FASTMOCK_{n}"))
+            .collect();
+        if !set.is_empty() {
+            bail!(
+                "{} {} set but FASTMOCK_KAFKA_SECURITY_PROTOCOL is {protocol}; use sasl_plaintext or sasl_ssl",
+                set.join(", "),
+                if set.len() == 1 { "is" } else { "are" }
+            );
+        }
+        None
+    };
+    let ca_file = get("KAFKA_TLS_CA_FILE").map(PathBuf::from);
+    let client_cert = match (get("KAFKA_TLS_CERT_FILE"), get("KAFKA_TLS_KEY_FILE")) {
+        (Some(c), Some(k)) => Some(ClientCertFiles {
+            cert_file: c.into(),
+            key_file: k.into(),
+        }),
+        (None, None) => None,
+        _ => bail!(
+            "set both FASTMOCK_KAFKA_TLS_CERT_FILE and FASTMOCK_KAFKA_TLS_KEY_FILE, or neither"
+        ),
+    };
+    let registry_https = registry_url.is_some_and(|u| u.trim().starts_with("https://"));
+    if !protocol.uses_tls() {
+        if client_cert.is_some() {
+            bail!(
+                "FASTMOCK_KAFKA_TLS_CERT_FILE and FASTMOCK_KAFKA_TLS_KEY_FILE are set but FASTMOCK_KAFKA_SECURITY_PROTOCOL is {protocol}; use ssl or sasl_ssl"
+            );
+        }
+        if ca_file.is_some() && !registry_https {
+            bail!(
+                "FASTMOCK_KAFKA_TLS_CA_FILE is set but FASTMOCK_KAFKA_SECURITY_PROTOCOL is {protocol} and FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL is not https://; use ssl or sasl_ssl"
+            );
+        }
+    }
+    if let Some(ca) = &ca_file {
+        fastmock_kafka::read_ca_bundle(ca).context("FASTMOCK_KAFKA_TLS_CA_FILE")?;
+    }
+    if let Some(files) = &client_cert {
+        fastmock_kafka::read_client_cert(files)
+            .context("FASTMOCK_KAFKA_TLS_CERT_FILE / FASTMOCK_KAFKA_TLS_KEY_FILE")?;
+    }
+    let security = KafkaSecurity {
+        protocol,
+        sasl,
+        tls: if protocol.uses_tls() {
+            TlsFiles {
+                ca_file: ca_file.clone(),
+                client_cert,
+            }
+        } else {
+            TlsFiles::default()
+        },
+    };
+    security
+        .validate()
+        .context("invalid Kafka security settings")?;
+    let auth = match (
+        get("KAFKA_SCHEMA_REGISTRY_USERNAME"),
+        get("KAFKA_SCHEMA_REGISTRY_PASSWORD"),
+    ) {
+        (Some(u), Some(p)) => Some(BasicAuth {
+            username: u.trim().to_string(),
+            password: p,
+        }),
+        (None, None) => None,
+        _ => bail!(
+            "set both FASTMOCK_KAFKA_SCHEMA_REGISTRY_USERNAME and FASTMOCK_KAFKA_SCHEMA_REGISTRY_PASSWORD, or neither"
+        ),
+    };
+    if auth.is_some() && registry_url.is_none() {
+        bail!(
+            "FASTMOCK_KAFKA_SCHEMA_REGISTRY_USERNAME and FASTMOCK_KAFKA_SCHEMA_REGISTRY_PASSWORD are set but FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL is not"
+        );
+    }
+    Ok((
+        security,
+        RegistryOptions {
+            ca_file: ca_file.filter(|_| registry_https),
+            auth,
+        },
+    ))
+}
+
 impl Config {
     pub fn for_tests(storage: StorageKind, tokens: Vec<String>) -> Self {
         Self {
@@ -266,6 +396,8 @@ impl Config {
             tls: None,
             kafka_bootstrap: None,
             kafka_schema_registry: None,
+            kafka_security: Default::default(),
+            kafka_schema_registry_options: Default::default(),
             plugin_overrides: Default::default(),
             max_inflight_body_bytes: 64 * 1024 * 1024,
             journal_queue: 1024,
@@ -312,6 +444,9 @@ impl Config {
                         .with_context(|| format!("FASTMOCK_CALLBACK_DENIED_CIDRS: {c}"))
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
+        let kafka_schema_registry = env("KAFKA_SCHEMA_REGISTRY_URL");
+        let (kafka_security, kafka_schema_registry_options) =
+            parse_kafka_security(&env, kafka_schema_registry.as_deref())?;
         let cfg = Self {
             listen: parse("LISTEN", "0.0.0.0:8080".parse()?)?,
             admin_listen: parse("ADMIN_LISTEN", "0.0.0.0:9090".parse()?)?,
@@ -378,7 +513,9 @@ impl Config {
                 _ => bail!("set both FASTMOCK_TLS_CERT_FILE and FASTMOCK_TLS_KEY_FILE"),
             },
             kafka_bootstrap: env("KAFKA_BOOTSTRAP").map(|v| list(&v)),
-            kafka_schema_registry: env("KAFKA_SCHEMA_REGISTRY_URL"),
+            kafka_schema_registry,
+            kafka_security,
+            kafka_schema_registry_options,
             plugin_overrides: Default::default(),
             max_inflight_body_bytes: parse("MAX_INFLIGHT_BODY_BYTES", 256 * 1024 * 1024usize)?,
             journal_queue: parse("JOURNAL_QUEUE", 2048usize)?.max(1),
@@ -470,6 +607,198 @@ mod tests {
         assert!(parse_origins("https://*.example.com", "x").is_err());
         assert!(parse_origins("https://mock.example.com/path", "x").is_err());
         assert!(parse_origins("ftp://mock.example.com", "x").is_err());
+    }
+
+    fn kafka_env<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name: &str| {
+            vars.iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| v.to_string())
+        }
+    }
+
+    fn kafka_pems() -> (PathBuf, String, String, String) {
+        let dir = std::env::temp_dir().join(format!("fm-kafka-cfg-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ca_key = rcgen::KeyPair::generate().unwrap();
+        let mut ca = rcgen::CertificateParams::new(vec![]).unwrap();
+        ca.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca_pem = ca.self_signed(&ca_key).unwrap().pem();
+        let issuer = rcgen::Issuer::new(ca, ca_key);
+        let ck = rcgen::KeyPair::generate().unwrap();
+        let client = rcgen::CertificateParams::new(vec!["client".into()])
+            .unwrap()
+            .signed_by(&ck, &issuer)
+            .unwrap();
+        std::fs::write(dir.join("ca.pem"), ca_pem).unwrap();
+        std::fs::write(dir.join("client.pem"), client.pem()).unwrap();
+        std::fs::write(dir.join("client.key"), ck.serialize_pem()).unwrap();
+        std::fs::write(dir.join("empty.pem"), "\n").unwrap();
+        let p = |n: &str| dir.join(n).display().to_string();
+        let (ca, cert, key) = (p("ca.pem"), p("client.pem"), p("client.key"));
+        (dir, ca, cert, key)
+    }
+
+    fn kafka_err(vars: &[(&str, &str)], registry: Option<&str>) -> String {
+        let e = parse_kafka_security(&kafka_env(vars), registry).unwrap_err();
+        let msg = format!("{e:#} {e:?}");
+        assert!(!msg.contains("pa55w0rd-value"), "password leaked: {msg}");
+        msg
+    }
+
+    #[test]
+    fn kafka_security_defaults_to_plaintext() {
+        let (s, r) = parse_kafka_security(&kafka_env(&[]), None).unwrap();
+        assert_eq!(s, fastmock_kafka::KafkaSecurity::default());
+        assert_eq!(r, fastmock_kafka::RegistryOptions::default());
+        let (s, _) = parse_kafka_security(
+            &kafka_env(&[("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT")]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(s.protocol, fastmock_kafka::SecurityProtocol::Plaintext);
+    }
+
+    #[test]
+    fn kafka_sasl_ssl_with_mtls_and_registry_auth() {
+        let (dir, ca, cert, key) = kafka_pems();
+        let vars = [
+            ("KAFKA_SECURITY_PROTOCOL", "SASL_SSL"),
+            ("KAFKA_SASL_MECHANISM", "scram-sha-512"),
+            ("KAFKA_SASL_USERNAME", "fastmock"),
+            ("KAFKA_SASL_PASSWORD", "pa55w0rd-value"),
+            ("KAFKA_TLS_CA_FILE", ca.as_str()),
+            ("KAFKA_TLS_CERT_FILE", cert.as_str()),
+            ("KAFKA_TLS_KEY_FILE", key.as_str()),
+            ("KAFKA_SCHEMA_REGISTRY_USERNAME", "sr"),
+            ("KAFKA_SCHEMA_REGISTRY_PASSWORD", "pa55w0rd-value"),
+        ];
+        let (s, r) =
+            parse_kafka_security(&kafka_env(&vars), Some("https://registry.example.com")).unwrap();
+        assert_eq!(s.protocol, fastmock_kafka::SecurityProtocol::SaslSsl);
+        let sasl = s.sasl.as_ref().unwrap();
+        assert_eq!(sasl.mechanism, fastmock_kafka::SaslMechanism::ScramSha512);
+        assert_eq!(sasl.username, "fastmock");
+        assert_eq!(s.tls.ca_file.as_deref(), Some(std::path::Path::new(&ca)));
+        assert!(s.tls.client_cert.is_some());
+        assert_eq!(r.ca_file, s.tls.ca_file);
+        assert_eq!(r.auth.as_ref().unwrap().username, "sr");
+        let mut cfg = Config::for_tests(StorageKind::Memory, vec![]);
+        cfg.kafka_security = s;
+        cfg.kafka_schema_registry_options = r;
+        let d = format!("{cfg:?}");
+        assert!(!d.contains("pa55w0rd-value"), "{d}");
+        assert!(d.contains("<redacted>"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn kafka_security_errors_are_clear() {
+        let (dir, ca, cert, key) = kafka_pems();
+        let empty = dir.join("empty.pem").display().to_string();
+        let missing = dir.join("missing.pem").display().to_string();
+        let pw = ("KAFKA_SASL_PASSWORD", "pa55w0rd-value");
+        let user = ("KAFKA_SASL_USERNAME", "fastmock");
+        let mech = ("KAFKA_SASL_MECHANISM", "PLAIN");
+        let sasl_pt = ("KAFKA_SECURITY_PROTOCOL", "sasl_plaintext");
+
+        let e = kafka_err(&[("KAFKA_SECURITY_PROTOCOL", "tls")], None);
+        assert!(e.contains("FASTMOCK_KAFKA_SECURITY_PROTOCOL"), "{e}");
+        let e = kafka_err(
+            &[sasl_pt, ("KAFKA_SASL_MECHANISM", "GSSAPI"), user, pw],
+            None,
+        );
+        assert!(e.contains("FASTMOCK_KAFKA_SASL_MECHANISM"), "{e}");
+        let e = kafka_err(&[sasl_pt, user, pw], None);
+        assert!(
+            e.contains("FASTMOCK_KAFKA_SASL_MECHANISM is required"),
+            "{e}"
+        );
+        let e = kafka_err(&[sasl_pt, mech, pw], None);
+        assert!(
+            e.contains("FASTMOCK_KAFKA_SASL_USERNAME is required"),
+            "{e}"
+        );
+        let e = kafka_err(&[sasl_pt, mech, user], None);
+        assert!(
+            e.contains("FASTMOCK_KAFKA_SASL_PASSWORD is required"),
+            "{e}"
+        );
+        let e = kafka_err(&[user, pw], None);
+        assert!(
+            e.contains("FASTMOCK_KAFKA_SASL_USERNAME, FASTMOCK_KAFKA_SASL_PASSWORD are set")
+                && e.contains("plaintext"),
+            "{e}"
+        );
+        let e = kafka_err(&[("KAFKA_SECURITY_PROTOCOL", "ssl"), pw], None);
+        assert!(e.contains("is ssl"), "{e}");
+        let e = kafka_err(&[("KAFKA_TLS_CA_FILE", ca.as_str())], None);
+        assert!(e.contains("FASTMOCK_KAFKA_TLS_CA_FILE is set"), "{e}");
+        let e = kafka_err(
+            &[sasl_pt, mech, user, pw, ("KAFKA_TLS_CA_FILE", ca.as_str())],
+            Some("http://registry.example.com"),
+        );
+        assert!(e.contains("FASTMOCK_KAFKA_TLS_CA_FILE is set"), "{e}");
+        let e = kafka_err(
+            &[
+                ("KAFKA_TLS_CERT_FILE", cert.as_str()),
+                ("KAFKA_TLS_KEY_FILE", key.as_str()),
+            ],
+            None,
+        );
+        assert!(e.contains("use ssl or sasl_ssl"), "{e}");
+        let ssl = ("KAFKA_SECURITY_PROTOCOL", "ssl");
+        let e = kafka_err(&[ssl, ("KAFKA_TLS_CERT_FILE", cert.as_str())], None);
+        assert!(e.contains("set both FASTMOCK_KAFKA_TLS_CERT_FILE"), "{e}");
+        let e = kafka_err(&[ssl, ("KAFKA_TLS_CA_FILE", empty.as_str())], None);
+        assert!(
+            e.contains("FASTMOCK_KAFKA_TLS_CA_FILE") && e.contains("no PEM certificates"),
+            "{e}"
+        );
+        let e = kafka_err(&[ssl, ("KAFKA_TLS_CA_FILE", missing.as_str())], None);
+        assert!(e.contains("missing.pem"), "{e}");
+        let e = kafka_err(
+            &[
+                ssl,
+                ("KAFKA_TLS_CERT_FILE", cert.as_str()),
+                ("KAFKA_TLS_KEY_FILE", empty.as_str()),
+            ],
+            None,
+        );
+        assert!(e.contains("FASTMOCK_KAFKA_TLS_KEY_FILE"), "{e}");
+        let e = kafka_err(
+            &[("KAFKA_SCHEMA_REGISTRY_PASSWORD", "pa55w0rd-value")],
+            Some("https://registry.example.com"),
+        );
+        assert!(
+            e.contains("set both FASTMOCK_KAFKA_SCHEMA_REGISTRY_USERNAME"),
+            "{e}"
+        );
+        let e = kafka_err(
+            &[
+                ("KAFKA_SCHEMA_REGISTRY_USERNAME", "sr"),
+                ("KAFKA_SCHEMA_REGISTRY_PASSWORD", "pa55w0rd-value"),
+            ],
+            None,
+        );
+        assert!(
+            e.contains("FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL is not"),
+            "{e}"
+        );
+
+        let (s, r) = parse_kafka_security(
+            &kafka_env(&[("KAFKA_TLS_CA_FILE", ca.as_str())]),
+            Some("https://registry.example.com"),
+        )
+        .unwrap();
+        assert_eq!(s, fastmock_kafka::KafkaSecurity::default());
+        assert!(r.ca_file.is_some(), "the CA is used by the registry only");
+        let (s, _) = parse_kafka_security(&kafka_env(&[sasl_pt, mech, user, pw]), None).unwrap();
+        assert_eq!(
+            s.sasl.unwrap().mechanism,
+            fastmock_kafka::SaslMechanism::Plain
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

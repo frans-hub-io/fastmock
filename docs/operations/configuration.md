@@ -154,11 +154,23 @@ templates cannot read them.
 | Variable | Type | Default | Effect |
 |---|---|---|---|
 | `FASTMOCK_KAFKA_BOOTSTRAP` | list | none | Kafka bootstrap servers (`host:port`) for stub `messages`. Without it, stubs with `messages` still respond, but publishing fails and is counted as `fastmock_messages_total{result="failed"}`. |
+| `FASTMOCK_KAFKA_SECURITY_PROTOCOL` | enum | `plaintext` | `plaintext`, `ssl`, `sasl_plaintext` or `sasl_ssl` (Kafka `security.protocol`, case-insensitive). Applies to stub messages, async mocks and AsyncAPI contract tests. |
+| `FASTMOCK_KAFKA_SASL_MECHANISM` | enum | none | `PLAIN`, `SCRAM-SHA-256` or `SCRAM-SHA-512`. Required for `sasl_*`, refused otherwise. |
+| `FASTMOCK_KAFKA_SASL_USERNAME` | string | none | SASL user. Required for `sasl_*`, refused otherwise. |
+| `FASTMOCK_KAFKA_SASL_PASSWORD` | string | none | SASL password. Required for `sasl_*`, refused otherwise. Never logged. |
+| `FASTMOCK_KAFKA_TLS_CA_FILE` | path | none | PEM bundle trusted in addition to the public roots compiled into the binary, for `ssl` and `sasl_ssl`. Also trusted by an `https://` Schema Registry. With `plaintext` or `sasl_plaintext` it is refused unless the registry URL is `https://`. |
+| `FASTMOCK_KAFKA_TLS_CERT_FILE` | path | none | Client certificate (PEM, leaf first, optionally followed by intermediates) for mTLS. Set together with `FASTMOCK_KAFKA_TLS_KEY_FILE`; only for `ssl` and `sasl_ssl`. |
+| `FASTMOCK_KAFKA_TLS_KEY_FILE` | path | none | Private key of the client certificate (PEM: PKCS#8, PKCS#1 or SEC1, unencrypted). |
 | `FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL` | URL | none | Confluent-compatible Schema Registry (`http://` or `https://`), required for messages with `avroSchema`. |
+| `FASTMOCK_KAFKA_SCHEMA_REGISTRY_USERNAME` | string | none | HTTP basic authentication for the registry. Set together with the password. |
+| `FASTMOCK_KAFKA_SCHEMA_REGISTRY_PASSWORD` | string | none | Registry password. Never logged. |
 | `FASTMOCK_KAFKA_ALLOWED_TOPICS` | list | none (any topic) | Topics stub messages may publish to: exact names or prefixes ending in `*` (`orders.*`). It does not grant reading. |
 | `FASTMOCK_KAFKA_CONTRACT_TOPICS` | list | none (reading disabled) | Topics AsyncAPI contract tests may read: exact names or prefixes ending in `*`. A prefix entry never matches internal topics starting with `_` unless the prefix starts with `_`. Without it, AsyncAPI contract tests answer `400`. |
 
-See [Kafka messages](../guide/kafka.md).
+The security settings are checked at start-up: an unknown protocol or mechanism, missing credentials, a
+certificate without its key, an unreadable or empty PEM file, or SASL or TLS settings that the protocol does not
+use stop the server with an error naming the variable. See [Kafka messages](../guide/kafka.md) and
+[Secure connections](../guide/kafka.md#secure-connections).
 
 ## Plugins
 

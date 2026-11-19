@@ -161,7 +161,7 @@ The stub answers normally; publishing errors only appear in logs and metrics
 | `topic is not in FASTMOCK_KAFKA_ALLOWED_TOPICS` | Add the topic or a `prefix*` entry. |
 | `FASTMOCK_KAFKA_BOOTSTRAP is not configured` | Configure Kafka. |
 | `Kafka topic X does not exist` | Create the topic. |
-| `connecting to Kafka timed out` | Network or NetworkPolicy egress to the brokers. |
+| `connecting to Kafka timed out` | Network or NetworkPolicy egress to the brokers, or a TLS or SASL error: the warnings `Failed to connect to broker` before it name the cause ([Secure connections](../guide/kafka.md#secure-connections)). |
 | `avroSchema needs FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL`, `schema registry returned 409 ...` | Registry configuration or schema compatibility. |
 | `$.field: ... does not fit Avro type` | The rendered `jsonValue` does not match the schema ([conversion rules](../guide/kafka.md#json-to-avro-conversion)). |
 

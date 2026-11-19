@@ -117,6 +117,14 @@ inline or third-party scripts) and renders data as text, never as HTML. Publish 
   the public Mozilla root certificates compiled into the binary (`webpki-roots`), plus the certificates in
   `FASTMOCK_OUTBOUND_CA_FILE` when it is set (Helm: `outboundCA.configMap`). Use it for receivers whose
   certificates are issued by your organisation's CA; certificate verification is never switched off.
+- **Kafka and Schema Registry:** `FASTMOCK_KAFKA_SECURITY_PROTOCOL` selects TLS, SASL or both (`ssl`,
+  `sasl_plaintext`, `sasl_ssl`) for publishing and for contract tests. Broker certificates are verified against
+  the same public roots plus `FASTMOCK_KAFKA_TLS_CA_FILE` (also trusted by an `https://` registry); a client
+  certificate can be presented for mTLS. SASL supports `PLAIN`, `SCRAM-SHA-256` and `SCRAM-SHA-512`; the
+  registry supports HTTP basic authentication. Inconsistent settings stop the server at start-up
+  ([Secure connections](../guide/kafka.md#secure-connections)). Broker and registry addresses come only from
+  the configuration, never from stubs, so the egress policy below does not apply to them; scope them with the
+  egress NetworkPolicy.
 
 ## Egress policy
 
@@ -149,7 +157,9 @@ external receivers.
   ([Contract testing](../guide/contract-testing.md#secrets-and-redaction)).
 - Plugins read their own secrets (for example a provider's signing key); they are not exposed to stubs.
 - Database and Valkey passwords can be passed separately (`FASTMOCK_DATABASE_PASSWORD`,
-  `FASTMOCK_VALKEY_PASSWORD`) so they never appear in URLs, ConfigMaps or command lines.
+  `FASTMOCK_VALKEY_PASSWORD`) so they never appear in URLs, ConfigMaps or command lines. Kafka SASL and Schema
+  Registry passwords (`FASTMOCK_KAFKA_SASL_PASSWORD`, `FASTMOCK_KAFKA_SCHEMA_REGISTRY_PASSWORD`) are separate
+  variables as well; take them from a Secret.
 - `GET /__admin/info`, API errors and logs do not include secret values or connection URLs.
 
 ## Redaction
@@ -265,6 +275,8 @@ FastMock sends no telemetry anywhere unless you configure an OTLP endpoint.
 - [ ] `FASTMOCK_STUB_SECRETS` lists only the keys stubs need; `FASTMOCK_CONTRACT_SECRETS` binds each contract
       secret to the host of its service only.
 - [ ] Redaction lists extended for your domain's sensitive fields.
+- [ ] Kafka over `sasl_ssl` or `ssl` with a dedicated user that may write only the mocked topics and read only
+      the contract topics; `PLAIN` only over TLS.
 - [ ] `FASTMOCK_KAFKA_ALLOWED_TOPICS` set when Kafka is shared; `FASTMOCK_KAFKA_CONTRACT_TOPICS` lists only the
       topics contract tests must read (empty disables reading).
 - [ ] `FASTMOCK_UI_DATA_PLANE_URL` set to the public data-plane origin when the UI is exposed.

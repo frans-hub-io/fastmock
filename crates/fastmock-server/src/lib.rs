@@ -196,11 +196,7 @@ pub async fn build(
         http,
         policy: policy.clone(),
         chaos: Arc::new(extras::ChaosCache::default()),
-        kafka: Arc::new(extras::KafkaHub::new(
-            cfg.kafka_bootstrap.clone(),
-            cfg.kafka_schema_registry.clone(),
-            cfg.kafka_allowed_topics.clone(),
-        )?),
+        kafka: Arc::new(extras::KafkaHub::new(&cfg)?),
         grpc: Arc::new(grpc::Registry::default()),
         body_budget: Arc::new(tokio::sync::Semaphore::new(
             (cfg.max_inflight_body_bytes / 1024).max(1),

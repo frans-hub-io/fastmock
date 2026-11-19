@@ -788,6 +788,7 @@ async fn run_async_case(app: &AppState, input: &RunInput, case: &AsyncCase) -> O
             fastmock_kafka::KafkaPublisher::connect(&fastmock_kafka::KafkaSettings {
                 bootstrap,
                 client_id: "fastmock-contract".into(),
+                security: app.cfg.kafka_security.clone(),
             }),
         )
         .await

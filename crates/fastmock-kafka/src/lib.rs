@@ -11,6 +11,13 @@ use rskafka::record::Record;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
+mod security;
+
+pub use security::{
+    BasicAuth, ClientCertFiles, KafkaSecurity, RegistryOptions, SaslMechanism, SaslSettings,
+    SecurityProtocol, TlsFiles, client_tls_config, read_ca_bundle, read_client_cert,
+};
+
 pub fn murmur2(data: &[u8]) -> i32 {
     let seed: u32 = 0x9747_b28c;
     let m: u32 = 0x5bd1_e995;
@@ -321,20 +328,30 @@ pub fn encode(schema: &Schema, value: AvroValue) -> anyhow::Result<Vec<u8>> {
 pub struct SchemaRegistry {
     base: String,
     http: reqwest::Client,
+    auth: Option<BasicAuth>,
     cache: Mutex<HashMap<(String, String), i32>>,
 }
 
 impl SchemaRegistry {
     pub fn new(base: &str) -> anyhow::Result<Self> {
+        Self::with_options(base, &RegistryOptions::default())
+    }
+
+    pub fn with_options(base: &str, opts: &RegistryOptions) -> anyhow::Result<Self> {
         let base = base.trim_end_matches('/').to_string();
         if !base.starts_with("http://") && !base.starts_with("https://") {
             anyhow::bail!("schema registry URL must start with http:// or https://");
         }
+        let mut http = reqwest::Client::builder().timeout(Duration::from_secs(10));
+        if let Some(ca) = &opts.ca_file {
+            for c in read_ca_bundle(ca)? {
+                http = http.add_root_certificate(reqwest::Certificate::from_der(c.as_ref())?);
+            }
+        }
         Ok(Self {
             base,
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(10))
-                .build()?,
+            http: http.build()?,
+            auth: opts.auth.clone(),
             cache: Mutex::new(HashMap::new()),
         })
     }
@@ -345,14 +362,15 @@ impl SchemaRegistry {
             return Ok(*id);
         }
         let url = format!("{}/subjects/{}/versions", self.base, subject);
-        let resp = self
+        let mut req = self
             .http
             .post(&url)
             .header("content-type", "application/vnd.schemaregistry.v1+json")
-            .json(&serde_json::json!({"schema": schema}))
-            .send()
-            .await
-            .context("schema registry is unreachable")?;
+            .json(&serde_json::json!({"schema": schema}));
+        if let Some(a) = &self.auth {
+            req = req.basic_auth(&a.username, Some(&a.password));
+        }
+        let resp = req.send().await.context("schema registry is unreachable")?;
         let status = resp.status();
         let body: Value = resp.json().await.unwrap_or(Value::Null);
         if !status.is_success() {
@@ -400,10 +418,11 @@ pub struct TopicCursor {
     positions: Vec<(Arc<PartitionClient>, i64)>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct KafkaSettings {
     pub bootstrap: Vec<String>,
     pub client_id: String,
+    pub security: KafkaSecurity,
 }
 
 pub struct KafkaPublisher {
@@ -414,7 +433,9 @@ pub struct KafkaPublisher {
 
 impl KafkaPublisher {
     pub async fn connect(s: &KafkaSettings) -> anyhow::Result<Self> {
-        let b = ClientBuilder::new(s.bootstrap.clone()).client_id(s.client_id.clone());
+        let b = s
+            .security
+            .apply(ClientBuilder::new(s.bootstrap.clone()).client_id(s.client_id.clone()))?;
         let client = tokio::time::timeout(Duration::from_secs(15), b.build())
             .await
             .context("connecting to Kafka timed out")??;
