@@ -40,7 +40,8 @@ Migrations are SQL files compiled into the binary (`crates/fastmock-store/migrat
 
 `FASTMOCK_DATABASE_MIGRATION_TIMEOUT` (default `120s`) limits the whole step, including the wait for the lock. A
 replica that runs out of time exits and is restarted; the replica holding the lock carries on. With the Helm
-chart the startup probe allows about two minutes in total, so run long migrations as a separate Job.
+chart the startup probe allows two minutes by default (`startupProbe.periodSeconds` × `.failureThreshold`); raise
+it together with the timeout, or run long migrations as a separate Job.
 
 Applied migrations that the binary does not know (written by a newer FastMock) are accepted. During a rolling
 upgrade the first new pod migrates and the old pods keep working; an old pod that restarts, or a rollback to the
@@ -62,8 +63,11 @@ To keep DDL rights away from the server, or to migrate once per release instead 
    not applied; run fastmock migrate from this version before starting it with FASTMOCK_DATABASE_MIGRATE=skip`.
    The server user then needs only `USAGE` on the schema and `SELECT`, `INSERT`, `UPDATE`, `DELETE` on its tables.
 
-A Kubernetes Job for step 1, run before the Deployment is updated (for example as a pipeline step or a Helm
-`pre-upgrade` hook):
+With the Helm chart, set `storage.database.migrations.mode: job`: a pre-install/pre-upgrade hook Job runs step 1
+with the image of the release, optionally with the owner's credentials from
+`storage.database.migrations.job.existingSecret`, and the pods start in `skip` mode
+([Helm chart](helm.md#storage)). Without the chart, a Job for step 1 run before the Deployment is updated (for
+example as a pipeline step) looks like this:
 
 ```yaml
 apiVersion: batch/v1

@@ -153,6 +153,7 @@ helm uninstall fastmock -n mocks
 | `image.pullPolicy` | `IfNotPresent` | |
 | `imagePullSecrets` | `[]` | List of `{name: ...}` for the FastMock pods. |
 | `replicaCount` | `2` | Replicas when autoscaling is off. Use 1 with `storage.mode: memory`. |
+| `startupProbe.periodSeconds`, `.failureThreshold` | `2`, `60` | Start-up allowance (120 s); raise it with longer `auto` migrations. |
 | `resources` | requests `100m`/`64Mi`, limits `2`/`512Mi` | Server container resources. |
 | `podAnnotations`, `podLabels` | `{}` | Extra pod metadata. |
 | `nodeSelector`, `tolerations`, `affinity`, `topologySpreadConstraints` | empty | Scheduling. |
@@ -182,6 +183,10 @@ helm uninstall fastmock -n mocks
 | `storage.database.existingSecret` | `""` | Secret with the PostgreSQL URL; required in `postgres` mode unless `postgresql.enabled` or `cnpg.enabled`. |
 | `storage.database.secretKey` | `database-url` | Key of the URL. |
 | `storage.database.maxConnections` | `10` | `FASTMOCK_DB_MAX_CONNECTIONS` per pod. |
+| `storage.database.migrations.mode` | `auto` | `auto`: every pod applies pending migrations at start-up. `job`: a pre-install/pre-upgrade Job runs `fastmock migrate` first and pods start with `FASTMOCK_DATABASE_MIGRATE=skip`; external databases only. See [Database](database.md). |
+| `storage.database.migrations.timeout` | `120s` | `FASTMOCK_DATABASE_MIGRATION_TIMEOUT`, including the wait for the migration lock. In `auto` mode keep it below `startupProbe.periodSeconds × startupProbe.failureThreshold`. |
+| `storage.database.migrations.job.existingSecret`, `.secretKey` | runtime Secret, `database-url` | URL for the Job; give it the schema owner so that the runtime user needs no `CREATE` privilege. |
+| `storage.database.migrations.job.backoffLimit`, `.activeDeadlineSeconds`, `.resources` | `2`, `900`, small | Job settings. |
 | `storage.valkey.existingSecret` | `""` | Secret with the Valkey URL; required in `postgres` mode unless `valkey.enabled`. |
 | `storage.valkey.secretKey` | `valkey-url` | Key of the URL. |
 | `storage.valkey.prefix` | `fastmock:` | `FASTMOCK_VALKEY_PREFIX`; give each release that shares a Valkey its own prefix. |

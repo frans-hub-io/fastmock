@@ -364,6 +364,48 @@
               "type": "integer",
               "minimum": 1
             },
+            "migrations": {
+              "type": "object",
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "auto",
+                    "job"
+                  ]
+                },
+                "timeout": {
+                  "type": "string",
+                  "pattern": "^[0-9]+(ms|s|m|h|d)?$"
+                },
+                "job": {
+                  "type": "object",
+                  "properties": {
+                    "existingSecret": {
+                      "type": "string",
+                      "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+                      "maxLength": 253
+                    },
+                    "secretKey": {
+                      "type": "string"
+                    },
+                    "backoffLimit": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "activeDeadlineSeconds": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "resources": {
+                      "type": "object"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
             "tls": {
               "type": "object",
               "properties": {
@@ -690,6 +732,20 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 100
+        }
+      },
+      "additionalProperties": false
+    },
+    "startupProbe": {
+      "type": "object",
+      "properties": {
+        "periodSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "failureThreshold": {
+          "type": "integer",
+          "minimum": 1
         }
       },
       "additionalProperties": false

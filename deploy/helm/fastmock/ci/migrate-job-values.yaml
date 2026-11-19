@@ -1,0 +1,21 @@
+admin:
+  tokensSecret:
+    name: fastmock-admin-tokens
+
+storage:
+  mode: postgres
+  database:
+    existingSecret: fastmock-database
+    migrations:
+      mode: job
+      timeout: 10m
+      job:
+        existingSecret: fastmock-database-owner
+    tls:
+      mode: verify-full
+      caSecret: database-ca
+  valkey:
+    existingSecret: fastmock-valkey
+
+startupProbe:
+  failureThreshold: 90

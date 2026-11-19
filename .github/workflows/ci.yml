@@ -45,12 +45,32 @@ jobs:
           retention-days: 1
 
   rust:
+    name: rust (postgres ${{ matrix.postgres }}, ${{ matrix.kv }}, kafka ${{ matrix.kafka }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     needs: ui
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - postgres: 18.7-trixie
+            kv: valkey/valkey:9.1.4-trixie
+            kvcli: valkey-cli
+            kafka: 4.4.0
+            lint: true
+          - postgres: 16.16-trixie
+            kv: valkey/valkey:8.1.12-trixie
+            kvcli: valkey-cli
+            kafka: 3.9.2
+            lint: false
+          - postgres: 14.25-trixie
+            kv: redis:7.4.12
+            kvcli: redis-cli
+            kafka: 3.9.2
+            lint: false
     services:
       postgres:
-        image: postgres:18.7-trixie
+        image: postgres:${{ matrix.postgres }}
         env:
           POSTGRES_PASSWORD: postgres
         ports:
@@ -61,16 +81,16 @@ jobs:
           --health-timeout 5s
           --health-retries 20
       valkey:
-        image: valkey/valkey:9.1.4-trixie
+        image: ${{ matrix.kv }}
         ports:
           - 6379:6379
         options: >-
-          --health-cmd "valkey-cli ping"
+          --health-cmd "${{ matrix.kvcli }} ping"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
       kafka:
-        image: apache/kafka:4.4.0
+        image: apache/kafka:${{ matrix.kafka }}
         ports:
           - 9092:9092
     env:
@@ -90,8 +110,10 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - if: matrix.lint
+        run: cargo fmt --all -- --check
+      - if: matrix.lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked --no-fail-fast
 
   helm:

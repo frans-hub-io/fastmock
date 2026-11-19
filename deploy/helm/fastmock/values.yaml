@@ -82,6 +82,21 @@ storage:
     existingSecret: ""
     secretKey: database-url
     maxConnections: 10
+    migrations:
+      mode: auto
+      timeout: 120s
+      job:
+        existingSecret: ""
+        secretKey: database-url
+        backoffLimit: 2
+        activeDeadlineSeconds: 900
+        resources:
+          requests:
+            cpu: 50m
+            memory: 32Mi
+          limits:
+            cpu: 500m
+            memory: 128Mi
     tls:
       mode: ""
       caSecret: ""
@@ -287,6 +302,10 @@ autoscaling:
   minReplicas: 2
   maxReplicas: 6
   targetCPUUtilizationPercentage: 70
+
+startupProbe:
+  periodSeconds: 2
+  failureThreshold: 60
 
 resources:
   requests:

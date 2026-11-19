@@ -25,6 +25,9 @@
 {{- if and .Values.messaging.kafka.schemaRegistry.username (not .Values.messaging.kafka.schemaRegistry.existingSecret) }}
 {{- fail "messaging.kafka.schemaRegistry.existingSecret is required when messaging.kafka.schemaRegistry.username is set" }}
 {{- end }}
+{{- if and (eq .Values.storage.database.migrations.mode "job") (or .Values.postgresql.enabled .Values.cnpg.enabled) }}
+{{- fail "storage.database.migrations.mode=job needs an external database: the databases installed with the release do not exist yet when the migration Job runs" }}
+{{- end }}
 {{- if not .Values.admin.tokensSecret.name }}
 {{- fail "admin.tokensSecret.name is required: FastMock never runs without admin authentication" }}
 {{- end }}
@@ -156,8 +159,8 @@ spec:
             httpGet:
               path: /healthz
               port: admin
-            periodSeconds: 2
-            failureThreshold: 60
+            periodSeconds: {{ .Values.startupProbe.periodSeconds }}
+            failureThreshold: {{ .Values.startupProbe.failureThreshold }}
           readinessProbe:
             httpGet:
               path: /readyz

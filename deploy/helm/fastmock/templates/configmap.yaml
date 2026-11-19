@@ -90,6 +90,8 @@ data:
   FASTMOCK_DB_MAX_CONNECTIONS: {{ .Values.storage.database.maxConnections | int64 | quote }}
   FASTMOCK_VALKEY_PREFIX: {{ .Values.storage.valkey.prefix | quote }}
   {{- if eq .Values.storage.mode "postgres" }}
+  FASTMOCK_DATABASE_MIGRATE: {{ ternary "skip" "auto" (eq .Values.storage.database.migrations.mode "job") | quote }}
+  FASTMOCK_DATABASE_MIGRATION_TIMEOUT: {{ .Values.storage.database.migrations.timeout | quote }}
   {{- with include "fastmock.databaseSslMode" . }}
   FASTMOCK_DATABASE_SSL_MODE: {{ . | quote }}
   {{- end }}
