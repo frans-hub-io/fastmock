@@ -1,0 +1,756 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "fastmock chart values",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "logFormat": {
+      "type": "string",
+      "enum": [
+        "json",
+        "text"
+      ]
+    },
+    "plugins": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "pluginSettings": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      }
+    },
+    "extraEnv": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "admin": {
+      "type": "object",
+      "properties": {
+        "tokensSecret": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+              "maxLength": 253
+            },
+            "key": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "allowedOrigins": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "uiDataPlaneUrls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "callbacks": {
+      "type": "object",
+      "properties": {
+        "allowedHosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deniedCidrs": {
+          "type": "string"
+        },
+        "workers": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(ms|s|m|h|d)?$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "secrets": {
+      "type": "object",
+      "properties": {
+        "existingSecret": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+          "maxLength": 253
+        },
+        "stubSecrets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "contractSecrets": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "outboundCA": {
+      "type": "object",
+      "properties": {
+        "configMap": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+          "maxLength": 253
+        },
+        "key": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "journal": {
+      "type": "object",
+      "properties": {
+        "retention": {
+          "type": "string",
+          "pattern": "^[0-9]+(ms|s|m|h|d)?$"
+        },
+        "maxBodyBytes": {
+          "type": "integer"
+        },
+        "queue": {
+          "type": "integer"
+        },
+        "scanTimeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(ms|s|m|h|d)?$"
+        },
+        "scanMaxWork": {
+          "type": "integer"
+        },
+        "scanConcurrency": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "limits": {
+      "type": "object",
+      "properties": {
+        "maxBodyBytes": {
+          "type": "integer"
+        },
+        "maxInflightBodyBytes": {
+          "type": "integer"
+        },
+        "maxDelay": {
+          "type": "string",
+          "pattern": "^[0-9]+(ms|s|m|h|d)?$"
+        },
+        "recordingMaxStubs": {
+          "type": "integer"
+        },
+        "headerReadTimeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(ms|s|m|h|d)?$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "messaging": {
+      "type": "object",
+      "properties": {
+        "kafka": {
+          "type": "object",
+          "properties": {
+            "bootstrap": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[^:\\s]+:[0-9]{1,5}$"
+              }
+            },
+            "securityProtocol": {
+              "type": "string",
+              "enum": [
+                "",
+                "plaintext",
+                "ssl",
+                "sasl_plaintext",
+                "sasl_ssl",
+                "PLAINTEXT",
+                "SSL",
+                "SASL_PLAINTEXT",
+                "SASL_SSL"
+              ]
+            },
+            "sasl": {
+              "type": "object",
+              "properties": {
+                "mechanism": {
+                  "type": "string",
+                  "enum": [
+                    "",
+                    "PLAIN",
+                    "SCRAM-SHA-256",
+                    "SCRAM-SHA-512",
+                    "plain",
+                    "scram-sha-256",
+                    "scram-sha-512"
+                  ]
+                },
+                "username": {
+                  "type": "string"
+                },
+                "existingSecret": {
+                  "type": "string",
+                  "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+                  "maxLength": 253
+                },
+                "passwordKey": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            "tls": {
+              "type": "object",
+              "properties": {
+                "caSecret": {
+                  "type": "string",
+                  "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+                  "maxLength": 253
+                },
+                "caKey": {
+                  "type": "string"
+                },
+                "clientCertSecret": {
+                  "type": "string",
+                  "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+                  "maxLength": 253
+                }
+              },
+              "additionalProperties": false
+            },
+            "schemaRegistry": {
+              "type": "object",
+              "properties": {
+                "url": {
+                  "type": "string",
+                  "pattern": "^$|^https?://"
+                },
+                "username": {
+                  "type": "string"
+                },
+                "existingSecret": {
+                  "type": "string",
+                  "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+                  "maxLength": 253
+                },
+                "passwordKey": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            "allowedTopics": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "contractTopics": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "shutdownDelay": {
+      "type": "string",
+      "pattern": "^[0-9]+(ms|s|m|h|d)?$"
+    },
+    "terminationGracePeriodSeconds": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "storage": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "memory",
+            "postgres"
+          ]
+        },
+        "database": {
+          "type": "object",
+          "properties": {
+            "existingSecret": {
+              "type": "string",
+              "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+              "maxLength": 253
+            },
+            "secretKey": {
+              "type": "string"
+            },
+            "maxConnections": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "tls": {
+              "type": "object",
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "",
+                    "disable",
+                    "allow",
+                    "prefer",
+                    "require",
+                    "verify-ca",
+                    "verify-full"
+                  ]
+                },
+                "caSecret": {
+                  "type": "string",
+                  "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+                  "maxLength": 253
+                },
+                "caKey": {
+                  "type": "string"
+                },
+                "clientCertSecret": {
+                  "type": "string",
+                  "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+                  "maxLength": 253
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "valkey": {
+          "type": "object",
+          "properties": {
+            "existingSecret": {
+              "type": "string",
+              "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+              "maxLength": 253
+            },
+            "secretKey": {
+              "type": "string"
+            },
+            "prefix": {
+              "type": "string"
+            },
+            "username": {
+              "type": "string"
+            },
+            "tls": {
+              "type": "object",
+              "properties": {
+                "caSecret": {
+                  "type": "string",
+                  "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+                  "maxLength": 253
+                },
+                "caKey": {
+                  "type": "string"
+                },
+                "clientCertSecret": {
+                  "type": "string",
+                  "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+                  "maxLength": 253
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "postgresql": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "cnpg": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "valkey": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "kafka": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "otel": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "pattern": "^$|^https?://"
+        },
+        "protocol": {
+          "type": "string",
+          "enum": [
+            "http/protobuf"
+          ]
+        },
+        "serviceName": {
+          "type": "string"
+        },
+        "resourceAttributes": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "ClusterIP",
+            "NodePort",
+            "LoadBalancer"
+          ]
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "adminPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "route": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "hostnames": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "parentRefs": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "admin": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "hostnames": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "parentRefs": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "serviceMonitor": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "interval": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)$"
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "prometheusRule": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "unmatchedRatio": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "callbackBacklog": {
+              "type": "integer"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "networkPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "adminFrom": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "dataFrom": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "storage": {
+          "type": "boolean"
+        },
+        "egress": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "rules": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "pdb": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "minAvailable": {
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "autoscaling": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "minReplicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxReplicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "targetCPUUtilizationPercentage": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      },
+      "additionalProperties": false
+    },
+    "resources": {
+      "type": "object"
+    },
+    "podAnnotations": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "podLabels": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "nodeSelector": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "tolerations": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "affinity": {
+      "type": "object"
+    },
+    "topologySpreadConstraints": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "podSecurityContext": {
+      "type": "object"
+    },
+    "serviceAccount": {
+      "type": "object",
+      "properties": {
+        "create": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "securityContext": {
+      "type": "object"
+    },
+    "global": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

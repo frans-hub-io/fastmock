@@ -1,0 +1,37 @@
+admin:
+  tokensSecret:
+    name: fastmock-admin-tokens
+
+storage:
+  mode: postgres
+  database:
+    existingSecret: fastmock-database
+    tls:
+      mode: verify-full
+      caSecret: database-ca
+      clientCertSecret: fastmock-database-client
+  valkey:
+    existingSecret: fastmock-valkey
+    username: fastmock
+    tls:
+      caSecret: valkey-ca
+      clientCertSecret: fastmock-valkey-client
+
+messaging:
+  kafka:
+    bootstrap:
+      - kafka-0.example.com:9093
+      - kafka-1.example.com:9093
+    securityProtocol: sasl_ssl
+    sasl:
+      mechanism: SCRAM-SHA-512
+      username: fastmock
+      existingSecret: fastmock-kafka-user
+    tls:
+      caSecret: kafka-ca
+    schemaRegistry:
+      url: https://schema-registry.example.com
+      username: fastmock
+      existingSecret: fastmock-schema-registry
+    allowedTopics:
+      - "mocks.*"

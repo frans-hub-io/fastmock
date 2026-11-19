@@ -146,7 +146,7 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
-    {{- if or .Values.postgresql.enabled .Values.valkey.enabled }}
+    {{- if or .Values.postgresql.enabled .Values.valkey.enabled .Values.kafka.enabled }}
     - to:
         - podSelector:
             matchExpressions:
@@ -155,7 +155,9 @@ spec:
                 values: [{{ .Release.Name | quote }}]
               - key: app.kubernetes.io/name
                 operator: In
-                values: ["postgresql", "valkey"]
+                values: ["postgresql", "valkey", "kafka"]
+              - key: cnpg.io/cluster
+                operator: DoesNotExist
     {{- end }}
     {{- if .Values.cnpg.enabled }}
     - to:
@@ -171,7 +173,7 @@ spec:
     {{- end }}
   {{- end }}
 {{- end }}
-{{- if and .Values.networkPolicy.storage (or .Values.postgresql.enabled .Values.valkey.enabled) }}
+{{- if and .Values.networkPolicy.storage (or .Values.postgresql.enabled .Values.valkey.enabled .Values.kafka.enabled) }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -187,7 +189,7 @@ spec:
         values: [{{ .Release.Name | quote }}]
       - key: app.kubernetes.io/name
         operator: In
-        values: ["postgresql", "valkey"]
+        values: ["postgresql", "valkey", "kafka"]
       - key: cnpg.io/cluster
         operator: DoesNotExist
   policyTypes:
@@ -197,4 +199,12 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "fastmock.selector" . | nindent 14 }}
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/instance
+                operator: In
+                values: [{{ .Release.Name | quote }}]
+              - key: app.kubernetes.io/name
+                operator: In
+                values: ["kafka"]
 {{- end }}

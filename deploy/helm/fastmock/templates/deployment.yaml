@@ -13,6 +13,18 @@
 {{- fail "Valkey is required in postgres mode: set valkey.enabled or storage.valkey.existingSecret" }}
 {{- end }}
 {{- end }}
+{{- if and .Values.kafka.enabled .Values.messaging.kafka.bootstrap }}
+{{- fail "set either kafka.enabled or messaging.kafka.bootstrap, not both" }}
+{{- end }}
+{{- if and .Values.kafka.enabled (not .Values.kafka.auth.existingSecret) }}
+{{- fail "kafka.auth.existingSecret is required when kafka.enabled (keys client-password, inter-broker-password, controller-password)" }}
+{{- end }}
+{{- if and .Values.messaging.kafka.sasl.mechanism (not .Values.messaging.kafka.sasl.existingSecret) }}
+{{- fail "messaging.kafka.sasl.existingSecret is required when messaging.kafka.sasl.mechanism is set" }}
+{{- end }}
+{{- if and .Values.messaging.kafka.schemaRegistry.username (not .Values.messaging.kafka.schemaRegistry.existingSecret) }}
+{{- fail "messaging.kafka.schemaRegistry.existingSecret is required when messaging.kafka.schemaRegistry.username is set" }}
+{{- end }}
 {{- if not .Values.admin.tokensSecret.name }}
 {{- fail "admin.tokensSecret.name is required: FastMock never runs without admin authentication" }}
 {{- end }}
@@ -112,6 +124,26 @@ spec:
                   key: {{ .Values.storage.valkey.secretKey }}
             {{- end }}
             {{- end }}
+            {{- if .Values.kafka.enabled }}
+            - name: FASTMOCK_KAFKA_SASL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.kafka.auth.existingSecret }}
+                  key: client-password
+            {{- else if .Values.messaging.kafka.sasl.existingSecret }}
+            - name: FASTMOCK_KAFKA_SASL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.messaging.kafka.sasl.existingSecret }}
+                  key: {{ .Values.messaging.kafka.sasl.passwordKey }}
+            {{- end }}
+            {{- with .Values.messaging.kafka.schemaRegistry.existingSecret }}
+            - name: FASTMOCK_KAFKA_SCHEMA_REGISTRY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.messaging.kafka.schemaRegistry.passwordKey }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -155,6 +187,36 @@ spec:
               mountPath: /etc/fastmock/outbound-ca
               readOnly: true
             {{- end }}
+            {{- if (and (eq .Values.storage.mode "postgres") (include "fastmock.databaseCaSecret" .)) }}
+            - name: tls-database-ca
+              mountPath: /etc/fastmock/tls/database-ca
+              readOnly: true
+            {{- end }}
+            {{- if (and (eq .Values.storage.mode "postgres") .Values.storage.database.tls.clientCertSecret) }}
+            - name: tls-database-client
+              mountPath: /etc/fastmock/tls/database-client
+              readOnly: true
+            {{- end }}
+            {{- if (and (eq .Values.storage.mode "postgres") (not .Values.valkey.enabled) .Values.storage.valkey.tls.caSecret) }}
+            - name: tls-valkey-ca
+              mountPath: /etc/fastmock/tls/valkey-ca
+              readOnly: true
+            {{- end }}
+            {{- if (and (eq .Values.storage.mode "postgres") (not .Values.valkey.enabled) .Values.storage.valkey.tls.clientCertSecret) }}
+            - name: tls-valkey-client
+              mountPath: /etc/fastmock/tls/valkey-client
+              readOnly: true
+            {{- end }}
+            {{- if (and (not .Values.kafka.enabled) .Values.messaging.kafka.tls.caSecret) }}
+            - name: tls-kafka-ca
+              mountPath: /etc/fastmock/tls/kafka-ca
+              readOnly: true
+            {{- end }}
+            {{- if (and (not .Values.kafka.enabled) .Values.messaging.kafka.tls.clientCertSecret) }}
+            - name: tls-kafka-client
+              mountPath: /etc/fastmock/tls/kafka-client
+              readOnly: true
+            {{- end }}
       volumes:
         - name: admin-tokens
           secret:
@@ -176,6 +238,66 @@ spec:
             items:
               - key: {{ .Values.outboundCA.key }}
                 path: ca.crt
+        {{- end }}
+        {{- if (and (eq .Values.storage.mode "postgres") (include "fastmock.databaseCaSecret" .)) }}
+        - name: tls-database-ca
+          secret:
+            secretName: {{ include "fastmock.databaseCaSecret" . }}
+            items:
+              - key: {{ include "fastmock.databaseCaKey" . }}
+                path: ca.crt
+            defaultMode: 0440
+        {{- end }}
+        {{- if (and (eq .Values.storage.mode "postgres") .Values.storage.database.tls.clientCertSecret) }}
+        - name: tls-database-client
+          secret:
+            secretName: {{ .Values.storage.database.tls.clientCertSecret }}
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+            defaultMode: 0440
+        {{- end }}
+        {{- if (and (eq .Values.storage.mode "postgres") (not .Values.valkey.enabled) .Values.storage.valkey.tls.caSecret) }}
+        - name: tls-valkey-ca
+          secret:
+            secretName: {{ .Values.storage.valkey.tls.caSecret }}
+            items:
+              - key: {{ .Values.storage.valkey.tls.caKey }}
+                path: ca.crt
+            defaultMode: 0440
+        {{- end }}
+        {{- if (and (eq .Values.storage.mode "postgres") (not .Values.valkey.enabled) .Values.storage.valkey.tls.clientCertSecret) }}
+        - name: tls-valkey-client
+          secret:
+            secretName: {{ .Values.storage.valkey.tls.clientCertSecret }}
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+            defaultMode: 0440
+        {{- end }}
+        {{- if (and (not .Values.kafka.enabled) .Values.messaging.kafka.tls.caSecret) }}
+        - name: tls-kafka-ca
+          secret:
+            secretName: {{ .Values.messaging.kafka.tls.caSecret }}
+            items:
+              - key: {{ .Values.messaging.kafka.tls.caKey }}
+                path: ca.crt
+            defaultMode: 0440
+        {{- end }}
+        {{- if (and (not .Values.kafka.enabled) .Values.messaging.kafka.tls.clientCertSecret) }}
+        - name: tls-kafka-client
+          secret:
+            secretName: {{ .Values.messaging.kafka.tls.clientCertSecret }}
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+            defaultMode: 0440
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

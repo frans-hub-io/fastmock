@@ -46,16 +46,42 @@ data:
   {{- end }}
   FASTMOCK_CONTRACT_SECRETS: {{ join "," $bindings | quote }}
   {{- end }}
-  {{- with .Values.kafka.bootstrap }}
-  FASTMOCK_KAFKA_BOOTSTRAP: {{ join "," . | quote }}
+  {{- $kafka := .Values.messaging.kafka }}
+  {{- with include "fastmock.kafkaBootstrap" . }}
+  FASTMOCK_KAFKA_BOOTSTRAP: {{ . | quote }}
   {{- end }}
-  {{- with .Values.kafka.schemaRegistryUrl }}
+  {{- if .Values.kafka.enabled }}
+  FASTMOCK_KAFKA_SECURITY_PROTOCOL: "sasl_plaintext"
+  FASTMOCK_KAFKA_SASL_MECHANISM: "PLAIN"
+  FASTMOCK_KAFKA_SASL_USERNAME: {{ .Values.kafka.auth.clientUser | quote }}
+  {{- else }}
+  {{- with $kafka.securityProtocol }}
+  FASTMOCK_KAFKA_SECURITY_PROTOCOL: {{ . | quote }}
+  {{- end }}
+  {{- with $kafka.sasl.mechanism }}
+  FASTMOCK_KAFKA_SASL_MECHANISM: {{ . | quote }}
+  {{- end }}
+  {{- with $kafka.sasl.username }}
+  FASTMOCK_KAFKA_SASL_USERNAME: {{ . | quote }}
+  {{- end }}
+  {{- if $kafka.tls.caSecret }}
+  FASTMOCK_KAFKA_TLS_CA_FILE: "/etc/fastmock/tls/kafka-ca/ca.crt"
+  {{- end }}
+  {{- if $kafka.tls.clientCertSecret }}
+  FASTMOCK_KAFKA_TLS_CERT_FILE: "/etc/fastmock/tls/kafka-client/tls.crt"
+  FASTMOCK_KAFKA_TLS_KEY_FILE: "/etc/fastmock/tls/kafka-client/tls.key"
+  {{- end }}
+  {{- end }}
+  {{- with $kafka.schemaRegistry.url }}
   FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL: {{ . | quote }}
   {{- end }}
-  {{- with .Values.kafka.allowedTopics }}
+  {{- with $kafka.schemaRegistry.username }}
+  FASTMOCK_KAFKA_SCHEMA_REGISTRY_USERNAME: {{ . | quote }}
+  {{- end }}
+  {{- with $kafka.allowedTopics }}
   FASTMOCK_KAFKA_ALLOWED_TOPICS: {{ join "," . | quote }}
   {{- end }}
-  {{- with .Values.kafka.contractTopics }}
+  {{- with $kafka.contractTopics }}
   FASTMOCK_KAFKA_CONTRACT_TOPICS: {{ join "," . | quote }}
   {{- end }}
   {{- with .Values.admin.uiDataPlaneUrls }}
@@ -63,6 +89,30 @@ data:
   {{- end }}
   FASTMOCK_DB_MAX_CONNECTIONS: {{ .Values.storage.database.maxConnections | int64 | quote }}
   FASTMOCK_VALKEY_PREFIX: {{ .Values.storage.valkey.prefix | quote }}
+  {{- if eq .Values.storage.mode "postgres" }}
+  {{- with include "fastmock.databaseSslMode" . }}
+  FASTMOCK_DATABASE_SSL_MODE: {{ . | quote }}
+  {{- end }}
+  {{- if include "fastmock.databaseCaSecret" . }}
+  FASTMOCK_DATABASE_SSL_ROOT_CERT: "/etc/fastmock/tls/database-ca/ca.crt"
+  {{- end }}
+  {{- if .Values.storage.database.tls.clientCertSecret }}
+  FASTMOCK_DATABASE_SSL_CERT: "/etc/fastmock/tls/database-client/tls.crt"
+  FASTMOCK_DATABASE_SSL_KEY: "/etc/fastmock/tls/database-client/tls.key"
+  {{- end }}
+  {{- if not .Values.valkey.enabled }}
+  {{- with .Values.storage.valkey.username }}
+  FASTMOCK_VALKEY_USERNAME: {{ . | quote }}
+  {{- end }}
+  {{- if .Values.storage.valkey.tls.caSecret }}
+  FASTMOCK_VALKEY_TLS_CA_FILE: "/etc/fastmock/tls/valkey-ca/ca.crt"
+  {{- end }}
+  {{- if .Values.storage.valkey.tls.clientCertSecret }}
+  FASTMOCK_VALKEY_TLS_CERT_FILE: "/etc/fastmock/tls/valkey-client/tls.crt"
+  FASTMOCK_VALKEY_TLS_KEY_FILE: "/etc/fastmock/tls/valkey-client/tls.key"
+  {{- end }}
+  {{- end }}
+  {{- end }}
   {{- with .Values.plugins }}
   FASTMOCK_PLUGINS: {{ join "," . | quote }}
   {{- end }}

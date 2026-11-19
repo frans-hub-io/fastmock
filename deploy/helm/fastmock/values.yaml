@@ -52,11 +52,26 @@ limits:
   recordingMaxStubs: 1000
   headerReadTimeout: 30s
 
-kafka:
-  bootstrap: []
-  schemaRegistryUrl: ""
-  allowedTopics: []
-  contractTopics: []
+messaging:
+  kafka:
+    bootstrap: []
+    securityProtocol: ""
+    sasl:
+      mechanism: ""
+      username: ""
+      existingSecret: ""
+      passwordKey: password
+    tls:
+      caSecret: ""
+      caKey: ca.crt
+      clientCertSecret: ""
+    schemaRegistry:
+      url: ""
+      username: ""
+      existingSecret: ""
+      passwordKey: password
+    allowedTopics: []
+    contractTopics: []
 
 shutdownDelay: 5s
 terminationGracePeriodSeconds: 45
@@ -67,10 +82,20 @@ storage:
     existingSecret: ""
     secretKey: database-url
     maxConnections: 10
+    tls:
+      mode: ""
+      caSecret: ""
+      caKey: ca.crt
+      clientCertSecret: ""
   valkey:
     existingSecret: ""
     secretKey: valkey-url
     prefix: "fastmock:"
+    username: ""
+    tls:
+      caSecret: ""
+      caKey: ca.crt
+      clientCertSecret: ""
 
 postgresql:
   enabled: false
@@ -174,6 +199,43 @@ valkey:
     limits:
       cpu: 500m
       memory: 384Mi
+
+kafka:
+  enabled: false
+  image:
+    registry: docker.io
+    repository: apache/kafka
+    tag: "4.4.0"
+    imagePullPolicy: IfNotPresent
+  replicaCount: 1
+  podDisruptionBudget:
+    enabled: false
+  heapOpts: "-Xmx512m -Xms512m"
+  kafkaConfig:
+    numPartitions: 3
+    defaultReplicationFactor: 1
+    offsetsTopicReplicationFactor: 1
+    transactionStateLogReplicationFactor: 1
+    transactionStateLogMinIsr: 1
+    autoCreateTopicsEnable: true
+  auth:
+    client:
+      enabled: true
+    interBroker:
+      enabled: true
+    controller:
+      enabled: true
+    clientUser: fastmock
+    existingSecret: ""
+  persistence:
+    size: 8Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 768Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
 
 otel:
   endpoint: ""

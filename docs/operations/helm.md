@@ -1,7 +1,7 @@
 # Helm chart
 
 `deploy/helm/fastmock` installs one FastMock instance: a Deployment, separate Services for the data and admin
-ports, and optionally PostgreSQL and Valkey from maintained dependency charts, Gateway API routes, a
+ports, and optionally PostgreSQL, Valkey and Kafka from maintained dependency charts, Gateway API routes, a
 PodDisruptionBudget, an HPA, NetworkPolicies, a ServiceMonitor and a PrometheusRule. It needs Kubernetes 1.30 or
 newer.
 
@@ -10,9 +10,12 @@ newer.
 | PostgreSQL, single instance | [`postgres`](https://github.com/cloudpirates-io/helm-charts/tree/main/charts/postgres) from CloudPirates, official `postgres` image | `postgresql.enabled` | test environments without a managed database |
 | PostgreSQL cluster | [`cluster`](https://github.com/cloudnative-pg/charts/tree/main/charts/cluster) from CloudNativePG | `cnpg.enabled` | replicas, failover and backups through the CloudNativePG operator |
 | Valkey | [`valkey`](https://github.com/valkey-io/valkey-helm) from the Valkey project | `valkey.enabled` | a Valkey next to the release |
+| Apache Kafka, single broker | [`kafka`](https://github.com/cloudpirates-io/helm-charts/tree/main/charts/kafka) from CloudPirates, official `apache/kafka` image, KRaft, SASL/PLAIN | `kafka.enabled` | testing stubs that publish to Kafka without a shared cluster |
 
-With none of them enabled, FastMock connects to an external PostgreSQL and Valkey. When installing from a
-checkout, fetch the dependencies first:
+With none of them enabled, FastMock connects to an external PostgreSQL, Valkey and Kafka, over TLS and with
+authentication when configured (see [Secure connections](#secure-connections)). The values are validated against
+`values.schema.json`: unknown keys, wrong types and unsupported modes fail `helm install` with the offending key.
+When installing from a checkout, fetch the dependencies first:
 
 ```sh
 helm repo add cnpg https://cloudnative-pg.github.io/charts
@@ -27,6 +30,7 @@ For many instances managed declaratively, see the [operator](operator.md) instea
 - [Values](#values)
 - [Production checklist](#production-checklist)
 - [Exposing the admin UI with Gateway API](#exposing-the-admin-ui-with-gateway-api)
+- [Secure connections](#secure-connections)
 - [TLS and mTLS](#tls-and-mtls)
 - [NetworkPolicy](#networkpolicy)
 - [Upgrade notes](#upgrade-notes)
@@ -224,10 +228,21 @@ helm uninstall fastmock -n mocks
 | `limits.maxDelay` | `15m` | `FASTMOCK_MAX_DELAY` |
 | `limits.recordingMaxStubs` | `1000` | `FASTMOCK_RECORDING_MAX_STUBS` |
 | `limits.headerReadTimeout` | `30s` | `FASTMOCK_HEADER_READ_TIMEOUT` |
-| `kafka.bootstrap` | `[]` | `FASTMOCK_KAFKA_BOOTSTRAP` |
-| `kafka.schemaRegistryUrl` | `""` | `FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL` |
-| `kafka.allowedTopics` | `[]` | `FASTMOCK_KAFKA_ALLOWED_TOPICS` |
-| `kafka.contractTopics` | `[]` (reading disabled) | `FASTMOCK_KAFKA_CONTRACT_TOPICS`: topics AsyncAPI contract tests may read. |
+| `messaging.kafka.bootstrap` | `[]` | `FASTMOCK_KAFKA_BOOTSTRAP` of an external cluster (`host:port`). Not with `kafka.enabled`. |
+| `messaging.kafka.securityProtocol` | `""` (plaintext) | `plaintext`, `ssl`, `sasl_plaintext` or `sasl_ssl`. |
+| `messaging.kafka.sasl.mechanism`, `.username` | `""` | `PLAIN`, `SCRAM-SHA-256` or `SCRAM-SHA-512`, and the user. |
+| `messaging.kafka.sasl.existingSecret`, `.passwordKey` | `""`, `password` | Secret with the SASL password; required with a mechanism. |
+| `messaging.kafka.tls.caSecret`, `.caKey` | `""`, `ca.crt` | Secret with the CA bundle of the brokers, added to the public roots. |
+| `messaging.kafka.tls.clientCertSecret` | `""` | `kubernetes.io/tls` Secret with a client certificate (mTLS). |
+| `messaging.kafka.schemaRegistry.url` | `""` | `FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL`. |
+| `messaging.kafka.schemaRegistry.username`, `.existingSecret`, `.passwordKey` | `""`, `""`, `password` | Basic authentication for the registry. |
+| `messaging.kafka.allowedTopics` | `[]` | `FASTMOCK_KAFKA_ALLOWED_TOPICS` |
+| `messaging.kafka.contractTopics` | `[]` (reading disabled) | `FASTMOCK_KAFKA_CONTRACT_TOPICS`: topics AsyncAPI contract tests may read. |
+| `kafka.enabled` | `false` | Install the CloudPirates `kafka` chart (one broker, KRaft) and connect FastMock to it with SASL/PLAIN. |
+| `kafka.auth.existingSecret` | `""` (required when enabled) | Secret with `client-password`, `inter-broker-password` and `controller-password`. |
+| `kafka.auth.clientUser` | `fastmock` | SASL user FastMock connects as. |
+| `kafka.image.tag` | `4.4.0` | Official `apache/kafka` image. |
+| `kafka.persistence.size`, `kafka.resources` | `8Gi`, requests `250m`/`768Mi`, limits `1`/`1Gi` | Other keys: the [chart's values](https://github.com/cloudpirates-io/helm-charts/blob/main/charts/kafka/values.yaml). The chart runs the broker under the namespace's `default` ServiceAccount (without a token); clusters whose policies forbid that need an exception or an external Kafka. |
 | `plugins` | `[]` (all) | `FASTMOCK_PLUGINS` |
 | `pluginSettings` | `{}` | Map `plugin → {key: value}`, rendered as `FASTMOCK_PLUGIN_<PLUGIN>_<KEY>`. |
 
@@ -302,12 +317,21 @@ callbacks:
   allowedHosts:
     - "*.svc.cluster.local"
     - hooks.example.com
-kafka:
-  bootstrap:
-    - kafka-0.kafka.example.svc:9092
-  schemaRegistryUrl: http://schema-registry.kafka.example.svc:8081
-  allowedTopics:
-    - "orders.*"
+messaging:
+  kafka:
+    bootstrap:
+      - kafka-0.kafka.example.svc:9093
+    securityProtocol: sasl_ssl
+    sasl:
+      mechanism: SCRAM-SHA-512
+      username: fastmock
+      existingSecret: fastmock-kafka-user
+    tls:
+      caSecret: kafka-cluster-ca
+    schemaRegistry:
+      url: https://schema-registry.kafka.example.svc:8081
+    allowedTopics:
+      - "orders.*"
 otel:
   endpoint: http://otel-collector.observability.svc:4318
 metrics:
@@ -363,7 +387,8 @@ topologySpreadConstraints:
 - [ ] **Egress allow-list** `callbacks.allowedHosts` matching the egress NetworkPolicy.
 - [ ] **Stub secrets** listed explicitly in `secrets.stubSecrets`; contract-test secrets in
       `secrets.contractSecrets`, each bound only to the host of the service it belongs to.
-- [ ] **Kafka reads** for contract tests limited to the topics in `kafka.contractTopics` (empty disables them).
+- [ ] **Kafka reads** for contract tests limited to the topics in `messaging.kafka.contractTopics` (empty disables them).
+- [ ] **Encrypted, authenticated connections** to PostgreSQL (`verify-full`), Valkey (`rediss://` with an ACL user) and Kafka (`sasl_ssl`), see [Secure connections](#secure-connections).
 - [ ] **Replicas, PDB, spread**: at least 2 replicas, `pdb.enabled`, topology spread across nodes; HPA if load
       varies.
 - [ ] **Resources** sized: memory limit above `limits.maxInflightBodyBytes` plus stubs and caches;
@@ -411,6 +436,23 @@ spec:
 and set `admin.allowedOrigins: [https://fastmock-admin.example.com]` (requests from the UI at that origin are
 also accepted as same-origin when the Gateway forwards the original `Host`). Do not route `/metrics` publicly;
 Prometheus scrapes it inside the cluster. Allow the Gateway's pods in `networkPolicy.adminFrom`.
+
+## Secure connections
+
+FastMock verifies the server certificate of every database and broker it connects to and can present a client
+certificate. Certificates come from Secrets; the chart mounts them read-only under `/etc/fastmock/tls/` and sets
+the matching variables ([Configuration](configuration.md)).
+
+| Service | Values | Result |
+|---|---|---|
+| PostgreSQL | `storage.database.tls.mode` (`verify-full` recommended), `.caSecret`, `.clientCertSecret` | `FASTMOCK_DATABASE_SSL_MODE`, `_SSL_ROOT_CERT`, `_SSL_CERT`, `_SSL_KEY`; settings in the URL (`sslmode=...`) also work |
+| PostgreSQL with `cnpg.enabled` | nothing | `verify-full` against the CA Secret the operator creates (`<release>-cnpg-ca`) |
+| Valkey | a `rediss://` URL in `storage.valkey.existingSecret`, `storage.valkey.username`, `.tls.caSecret`, `.tls.clientCertSecret` | `FASTMOCK_VALKEY_USERNAME`, `_TLS_CA_FILE`, `_TLS_CERT_FILE`, `_TLS_KEY_FILE` |
+| Kafka | `messaging.kafka.securityProtocol`, `.sasl.*`, `.tls.*` | `FASTMOCK_KAFKA_SECURITY_PROTOCOL`, `_SASL_*`, `_TLS_*` |
+| Schema Registry | `messaging.kafka.schemaRegistry.*` with an `https://` URL | basic authentication, trusts `messaging.kafka.tls.caSecret` |
+
+CA Secrets need the key named in `caKey` (default `ca.crt`); client certificates are standard `kubernetes.io/tls`
+Secrets (`tls.crt`, `tls.key`), for example issued by cert-manager.
 
 ## TLS and mTLS
 

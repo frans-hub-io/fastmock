@@ -1,0 +1,23 @@
+admin:
+  tokensSecret:
+    name: fastmock-admin-tokens
+
+storage:
+  mode: memory
+
+replicaCount: 1
+
+kafka:
+  enabled: true
+  auth:
+    existingSecret: fastmock-kafka
+
+messaging:
+  kafka:
+    allowedTopics:
+      - "orders.*"
+
+networkPolicy:
+  enabled: true
+  egress:
+    enabled: true

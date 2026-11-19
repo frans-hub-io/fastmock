@@ -44,3 +44,35 @@ app.kubernetes.io/component: server
 {{- printf "%s-%s" $root.Release.Name .name | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 {{- end }}
+
+{{- define "fastmock.databaseCaSecret" -}}
+{{- if .Values.storage.database.tls.caSecret -}}
+{{- .Values.storage.database.tls.caSecret -}}
+{{- else if .Values.cnpg.enabled -}}
+{{- printf "%s-ca" (include "fastmock.dependencyFullname" (dict "root" . "name" "cnpg")) -}}
+{{- end -}}
+{{- end }}
+
+{{- define "fastmock.databaseCaKey" -}}
+{{- if .Values.storage.database.tls.caSecret -}}
+{{- .Values.storage.database.tls.caKey -}}
+{{- else -}}
+ca.crt
+{{- end -}}
+{{- end }}
+
+{{- define "fastmock.databaseSslMode" -}}
+{{- if .Values.storage.database.tls.mode -}}
+{{- .Values.storage.database.tls.mode -}}
+{{- else if .Values.cnpg.enabled -}}
+verify-full
+{{- end -}}
+{{- end }}
+
+{{- define "fastmock.kafkaBootstrap" -}}
+{{- if .Values.kafka.enabled -}}
+{{- printf "%s:9092" (include "fastmock.dependencyFullname" (dict "root" . "name" "kafka")) -}}
+{{- else -}}
+{{- join "," .Values.messaging.kafka.bootstrap -}}
+{{- end -}}
+{{- end }}
