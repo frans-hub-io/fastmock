@@ -719,6 +719,7 @@ async fn async_mocks_publish_to_kafka_from_one_leader() {
     let client = fastmock_kafka::KafkaPublisher::connect(&fastmock_kafka::KafkaSettings {
         bootstrap: vec![bootstrap],
         client_id: "fastmock-test".into(),
+        ..Default::default()
     })
     .await
     .unwrap();

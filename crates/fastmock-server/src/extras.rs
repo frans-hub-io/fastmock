@@ -70,19 +70,20 @@ pub fn topic_allowed(allowed: Option<&[String]>, topic: &str) -> bool {
 }
 
 impl KafkaHub {
-    pub fn new(
-        bootstrap: Option<Vec<String>>,
-        registry: Option<String>,
-        allowed_topics: Option<Vec<String>>,
-    ) -> anyhow::Result<Self> {
+    pub fn new(cfg: &crate::config::Config) -> anyhow::Result<Self> {
         Ok(Self {
-            settings: bootstrap.map(|b| KafkaSettings {
+            settings: cfg.kafka_bootstrap.clone().map(|b| KafkaSettings {
                 bootstrap: b,
                 client_id: "fastmock".into(),
+                security: cfg.kafka_security.clone(),
             }),
-            registry: registry.map(|r| SchemaRegistry::new(&r)).transpose()?,
+            registry: cfg
+                .kafka_schema_registry
+                .as_deref()
+                .map(|r| SchemaRegistry::with_options(r, &cfg.kafka_schema_registry_options))
+                .transpose()?,
             publisher: OnceCell::new(),
-            allowed_topics,
+            allowed_topics: cfg.kafka_allowed_topics.clone(),
         })
     }
 

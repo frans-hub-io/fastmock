@@ -108,7 +108,8 @@ in flight at a time.
 
 For every Kafka operation that the document says the application **publishes** (2.x `subscribe`, 3.0 `send`; the same
 selection and topic mapping as the [AsyncAPI import](asyncapi.md#what-is-imported)), FastMock connects to
-`FASTMOCK_KAFKA_BOOTSTRAP`, positions itself at the end of every partition of the topic (or at the earliest offset with
+`FASTMOCK_KAFKA_BOOTSTRAP` with the same TLS and SASL settings as the publisher
+([Secure connections](kafka.md#secure-connections)), positions itself at the end of every partition of the topic (or at the earliest offset with
 `fromBeginning`), and waits up to `waitMs` for `messageCount` messages. Each message is checked:
 
 - JSON messages must parse and validate against the message payload schema (a payload schema of type `string`

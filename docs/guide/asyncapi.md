@@ -25,7 +25,7 @@ of Microcks. To check that a real producer respects the same contract, see [Cont
 
 The examples use `FASTMOCK_TOKEN` for an editor or admin token and the admin API on `localhost:9090`. Kafka
 publishing needs `FASTMOCK_KAFKA_BOOTSTRAP` (and `FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL` for Avro), see
-[Kafka messages](kafka.md).
+[Kafka messages](kafka.md); TLS and SASL are described in [Secure connections](kafka.md#secure-connections).
 
 ## Importing a document
 

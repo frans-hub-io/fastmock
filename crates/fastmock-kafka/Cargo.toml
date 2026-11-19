@@ -11,7 +11,12 @@ chrono.workspace = true
 rand.workspace = true
 reqwest.workspace = true
 rskafka.workspace = true
+rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+webpki-roots.workspace = true
+
+[dev-dependencies]
+rcgen = { version = "0.14", features = ["pem"] }

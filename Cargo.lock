@@ -1128,12 +1128,15 @@ dependencies = [
  "apache-avro",
  "chrono",
  "rand 0.9.5",
+ "rcgen",
  "reqwest 0.12.28",
  "rskafka",
+ "rustls",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
+ "webpki-roots 1.0.12",
 ]
 
 [[package]]
@@ -3601,8 +3604,10 @@ dependencies = [
  "parking_lot 0.12.5",
  "rand 0.8.8",
  "rsasl",
+ "rustls",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-rustls",
  "tracing",
 ]
 

@@ -14,10 +14,73 @@ For mocking event-driven APIs described by AsyncAPI documents, see [AsyncAPI](as
 | `FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL` | Confluent-compatible Schema Registry, required for Avro messages. |
 | `FASTMOCK_KAFKA_ALLOWED_TOPICS` | Optional allow-list: exact topic names or prefixes ending in `*` (`orders.*`). Recommended in shared clusters. It controls publishing only. |
 | `FASTMOCK_KAFKA_CONTRACT_TOPICS` | Topics that AsyncAPI [contract tests](contract-testing.md#what-an-asyncapi-run-does) may read; empty (the default) disables reading. |
+| `FASTMOCK_KAFKA_SECURITY_PROTOCOL` and the `FASTMOCK_KAFKA_SASL_*`, `FASTMOCK_KAFKA_TLS_*` variables | TLS and SASL, see [Secure connections](#secure-connections). |
 
-The producer connects over plain TCP without SASL, on first use, and caches the partition count of each topic.
-Topics must exist; FastMock does not create them. In Helm these are the `kafka.*` values
-([Helm](../operations/helm.md#values)).
+The producer connects on first use and caches the partition count of each topic. Topics must exist; FastMock
+does not create them. In Helm these are the `kafka.*` values ([Helm](../operations/helm.md#values)).
+
+## Secure connections
+
+By default FastMock connects over plain TCP without authentication. `FASTMOCK_KAFKA_SECURITY_PROTOCOL` takes the
+Kafka names of the four combinations:
+
+| Protocol | TLS | SASL | Also needs |
+|---|---|---|---|
+| `plaintext` (default) | no | no | nothing |
+| `ssl` | yes | no | optionally `FASTMOCK_KAFKA_TLS_CA_FILE`, a client certificate for mTLS |
+| `sasl_plaintext` | no | yes | `FASTMOCK_KAFKA_SASL_MECHANISM`, `_USERNAME`, `_PASSWORD` |
+| `sasl_ssl` | yes | yes | both of the above |
+
+The same settings are used for stub messages, [async mocks](asyncapi.md) and AsyncAPI
+[contract tests](contract-testing.md#what-an-asyncapi-run-does).
+
+- **TLS** (rustls, TLS 1.2 and 1.3): the broker certificate is verified against the public Mozilla roots compiled
+  into the binary plus the certificates in `FASTMOCK_KAFKA_TLS_CA_FILE`; verification cannot be switched off. The
+  certificate must name the host of each broker address as Kafka advertises it (DNS name or IP address).
+- **mTLS**: `FASTMOCK_KAFKA_TLS_CERT_FILE` (leaf first, then intermediates) and `FASTMOCK_KAFKA_TLS_KEY_FILE`
+  (unencrypted PEM key) present a client certificate. Set both or neither.
+- **SASL**: `PLAIN`, `SCRAM-SHA-256` or `SCRAM-SHA-512`. Use `PLAIN` only over `sasl_ssl`; it sends the password
+  as is. OAUTHBEARER and GSSAPI (Kerberos) are not supported.
+- **Schema Registry**: `FASTMOCK_KAFKA_SCHEMA_REGISTRY_USERNAME` and `_PASSWORD` enable HTTP basic
+  authentication; an `https://` registry also trusts `FASTMOCK_KAFKA_TLS_CA_FILE`. Use `https://` when the
+  registry needs a password.
+
+Settings are checked at start-up: an unknown protocol or mechanism, missing credentials, a certificate without
+its key, an unreadable or empty PEM file, or SASL or TLS settings that the protocol does not use stop the server
+with an error naming the variable. The one exception is `FASTMOCK_KAFKA_TLS_CA_FILE` with `plaintext` or
+`sasl_plaintext`: it is accepted when the registry URL is `https://` and then used for the registry only.
+Passwords never appear in logs, errors or `/__admin/info`. The certificate files are read again on every new
+connection; the stub publisher keeps its connection, so restart the pods after rotating a client certificate.
+
+SASL_SSL with SCRAM, passwords from a Kubernetes Secret:
+
+```bash
+FASTMOCK_KAFKA_BOOTSTRAP=kafka-0.example.com:9093,kafka-1.example.com:9093
+FASTMOCK_KAFKA_SECURITY_PROTOCOL=SASL_SSL
+FASTMOCK_KAFKA_SASL_MECHANISM=SCRAM-SHA-512
+FASTMOCK_KAFKA_SASL_USERNAME=fastmock
+FASTMOCK_KAFKA_SASL_PASSWORD=<from a Secret>
+FASTMOCK_KAFKA_TLS_CA_FILE=/etc/fastmock/kafka/ca.crt
+FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL=https://registry.example.com
+FASTMOCK_KAFKA_SCHEMA_REGISTRY_USERNAME=fastmock
+FASTMOCK_KAFKA_SCHEMA_REGISTRY_PASSWORD=<from a Secret>
+```
+
+mTLS without SASL (for example Strimzi's `tls` listener with `authentication: tls`):
+
+```bash
+FASTMOCK_KAFKA_BOOTSTRAP=kafka-bootstrap.example.com:9093
+FASTMOCK_KAFKA_SECURITY_PROTOCOL=ssl
+FASTMOCK_KAFKA_TLS_CA_FILE=/etc/fastmock/kafka/ca.crt
+FASTMOCK_KAFKA_TLS_CERT_FILE=/etc/fastmock/kafka/user.crt
+FASTMOCK_KAFKA_TLS_KEY_FILE=/etc/fastmock/kafka/user.key
+```
+
+A broker that rejects the connection does not produce an error right away: the client retries until the
+connect timeout and the publication fails with `connecting to Kafka timed out`. The cause is in the warnings
+`Failed to connect to broker` logged before it, for example `invalid peer certificate: UnknownIssuer` (the CA is
+missing from `FASTMOCK_KAFKA_TLS_CA_FILE`), `received fatal alert: CertificateRequired` (the listener needs a
+client certificate) or `SaslAuthenticationFailed` (wrong user, password or mechanism).
 
 ## Defining messages
 
@@ -152,6 +215,7 @@ Example:
 | Symptom | Cause |
 |---|---|
 | `FASTMOCK_KAFKA_BOOTSTRAP is not configured` | Set the bootstrap servers. |
+| `connecting to Kafka timed out` | Network, or a TLS or SASL error; see the preceding `Failed to connect to broker` warnings ([Secure connections](#secure-connections)). |
 | `Kafka topic X does not exist` | Create the topic; FastMock does not create topics. |
 | `avroSchema needs FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL` | Configure the registry. |
 | `schema registry returned 409 ...` | The schema is not compatible with the latest version of `<topic>-value` under the registry's compatibility rules. |
