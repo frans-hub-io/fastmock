@@ -1,0 +1,35 @@
+apiVersion: mocks.microcks.io/v1alpha1
+kind: APIExamples
+metadata:
+  name: Movie Graph API
+  version: '1.0'
+operations:
+  film:
+    film 1:
+      request:
+        body:
+          query: |-
+            query film($id: ID!) { film(id: $id) { id title } }
+          variables:
+            id: ZmlsbXM6MQ==
+      response:
+        mediaType: application/json
+        body:
+          data:
+            film:
+              id: ZmlsbXM6MQ==
+              title: A New Hope
+              episodeID: 4
+    film 2:
+      request:
+        body:
+          query: |-
+            query film($id: ID!) { film(id: $id) { id title } }
+          variables:
+            id: ZmlsbXM6Mg==
+      response:
+        mediaType: application/json
+        body:
+          id: ZmlsbXM6Mg==
+          title: The Empire Strikes Back
+          episodeID: 5

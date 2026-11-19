@@ -1,0 +1,136 @@
+openapi: 3.0.3
+info:
+  title: API Pastry - 2.0
+  version: 2.0.0
+  x-microcks:
+    labels:
+      domain: pastry
+      status: GA
+paths:
+  /pastry:
+    get:
+      operationId: listPastries
+      parameters:
+        - name: size
+          in: query
+          schema:
+            type: string
+          examples:
+            small:
+              value: S
+            medium:
+              value: M
+      responses:
+        "200":
+          description: pastries of a size
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Pastry"
+              examples:
+                small:
+                  value:
+                    - name: Tartelette Fraise
+                      size: S
+                      price: 2
+                medium:
+                  value:
+                    - name: Eclair Cafe
+                      size: M
+                      price: 2.5
+    post:
+      operationId: createPastry
+      x-microcks-operation:
+        dispatcher: JSON_BODY
+        dispatcherRules: |-
+          {"exp": "/size", "operator": "equals", "cases": {"L": "large", "default": "regular"}}
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Pastry"
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              examples:
+                large:
+                  value:
+                    id: "{{ uuid() }}"
+                    name: "{{ request.body/name }}"
+                    note: large pastries take longer
+                regular:
+                  value:
+                    id: "{{ uuid() }}"
+                    name: "{{ request.body/name }}"
+  /pastry/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        examples:
+          Eclair Chocolat:
+            value: Eclair Chocolat
+          Millefeuille:
+            value: Millefeuille
+          Unknown:
+            value: Unknown
+    get:
+      operationId: getPastry
+      x-microcks-operation:
+        delay: 15
+        dispatcher: FALLBACK
+        dispatcherRules: |-
+          {"dispatcher": "URI_PARTS", "dispatcherRules": "name", "fallback": "Unknown"}
+      responses:
+        "200":
+          description: a pastry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pastry"
+              examples:
+                Eclair Chocolat:
+                  value:
+                    name: Eclair Chocolat
+                    size: M
+                    price: 2.5
+                    bakedAt: "{{ now(yyyy-MM-dd) }}"
+                Millefeuille:
+                  value:
+                    name: Millefeuille
+                    size: L
+                    price: 4.4
+        "404":
+          description: unknown pastry
+          content:
+            application/json:
+              examples:
+                Unknown:
+                  value:
+                    error: "pastry {{ request.path[1] }} not found"
+    delete:
+      operationId: deletePastry
+      responses:
+        "204":
+          description: deleted
+          x-microcks-refs:
+            - Eclair Chocolat
+components:
+  schemas:
+    Pastry:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        size:
+          type: string
+          enum: [S, M, L]
+        price:
+          type: number

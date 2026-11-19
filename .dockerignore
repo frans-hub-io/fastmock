@@ -1,0 +1,9 @@
+target
+.git
+**/*.md
+deploy
+docs
+ui/node_modules
+ui/dist
+ui/playwright-report
+ui/test-results

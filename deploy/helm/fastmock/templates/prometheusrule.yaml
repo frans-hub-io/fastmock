@@ -1,0 +1,58 @@
+{{- if .Values.metrics.prometheusRule.enabled }}
+{{- $ns := .Release.Namespace -}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "fastmock.fullname" . }}
+  labels:
+    {{- include "fastmock.labels" . | nindent 4 }}
+    {{- with .Values.metrics.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: fastmock
+      rules:
+        - alert: FastMockDown
+          expr: absent(up{namespace="{{ $ns }}", service="{{ include "fastmock.fullname" . }}-admin"} == 1)
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: FastMock in {{ $ns }} is not scraped as up
+        - alert: FastMockUnmatchedRequests
+          expr: sum(rate(fastmock_unmatched_requests_total{namespace="{{ $ns }}"}[10m])) / clamp_min(sum(rate(fastmock_requests_total{namespace="{{ $ns }}"}[10m])), 1e-9) > {{ .Values.metrics.prometheusRule.unmatchedRatio }}
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: More than {{ mul .Values.metrics.prometheusRule.unmatchedRatio 100 }}% of mock requests match no stub in {{ $ns }}
+        - alert: FastMockCallbacksFailing
+          expr: sum by (source) (rate(fastmock_callbacks_total{namespace="{{ $ns }}", result=~"failed|blocked"}[15m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Callbacks from {{ "{{" }} $labels.source {{ "}}" }} fail permanently in {{ $ns }}"
+        - alert: FastMockCallbackBacklog
+          expr: max(fastmock_callbacks_pending{namespace="{{ $ns }}"}) > {{ .Values.metrics.prometheusRule.callbackBacklog }}
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Callback outbox backlog is growing in {{ $ns }}
+        - alert: FastMockStorageErrors
+          expr: sum(rate(fastmock_store_errors_total{namespace="{{ $ns }}"}[5m])) + sum(rate(fastmock_journal_write_errors_total{namespace="{{ $ns }}"}[5m])) > 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: FastMock cannot read or write PostgreSQL or Valkey in {{ $ns }}
+        - alert: FastMockAdminAuthFailures
+          expr: sum(rate(fastmock_admin_auth_failures_total{namespace="{{ $ns }}"}[5m])) > 1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Repeated rejected admin API calls in {{ $ns }}
+{{- end }}

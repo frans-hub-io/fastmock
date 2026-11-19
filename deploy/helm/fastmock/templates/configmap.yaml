@@ -1,0 +1,81 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fastmock.fullname" . }}
+  labels:
+    {{- include "fastmock.labels" . | nindent 4 }}
+data:
+  FASTMOCK_LISTEN: "0.0.0.0:8080"
+  FASTMOCK_ADMIN_LISTEN: "0.0.0.0:9090"
+  FASTMOCK_STORAGE: {{ .Values.storage.mode | quote }}
+  FASTMOCK_LOG_FORMAT: {{ .Values.logFormat | quote }}
+  FASTMOCK_ADMIN_TOKENS_FILE: /etc/fastmock/admin/tokens
+  {{- if .Values.secrets.existingSecret }}
+  FASTMOCK_SECRETS_DIR: /etc/fastmock/secrets
+  {{- end }}
+  {{- with .Values.admin.allowedOrigins }}
+  FASTMOCK_ADMIN_ALLOWED_ORIGINS: {{ join "," . | quote }}
+  {{- end }}
+  {{- with .Values.callbacks.allowedHosts }}
+  FASTMOCK_CALLBACK_ALLOWED_HOSTS: {{ join "," . | quote }}
+  {{- end }}
+  {{- with .Values.callbacks.deniedCidrs }}
+  FASTMOCK_CALLBACK_DENIED_CIDRS: {{ . | quote }}
+  {{- end }}
+  FASTMOCK_CALLBACK_WORKERS: {{ .Values.callbacks.workers | int64 | quote }}
+  FASTMOCK_CALLBACK_TIMEOUT: {{ .Values.callbacks.timeout | quote }}
+  FASTMOCK_JOURNAL_RETENTION: {{ .Values.journal.retention | quote }}
+  FASTMOCK_JOURNAL_MAX_BODY_BYTES: {{ .Values.journal.maxBodyBytes | int64 | quote }}
+  FASTMOCK_MAX_BODY_BYTES: {{ .Values.limits.maxBodyBytes | int64 | quote }}
+  FASTMOCK_MAX_DELAY: {{ .Values.limits.maxDelay | quote }}
+  FASTMOCK_MAX_INFLIGHT_BODY_BYTES: {{ .Values.limits.maxInflightBodyBytes | int64 | quote }}
+  FASTMOCK_RECORDING_MAX_STUBS: {{ .Values.limits.recordingMaxStubs | int64 | quote }}
+  FASTMOCK_HEADER_READ_TIMEOUT: {{ .Values.limits.headerReadTimeout | quote }}
+  FASTMOCK_JOURNAL_QUEUE: {{ .Values.journal.queue | int64 | quote }}
+  FASTMOCK_JOURNAL_SCAN_TIMEOUT: {{ .Values.journal.scanTimeout | quote }}
+  FASTMOCK_JOURNAL_SCAN_MAX_WORK: {{ .Values.journal.scanMaxWork | int64 | quote }}
+  FASTMOCK_JOURNAL_SCAN_CONCURRENCY: {{ .Values.journal.scanConcurrency | int64 | quote }}
+  FASTMOCK_SHUTDOWN_DELAY: {{ .Values.shutdownDelay | quote }}
+  {{- with .Values.secrets.stubSecrets }}
+  FASTMOCK_STUB_SECRETS: {{ join "," . | quote }}
+  {{- end }}
+  {{- with .Values.secrets.contractSecrets }}
+  {{- $bindings := list }}
+  {{- range $name, $hosts := . }}
+  {{- $bindings = append $bindings (printf "%s=%s" $name (join "|" $hosts)) }}
+  {{- end }}
+  FASTMOCK_CONTRACT_SECRETS: {{ join "," $bindings | quote }}
+  {{- end }}
+  {{- with .Values.kafka.bootstrap }}
+  FASTMOCK_KAFKA_BOOTSTRAP: {{ join "," . | quote }}
+  {{- end }}
+  {{- with .Values.kafka.schemaRegistryUrl }}
+  FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.kafka.allowedTopics }}
+  FASTMOCK_KAFKA_ALLOWED_TOPICS: {{ join "," . | quote }}
+  {{- end }}
+  {{- with .Values.kafka.contractTopics }}
+  FASTMOCK_KAFKA_CONTRACT_TOPICS: {{ join "," . | quote }}
+  {{- end }}
+  {{- with .Values.admin.uiDataPlaneUrls }}
+  FASTMOCK_UI_DATA_PLANE_URL: {{ join "," . | quote }}
+  {{- end }}
+  FASTMOCK_DB_MAX_CONNECTIONS: {{ .Values.storage.database.maxConnections | int64 | quote }}
+  FASTMOCK_VALKEY_PREFIX: {{ .Values.storage.valkey.prefix | quote }}
+  {{- with .Values.plugins }}
+  FASTMOCK_PLUGINS: {{ join "," . | quote }}
+  {{- end }}
+  {{- range $plugin, $settings := .Values.pluginSettings }}
+  {{- range $key, $value := $settings }}
+  {{ include "fastmock.pluginEnvName" (dict "plugin" $plugin "key" $key) }}: {{ $value | toString | quote }}
+  {{- end }}
+  {{- end }}
+  {{- if .Values.otel.endpoint }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.otel.endpoint | quote }}
+  OTEL_EXPORTER_OTLP_PROTOCOL: {{ .Values.otel.protocol | quote }}
+  OTEL_SERVICE_NAME: {{ .Values.otel.serviceName | quote }}
+  {{- with .Values.otel.resourceAttributes }}
+  OTEL_RESOURCE_ATTRIBUTES: {{ . | quote }}
+  {{- end }}
+  {{- end }}

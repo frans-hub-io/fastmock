@@ -1,0 +1,181 @@
+{{- $fullname := include "fastmock.fullname" . -}}
+{{- if and (eq .Values.storage.mode "postgres") (not .Values.postgresql.enabled) (not .Values.storage.database.existingSecret) }}
+{{- fail "storage.database.existingSecret is required when postgresql.enabled is false" }}
+{{- end }}
+{{- if and (eq .Values.storage.mode "postgres") (not .Values.valkey.enabled) (not .Values.storage.valkey.existingSecret) }}
+{{- fail "storage.valkey.existingSecret is required when valkey.enabled is false" }}
+{{- end }}
+{{- if not .Values.admin.tokensSecret.name }}
+{{- fail "admin.tokensSecret.name is required: FastMock never runs without admin authentication" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "fastmock.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      {{- include "fastmock.selector" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        {{- include "fastmock.selector" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "fastmock.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: fastmock
+          image: {{ include "fastmock.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["serve"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ $fullname }}
+          env:
+            {{- if .Values.outboundCA.configMap }}
+            - name: FASTMOCK_OUTBOUND_CA_FILE
+              value: /etc/fastmock/outbound-ca/ca.crt
+            {{- end }}
+            {{- if eq .Values.storage.mode "postgres" }}
+            {{- if .Values.postgresql.enabled }}
+            - name: FASTMOCK_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "postgresql.auth.existingSecret is required" .Values.postgresql.auth.existingSecret }}
+                  key: {{ .Values.postgresql.auth.passwordKey }}
+            - name: FASTMOCK_DATABASE_URL
+              value: {{ printf "postgres://%s@%s-postgresql:5432/%s" .Values.postgresql.username $fullname .Values.postgresql.database | quote }}
+            {{- else }}
+            - name: FASTMOCK_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.database.existingSecret }}
+                  key: {{ .Values.storage.database.secretKey }}
+            {{- end }}
+            {{- if .Values.valkey.enabled }}
+            - name: FASTMOCK_VALKEY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "valkey.auth.existingSecret is required" .Values.valkey.auth.existingSecret }}
+                  key: {{ .Values.valkey.auth.passwordKey }}
+            - name: FASTMOCK_VALKEY_URL
+              value: {{ printf "redis://%s-valkey:6379/" $fullname | quote }}
+            {{- else }}
+            - name: FASTMOCK_VALKEY_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.valkey.existingSecret }}
+                  key: {{ .Values.storage.valkey.secretKey }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: admin
+              containerPort: 9090
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            periodSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: admin
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: admin-tokens
+              mountPath: /etc/fastmock/admin
+              readOnly: true
+            {{- if .Values.secrets.existingSecret }}
+            - name: secrets
+              mountPath: /etc/fastmock/secrets
+              readOnly: true
+            {{- end }}
+            {{- if .Values.outboundCA.configMap }}
+            - name: outbound-ca
+              mountPath: /etc/fastmock/outbound-ca
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: admin-tokens
+          secret:
+            secretName: {{ .Values.admin.tokensSecret.name }}
+            items:
+              - key: {{ .Values.admin.tokensSecret.key }}
+                path: tokens
+            defaultMode: 0440
+        {{- if .Values.secrets.existingSecret }}
+        - name: secrets
+          secret:
+            secretName: {{ .Values.secrets.existingSecret }}
+            defaultMode: 0440
+        {{- end }}
+        {{- if .Values.outboundCA.configMap }}
+        - name: outbound-ca
+          configMap:
+            name: {{ .Values.outboundCA.configMap }}
+            items:
+              - key: {{ .Values.outboundCA.key }}
+                path: ca.crt
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

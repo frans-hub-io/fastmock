@@ -1,0 +1,109 @@
+.root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  height: var(--fm-header-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--mantine-spacing-sm);
+  padding: 0 var(--mantine-spacing-md);
+  border-bottom: 1px solid var(--mantine-color-default-border);
+  background: var(--mantine-color-body);
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+  font-size: 1.1rem;
+  color: var(--mantine-color-text);
+  text-decoration: none;
+}
+
+.logo {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: linear-gradient(135deg, var(--mantine-color-indigo-6), var(--mantine-color-violet-6));
+  display: grid;
+  place-items: center;
+  color: white;
+  font-weight: 800;
+  font-size: 0.95rem;
+}
+
+.body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.sideCol {
+  width: var(--fm-sidebar-width);
+  flex-shrink: 0;
+  border-right: 1px solid var(--mantine-color-default-border);
+  background: var(--fm-sidebar-bg);
+}
+
+.sidebar {
+  position: sticky;
+  top: var(--fm-header-height);
+  height: calc(100vh - var(--fm-header-height));
+  overflow-y: auto;
+  padding: var(--mantine-spacing-sm);
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  padding: var(--mantine-spacing-lg);
+  max-width: 1600px;
+}
+
+.group {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--mantine-color-dimmed);
+  padding: 10px var(--mantine-spacing-xs) 2px;
+}
+
+.navLink {
+  border-radius: var(--mantine-radius-md);
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.skip {
+  position: absolute;
+  left: -9999px;
+  top: 8px;
+  z-index: 100;
+  padding: 8px 12px;
+  background: var(--mantine-color-body);
+  border: 2px solid var(--mantine-primary-color-filled);
+  border-radius: var(--mantine-radius-md);
+}
+
+.skip:focus {
+  left: 8px;
+}
+
+@media (max-width: 61.99em) {
+  .sideCol {
+    display: none;
+  }
+
+  .main {
+    padding: var(--mantine-spacing-md);
+  }
+}

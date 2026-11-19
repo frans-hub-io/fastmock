@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<con:soapui-project id="b1" activeEnvironment="Default" name="HelloService" soapui-version="5.7.0" abortOnError="false" runType="SEQUENTIAL" xmlns:con="http://eviware.com/soapui/config">
+  <con:settings/>
+  <con:interface xsi:type="con:WsdlInterface" id="i1" wsaVersion="NONE" name="HelloServiceSoapBinding" type="wsdl" bindingName="{http://www.example.com/hello}HelloServiceSoapBinding" soapVersion="1_1" anonymous="optional" definition="file:/hello.wsdl" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <con:settings/>
+    <con:endpoints><con:endpoint>http://www.example.com/services/HelloService</con:endpoint></con:endpoints>
+    <con:operation id="o1" isOneWay="false" action="http://www.example.com/hello/sayHello" name="sayHello" bindingOperationName="sayHello" type="Request-Response" inputName="" receivesAttachments="false" sendsAttachments="false" anonymous="optional">
+      <con:settings/>
+      <con:call id="c1" name="Andrew Request">
+        <con:settings/>
+        <con:encoding>UTF-8</con:encoding>
+        <con:endpoint>http://www.example.com/services/HelloService</con:endpoint>
+        <con:request><![CDATA[<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:hel="http://www.example.com/hello">
+   <soapenv:Header/>
+   <soapenv:Body>
+      <hel:sayHello>
+         <name>Andrew</name>
+      </hel:sayHello>
+   </soapenv:Body>
+</soapenv:Envelope>]]></con:request>
+      </con:call>
+    </con:operation>
+    <con:operation id="o2" isOneWay="false" action="" name="getBalance" bindingOperationName="getBalance" type="Request-Response" inputName="" receivesAttachments="false" sendsAttachments="false" anonymous="optional">
+      <con:settings/>
+      <con:call id="c2" name="Default Request">
+        <con:settings/>
+        <con:request><![CDATA[<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:hel="http://www.example.com/hello"><soapenv:Body><hel:getBalance><msisdn>?</msisdn></hel:getBalance></soapenv:Body></soapenv:Envelope>]]></con:request>
+      </con:call>
+    </con:operation>
+    <con:operation id="o3" isOneWay="false" action="urn:ping" name="ping" bindingOperationName="ping" type="Request-Response" inputName="" receivesAttachments="false" sendsAttachments="false" anonymous="optional">
+      <con:settings/>
+    </con:operation>
+    <con:operation id="o4" isOneWay="false" action="urn:audit" name="audit" bindingOperationName="audit" type="Request-Response" inputName="" receivesAttachments="false" sendsAttachments="false" anonymous="optional">
+      <con:settings/>
+    </con:operation>
+  </con:interface>
+  <con:mockService id="m1" port="8088" path="/HelloService" host="localhost" name="HelloService Mock" bindToHostOnly="false" docroot="">
+    <con:settings/>
+    <con:properties>
+      <con:property><con:name>version</con:name><con:value>0.9</con:value></con:property>
+    </con:properties>
+    <con:mockOperation name="sayHello" id="mo1" interface="HelloServiceSoapBinding" operation="sayHello">
+      <con:settings/>
+      <con:defaultResponse>Default Response</con:defaultResponse>
+      <con:dispatchStyle>QUERY_MATCH</con:dispatchStyle>
+      <con:response name="Andrew Response" id="r1" httpResponseStatus="200" encoding="UTF-8">
+        <con:settings/>
+        <con:responseContent><![CDATA[<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:hel="http://www.example.com/hello">
+   <soapenv:Header/>
+   <soapenv:Body>
+      <hel:sayHelloResponse>
+         <sayHello>Hello Andrew !</sayHello>
+         <id>${ uuid() }</id>
+      </hel:sayHelloResponse>
+   </soapenv:Body>
+</soapenv:Envelope>]]></con:responseContent>
+        <con:header><con:name>X-Greeting</con:name><con:value>andrew</con:value></con:header>
+        <con:wsaConfig mustUnderstand="NONE" version="200508" action="http://www.example.com/hello/sayHelloResponse"/>
+      </con:response>
+      <con:response name="Karla Response" id="r2" httpResponseStatus="200" encoding="UTF-8">
+        <con:settings/>
+        <con:responseContent><![CDATA[<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:hel="http://www.example.com/hello"><soapenv:Body><hel:sayHelloResponse><sayHello>Hello Karla !</sayHello></hel:sayHelloResponse></soapenv:Body></soapenv:Envelope>]]></con:responseContent>
+      </con:response>
+      <con:response name="Default Response" id="r3" httpResponseStatus="500" encoding="UTF-8">
+        <con:settings/>
+        <con:responseContent><![CDATA[<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"><soapenv:Body><soapenv:Fault><faultcode>soapenv:Client</faultcode><faultstring>Unknown name</faultstring></soapenv:Fault></soapenv:Body></soapenv:Envelope>]]></con:responseContent>
+      </con:response>
+      <con:dispatchConfig xsi:type="con:MockOperationQueryMatchDispatch" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+        <con:query>
+          <con:name>Andrew</con:name>
+          <con:query>declare namespace hel='http://www.example.com/hello';
+//hel:sayHello/name</con:query>
+          <con:match>Andrew</con:match>
+          <con:response>Andrew Response</con:response>
+        </con:query>
+        <con:query>
+          <con:name>Karla</con:name>
+          <con:query>declare namespace hel='http://www.example.com/hello';
+//hel:sayHello/name</con:query>
+          <con:match>Karla</con:match>
+          <con:response>Karla Response</con:response>
+        </con:query>
+      </con:dispatchConfig>
+    </con:mockOperation>
+    <con:mockOperation name="getBalance" id="mo2" interface="HelloServiceSoapBinding" operation="getBalance">
+      <con:settings/>
+      <con:defaultResponse>Rich</con:defaultResponse>
+      <con:dispatchStyle>XPATH</con:dispatchStyle>
+      <con:dispatchPath>declare namespace hel='http://www.example.com/hello';
+//hel:getBalance/msisdn</con:dispatchPath>
+      <con:response name="380501234567" id="r4" httpResponseStatus="200">
+        <con:settings/>
+        <con:responseContent><![CDATA[<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"><soapenv:Body><getBalanceResponse><amount>10.50</amount></getBalanceResponse></soapenv:Body></soapenv:Envelope>]]></con:responseContent>
+      </con:response>
+      <con:response name="Rich" id="r5" httpResponseStatus="200">
+        <con:settings/>
+        <con:responseContent><![CDATA[<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"><soapenv:Body><getBalanceResponse><amount>1000000</amount></getBalanceResponse></soapenv:Body></soapenv:Envelope>]]></con:responseContent>
+      </con:response>
+    </con:mockOperation>
+    <con:mockOperation name="ping" id="mo3" interface="HelloServiceSoapBinding" operation="ping">
+      <con:settings/>
+      <con:dispatchStyle>SEQUENCE</con:dispatchStyle>
+      <con:response name="first" id="r6" httpResponseStatus="200">
+        <con:settings/>
+        <con:responseContent><![CDATA[<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"><soapenv:Body><pong>1</pong></soapenv:Body></soapenv:Envelope>]]></con:responseContent>
+      </con:response>
+      <con:response name="second" id="r7" httpResponseStatus="200">
+        <con:settings/>
+        <con:responseContent><![CDATA[<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"><soapenv:Body><pong>2</pong></soapenv:Body></soapenv:Envelope>]]></con:responseContent>
+      </con:response>
+    </con:mockOperation>
+    <con:mockOperation name="audit" id="mo4" interface="HelloServiceSoapBinding" operation="audit">
+      <con:settings/>
+      <con:dispatchStyle>SCRIPT</con:dispatchStyle>
+      <con:dispatchPath>return "ok"</con:dispatchPath>
+      <con:response name="ok" id="r8" httpResponseStatus="200">
+        <con:settings/>
+        <con:responseContent><![CDATA[<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"><soapenv:Body><audited/></soapenv:Body></soapenv:Envelope>]]></con:responseContent>
+      </con:response>
+    </con:mockOperation>
+  </con:mockService>
+</con:soapui-project>

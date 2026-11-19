@@ -1,0 +1,50 @@
+# microcksId: Movie Graph API : 1.0
+schema {
+  query: Query
+  mutation: Mutation
+}
+
+"A film of the saga"
+type Film {
+  id: ID!
+  title: String!
+  episodeID: Int
+  director: String
+  starCount: Int
+  rating: Float
+  released: Boolean
+  genre: Genre
+  reviews: [Review!]!
+}
+
+type Review {
+  id: ID!
+  comment: String
+  stars: Int
+  film: Film
+}
+
+enum Genre {
+  SCIFI
+  DRAMA
+}
+
+input ReviewInput {
+  comment: String
+  stars: Int!
+}
+
+type Query {
+  allFilms: FilmsConnection
+  film(id: ID!): Film
+}
+
+type FilmsConnection {
+  totalCount: Int
+  films: [Film]
+}
+
+type Mutation {
+  addStar(filmId: ID!): Film
+  addReview(filmId: ID!, review: ReviewInput!): Review
+}

@@ -1,0 +1,24 @@
+.host {
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-md);
+  background: #fff;
+  overflow: hidden;
+}
+
+.host :global(.swagger-ui .information-container) {
+  padding-top: 0;
+}
+
+.host :global(.swagger-ui .topbar) {
+  display: none;
+}
+
+:global([data-mantine-color-scheme='dark']) .host {
+  filter: invert(0.9) hue-rotate(180deg);
+  border-color: #ccc;
+}
+
+:global([data-mantine-color-scheme='dark']) .host :global(.swagger-ui img),
+:global([data-mantine-color-scheme='dark']) .host :global(.swagger-ui .microlight) {
+  filter: invert(1) hue-rotate(180deg);
+}

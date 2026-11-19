@@ -1,0 +1,274 @@
+# Security
+
+FastMock runs in test environments next to real services, receives traffic that may contain real credentials,
+and sends requests into internal networks. It is built to be safe by default there. This page describes the
+security model and how to harden a deployment. To report a vulnerability, see [SECURITY.md](../../SECURITY.md).
+
+- [Model](#model)
+- [Admin tokens and roles](#admin-tokens-and-roles)
+- [Rotating tokens](#rotating-tokens)
+- [Browsers, origins and the UI](#browsers-origins-and-the-ui)
+- [TLS and mTLS](#tls-and-mtls)
+- [Egress policy](#egress-policy)
+- [Secrets](#secrets)
+- [Redaction](#redaction)
+- [Template sandbox](#template-sandbox)
+- [Resource limits](#resource-limits)
+- [Audit log](#audit-log)
+- [Containers and Kubernetes](#containers-and-kubernetes)
+- [Supply chain](#supply-chain)
+- [Hardening checklist](#hardening-checklist)
+
+## Model
+
+| Principle | How |
+|---|---|
+| The system under test cannot change its mocks | Mocks and the control plane are on different ports; no admin route exists on the data port. |
+| Every control-plane call is authenticated | Bearer tokens with roles, compared as SHA-256 hashes in constant time. There is no anonymous mode except an explicit local-development switch. |
+| Security settings are not runtime state | Tokens, origins, egress policy, secrets, storage and listeners come from the environment at start-up and cannot be changed through the API or the UI. |
+| Mock definitions are data, never code | Templates are a closed language without file, environment, secret or network access; imports never execute anything. |
+| Outgoing traffic follows one policy | Callbacks, proxy stubs and recording use one HTTP client with one egress policy. |
+| What is stored is masked | Secrets in headers, query strings and bodies are masked before they reach the journal, the callbacks API, the UI or logs. |
+| Every input is bounded | Sizes, counts, nesting depth, regex size, template output and time are limited. |
+| Every change is audited | Admin changes are recorded with principal, role, action and details. |
+
+The data plane is intentionally unauthenticated: it imitates other services, and those services' credentials
+are part of what the mocks match on. Restrict who can reach it with network policies.
+
+## Admin tokens and roles
+
+Tokens are random strings; FastMock stores only their SHA-256 hash:
+
+```sh
+fastmock hash-token --generate      # new token: prints "token: fm_..." and "hash:  ..."
+fastmock hash-token 'existing-token'
+```
+
+Configure entries as `name:role:sha256hex` in `FASTMOCK_ADMIN_TOKENS` or, preferably, one per line in the file
+named by `FASTMOCK_ADMIN_TOKENS_FILE` (the Helm chart and the operator mount it from a Secret). The `name`
+appears in the audit log, logs and `GET /__admin/info`, so give every client its own token: `ci-payments`,
+`ops-alice`, `grafana`.
+
+| Role | May |
+|---|---|
+| `viewer` | Read everything: stubs (with credentials masked, see [Redaction](#redaction)), journal, callbacks, scenarios, key-value entries, imports, recordings, plugins, info, contract-test verdicts; run read-only queries such as request counts and near-miss analysis. |
+| `editor` | Everything a viewer may, plus every change a test makes: stubs, imports, journal and callback cleanup, scenario states, key-value entries, chaos rules, recordings, gRPC descriptors, plugin admin calls. |
+| `admin` | Everything, plus deleting all stubs at once, `POST /__admin/reset`, reading the audit log and starting contract tests that send server-side secrets (`secretHeaders`). |
+
+`GET` and `HEAD` need `viewer`, other methods `editor`, unless an endpoint says otherwise (the
+[Admin API](../guide/admin-api.md) lists the role of each endpoint). Responses: `401 {"error":"unauthorized","details":[]}`
+with `WWW-Authenticate: Bearer` for a missing or wrong token, `403 {"error":"forbidden","details":["requires role editor"],"required":"editor"}`
+for a role that is too low. Tokens longer than 512 characters are rejected without hashing.
+
+Editors can change everything that tests change, including which callbacks go where (within the egress policy).
+Give `editor` to automated test clients and the people who maintain mocks, `viewer` to dashboards and readers,
+`admin` to operators. Teams that must not affect each other should get separate FastMock instances (the
+[operator](operator.md) makes that cheap) rather than separate tokens on one instance.
+
+`FASTMOCK_AUTH_DISABLED=true` turns authentication off for a laptop. The server logs a warning, and the operator
+refuses the variable.
+
+## Rotating tokens
+
+Token files are read at start-up. To rotate without downtime:
+
+1. Add an entry for the new token next to the old one (`ci-payments-2026q4:editor:<new hash>`).
+2. Roll the pods. With Helm: update the Secret, then `kubectl rollout restart deploy/<fullname>` (pods are
+   replaced one by one, the old token keeps working). With the operator: update the Secret referenced by
+   `adminTokensSecret`; the operator notices the change and rolls the Deployment.
+3. Switch the clients to the new token.
+4. Remove the old entry and roll again.
+
+`fastmock_admin_auth_failures_total{reason="token"}` and `audit` log lines
+(`admin request rejected: missing or invalid token`) show clients that still use a removed token. The operator's
+own token lives in `<name>-operator-token`; delete that Secret to make the operator generate a new one.
+
+## Browsers, origins and the UI
+
+A browser that visits a malicious page could otherwise be used to call an admin port it can reach (including
+through DNS rebinding). FastMock refuses every admin request with an `Origin` header unless:
+
+- the origin is listed in `FASTMOCK_ADMIN_ALLOWED_ORIGINS` (exact `scheme://host[:port]`), or
+- the origin is the admin server itself (`Origin` equals `http(s)://` plus the request's `Host`), which is how
+  the built-in UI calls the API.
+
+Refusals answer `403 {"error":"origin not allowed","details":[]}` and count as
+`fastmock_admin_auth_failures_total{reason="origin"}`. Non-browser clients do not send `Origin` and are not
+affected.
+
+The UI is a static application served from the admin port. It authenticates every call with the bearer token,
+which it keeps only in the tab's session storage (no cookies, so no cross-site request forgery). It is delivered
+with a strict Content-Security-Policy (`default-src 'none'`, `script-src 'self'`, `frame-ancestors 'none'`, no
+inline or third-party scripts) and renders data as text, never as HTML. Publish it only over TLS (see [Helm: Gateway API](helm.md#exposing-the-admin-ui-with-gateway-api)) and set
+`FASTMOCK_ADMIN_ALLOWED_ORIGINS` to its public URL.
+
+## TLS and mTLS
+
+- **Data port:** `FASTMOCK_TLS_CERT_FILE` and `FASTMOCK_TLS_KEY_FILE` enable HTTPS with HTTP/2 and HTTP/1.1
+  (rustls, TLS 1.2 and 1.3 only). `FASTMOCK_TLS_CLIENT_CA_FILE` enables client certificate verification;
+  `FASTMOCK_TLS_CLIENT_AUTH=required` (default) rejects clients without a valid certificate. The SHA-256
+  fingerprint of a verified client certificate is passed to stubs as `x-fastmock-client-cert-sha256`; a header
+  of that name sent by a client is removed first, so it cannot be forged. TLS handshake failures are counted in
+  `fastmock_tls_handshake_failures_total`.
+- **Admin port:** plain HTTP; terminate TLS at the Gateway or ingress and keep the port reachable only from
+  inside the cluster.
+- **PostgreSQL:** use `sslmode=verify-full` in `FASTMOCK_DATABASE_URL`.
+- **Outgoing:** callbacks, proxy stubs and recording to `https://` URLs verify the server certificate against
+  the public Mozilla root certificates compiled into the binary (`webpki-roots`), plus the certificates in
+  `FASTMOCK_OUTBOUND_CA_FILE` when it is set (Helm: `outboundCA.configMap`). Use it for receivers whose
+  certificates are issued by your organisation's CA; certificate verification is never switched off.
+
+## Egress policy
+
+Everything FastMock sends on behalf of stubs (callbacks, proxy stubs, recording) goes through one HTTP client:
+
+- schemes `http` and `https` only; user names and passwords in URLs are refused;
+- redirects are never followed; proxy settings from the environment are ignored;
+- `FASTMOCK_CALLBACK_ALLOWED_HOSTS`: when set, only these host names (`hooks.example.com`) or suffixes
+  (`*.svc.cluster.local`) are contacted;
+- `FASTMOCK_CALLBACK_DENIED_CIDRS`: address ranges that are never contacted. The default covers loopback,
+  link-local (cloud metadata endpoints), unspecified and multicast addresses; IPv4 addresses embedded in IPv6 are
+  checked as IPv4. The check runs on every resolved address inside the DNS resolver, so the address that is
+  checked is the address that is connected to.
+
+Recommended: set `FASTMOCK_CALLBACK_ALLOWED_HOSTS` to the services your mocks call back, and add a Kubernetes
+egress NetworkPolicy with the same scope ([Helm: NetworkPolicy](helm.md#networkpolicy)). Add internal ranges
+such as the cluster's service and pod CIDRs or `10.0.0.0/8` to the denied list when callbacks only go to
+external receivers.
+
+## Secrets
+
+- Secrets come from files in `FASTMOCK_SECRETS_DIR` (a mounted Secret) or `FASTMOCK_SECRET_<NAME>` variables.
+  Names are validated, so a secret reference cannot read other files.
+- Stubs can use a secret only for HMAC signatures of callbacks, only by name, and only if the name is listed in
+  `FASTMOCK_STUB_SECRETS`. Templates cannot read secrets at all.
+- Contract tests can send a secret as a header value only if it is listed in `FASTMOCK_CONTRACT_SECRETS`, only to
+  the hosts bound to it there, never to FastMock's own listeners, and only in runs started by an `admin`. A name
+  cannot be both a stub secret and a contract secret, so HMAC keys never leave the server. Values of contract
+  secrets are masked wherever they appear in stored run results and in the journal
+  ([Contract testing](../guide/contract-testing.md#secrets-and-redaction)).
+- Plugins read their own secrets (for example a provider's signing key); they are not exposed to stubs.
+- Database and Valkey passwords can be passed separately (`FASTMOCK_DATABASE_PASSWORD`,
+  `FASTMOCK_VALKEY_PASSWORD`) so they never appear in URLs, ConfigMaps or command lines.
+- `GET /__admin/info`, API errors and logs do not include secret values or connection URLs.
+
+## Redaction
+
+Before a request, a response or a callback is stored or shown, FastMock masks secrets as `***`:
+
+| Where | What is masked |
+|---|---|
+| Headers | Names in `FASTMOCK_REDACT_HEADERS` (authorization, cookies, API keys, signatures and more) and every header whose name contains `token`, `secret`, `password`, `key`, `signature`, `sig`, `hmac` or `credential`. `Authorization: Bearer x` becomes `Bearer ***`, keeping the scheme. |
+| Query strings | Parameters named in `FASTMOCK_REDACT_JSON_KEYS` (`?access_token=***`). |
+| JSON bodies | Values of keys in `FASTMOCK_REDACT_JSON_KEYS` at any depth (`password`, `token`, `client_secret`, `otp`, `pin`, `cvv`, ...). Key matching ignores case, `-` and `_`. |
+| Form, multipart and XML bodies | The same keys as form fields, multipart part names, XML elements and attributes. |
+| Logs | Callback URLs are logged without query strings; delivery errors never contain the URL. |
+
+Redaction is applied to the journal, `GET /__admin/callbacks`, the UI, near-miss reports and logs. Matching and
+templates always work on the original request.
+
+Viewers read stubs (`GET /stubs`, `/stubs/{id}`, `/export`, `/stubs/unused`, `POST /stubs/find-by-metadata`) with
+the same rules applied to the stub definition: matchers on sensitive headers, sensitive query and form parameter
+names and all cookies show `{"equalTo": "***"}`; basic-auth passwords, sensitive keys in `equalToJson`,
+`jsonBody`, callback and message bodies, metadata and text bodies, sensitive callback URL parameters and sensitive
+proxy, callback and message headers show `***`; `jsonPath` and `xpath` matchers that name a sensitive key have
+their expected value and quoted literals masked; multipart parts with a sensitive name have their content masked.
+Editors see stubs unchanged. Contract-test request and response excerpts are shown to editors only. Recording replaces sensitive request headers and body fields with
+"must be present" conditions instead of storing their values.
+
+Extend the lists for your domain (for example `FASTMOCK_REDACT_JSON_KEYS` with `iban,cardNumber`). Setting
+either variable replaces the default list, so include the defaults ([Configuration](configuration.md#request-journal)).
+
+## Template sandbox
+
+Templates are Handlebars with a fixed set of helpers:
+
+- no access to files, environment variables, secrets, the network or the clock beyond `now`;
+- no partials, no custom helpers from stubs, no code;
+- template source is limited to 256 KiB, rendered output to 8 MiB and intermediate values to 32 MiB per render;
+- the parsed request JSON is built once per request and only for bodies up to 200,000 JSON nodes;
+- regular expressions in matchers and helpers use a linear-time engine with a compiled-size limit (256 KiB), so
+  no input can cause catastrophic backtracking;
+- XML is parsed without DTDs or external entities, with node and depth limits.
+
+## Resource limits
+
+| Limit | Default | Setting |
+|---|---|---|
+| request body | 10 MiB | `FASTMOCK_MAX_BODY_BYTES` |
+| bodies in flight | 256 MiB (128 MiB in the chart) | `FASTMOCK_MAX_INFLIGHT_BODY_BYTES` |
+| time to send headers | 30 s | `FASTMOCK_HEADER_READ_TIMEOUT` |
+| response and chaos delay | 15 min | `FASTMOCK_MAX_DELAY` |
+| journal write queue | 2,048 entries | `FASTMOCK_JOURNAL_QUEUE` |
+| matchers per stub | 64 | fixed |
+| JSON nodes parsed per request | 200,000 | fixed |
+| form parameters / multipart parts / cookies | 10,000 / 64 / 256 | fixed |
+| callback delay / attempts | 7 days / 50 | fixed |
+| Kafka publications in flight | 256 per replica | fixed |
+| proxied response body | 16 MiB | fixed |
+| recorded stubs per session | 1,000 | `FASTMOCK_RECORDING_MAX_STUBS` |
+
+Importers (OpenAPI, AsyncAPI, WireMock, MockServer, Postman, HAR, WSDL, GraphQL schemas, Microcks artifacts) have
+their own size, count and depth limits, listed on their pages. Panics in request handlers are caught and turned
+into `500 {"error":"internal error"}` (`fastmock_panics_total`); errors returned to clients never contain stack
+traces, file paths or SQL.
+
+## Audit log
+
+Every change through the admin API is recorded:
+
+- in the store (PostgreSQL table `fm_audit`, kept 90 days), readable by admins with `GET /__admin/audit?limit=100`;
+- as a log line with target `audit` (`"message":"admin change"`), including rejected calls
+  (`admin request rejected: missing or invalid token`, `... role too low`), ready to be shipped to your log
+  system.
+
+```json
+{"events":[{"id":15,"at":"2026-11-19T05:49:27.026723055Z","principal":"me","role":"admin","action":"reset","detail":{"requests":19,"callbacks":7,"scenarios":0}}]}
+```
+
+```json
+{"level":"WARN","message":"admin request rejected: role too low","principal":"ci","path":"/__admin/kv/x","target":"audit"}
+```
+
+`fastmock_admin_changes_total{action}` counts changes per action, `fastmock_admin_auth_failures_total{reason}`
+rejected calls (alert `FastMockAdminAuthFailures`).
+
+## Containers and Kubernetes
+
+The image is distroless (no shell, no package manager) and runs as user 65532. The Helm chart and the operator
+run pods with:
+
+- `runAsNonRoot`, read-only root file system, no privilege escalation, all capabilities dropped,
+  `RuntimeDefault` seccomp;
+- no service account token mounted and no service links;
+- the admin token file and secrets mounted read-only with mode `0440`;
+- separate Services for data and admin ports, so they can be exposed and restricted separately;
+- optional NetworkPolicies for ingress, egress and the bundled databases.
+
+FastMock sends no telemetry anywhere unless you configure an OTLP endpoint.
+
+## Supply chain
+
+- Builds are reproducible from `Cargo.lock` (`cargo build --locked`) and pinned base images.
+- Dependencies are checked against the RustSec advisory database (`cargo audit`) and kept current.
+- In your pipeline, build the image from source, scan it, generate an SBOM, sign it (for example with cosign),
+  push it to your registry, and allow only that registry: in Kubernetes with an admission policy, and for the
+  operator with `server.allowedImagePrefixes`.
+- Pin the image by digest in production values.
+
+## Hardening checklist
+
+- [ ] One token per client, minimal role, stored in a secret manager; rotation documented.
+- [ ] Admin port reachable only from tests, Prometheus and the Gateway (NetworkPolicy `adminFrom`).
+- [ ] UI only over TLS, `FASTMOCK_ADMIN_ALLOWED_ORIGINS` set to its URL; `/metrics` not published.
+- [ ] `FASTMOCK_CALLBACK_ALLOWED_HOSTS` set; egress NetworkPolicy with the same scope.
+- [ ] `FASTMOCK_STUB_SECRETS` lists only the keys stubs need; `FASTMOCK_CONTRACT_SECRETS` binds each contract
+      secret to the host of its service only.
+- [ ] Redaction lists extended for your domain's sensitive fields.
+- [ ] `FASTMOCK_KAFKA_ALLOWED_TOPICS` set when Kafka is shared; `FASTMOCK_KAFKA_CONTRACT_TOPICS` lists only the
+      topics contract tests must read (empty disables reading).
+- [ ] `FASTMOCK_UI_DATA_PLANE_URL` set to the public data-plane origin when the UI is exposed.
+- [ ] Journal and callback retention as short as your tests allow.
+- [ ] PostgreSQL over TLS, dedicated database and user; Valkey password set.
+- [ ] Image from your registry, pinned by digest; operator `server.allowedImagePrefixes` set.
+- [ ] Alerts from the chart's PrometheusRule routed to the owning team; audit log shipped.

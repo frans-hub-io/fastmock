@@ -1,0 +1,69 @@
+name: fastmock
+
+services:
+  postgres:
+    image: docker.io/library/postgres:18.7-trixie
+    environment:
+      POSTGRES_DB: fastmock
+      POSTGRES_USER: fastmock
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fastmock -d fastmock"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  valkey:
+    image: docker.io/valkey/valkey:9.1.4-trixie
+    user: "999:999"
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?set VALKEY_PASSWORD in .env}
+    command:
+      - sh
+      - -c
+      - umask 077 && printf 'requirepass "%s"\n' "$$(printf '%s' "$$VALKEY_PASSWORD" | sed 's/[\\"]/\\&/g')" > /tmp/valkey.conf && exec valkey-server /tmp/valkey.conf --appendonly yes --dir /data --maxmemory-policy volatile-lru
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$VALKEY_PASSWORD\" valkey-cli ping | grep -q PONG"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  fastmock:
+    image: fastmock:0.1.0
+    build:
+      context: ../..
+    command: ["serve"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    environment:
+      FASTMOCK_STORAGE: postgres
+      FASTMOCK_DATABASE_URL: postgres://fastmock@postgres:5432/fastmock
+      FASTMOCK_DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      FASTMOCK_VALKEY_URL: redis://valkey:6379/
+      FASTMOCK_VALKEY_PASSWORD: ${VALKEY_PASSWORD:?set VALKEY_PASSWORD in .env}
+      FASTMOCK_ADMIN_TOKENS: ${FASTMOCK_ADMIN_TOKENS:?set FASTMOCK_ADMIN_TOKENS in .env}
+      FASTMOCK_SECRET_DELIVERY_HOOK: ${DELIVERY_HOOK_SECRET:?set DELIVERY_HOOK_SECRET in .env}
+      FASTMOCK_STUB_SECRETS: delivery-hook
+      FASTMOCK_LOG_FORMAT: text
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:9090:9090"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  valkey-data:

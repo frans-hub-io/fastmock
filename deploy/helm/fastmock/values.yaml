@@ -1,0 +1,196 @@
+image:
+  repository: fastmock
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+replicaCount: 2
+
+logFormat: json
+
+plugins: []
+
+pluginSettings: {}
+
+extraEnv: []
+
+admin:
+  tokensSecret:
+    name: ""
+    key: tokens
+  allowedOrigins: []
+  uiDataPlaneUrls: []
+
+callbacks:
+  allowedHosts: []
+  deniedCidrs: ""
+  workers: 32
+  timeout: 10s
+
+secrets:
+  existingSecret: ""
+  stubSecrets: []
+  contractSecrets: {}
+
+outboundCA:
+  configMap: ""
+  key: ca.crt
+
+journal:
+  retention: 24h
+  maxBodyBytes: 65536
+  queue: 2048
+  scanTimeout: 10s
+  scanMaxWork: 4294967296
+  scanConcurrency: 2
+
+limits:
+  maxBodyBytes: 10485760
+  maxInflightBodyBytes: 134217728
+  maxDelay: 15m
+  recordingMaxStubs: 1000
+  headerReadTimeout: 30s
+
+kafka:
+  bootstrap: []
+  schemaRegistryUrl: ""
+  allowedTopics: []
+  contractTopics: []
+
+shutdownDelay: 5s
+terminationGracePeriodSeconds: 45
+
+storage:
+  mode: postgres
+  database:
+    existingSecret: ""
+    secretKey: database-url
+    maxConnections: 10
+  valkey:
+    existingSecret: ""
+    secretKey: valkey-url
+    prefix: "fastmock:"
+
+postgresql:
+  enabled: false
+  image: docker.io/library/postgres:18.7-trixie
+  database: fastmock
+  username: fastmock
+  auth:
+    existingSecret: ""
+    passwordKey: password
+  storage:
+    size: 10Gi
+    storageClassName: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+valkey:
+  enabled: false
+  image: docker.io/valkey/valkey:9.1.4-trixie
+  auth:
+    existingSecret: ""
+    passwordKey: password
+  maxMemory: 256mb
+  storage:
+    size: 2Gi
+    storageClassName: ""
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 384Mi
+
+otel:
+  endpoint: ""
+  protocol: http/protobuf
+  serviceName: fastmock
+  resourceAttributes: ""
+
+service:
+  type: ClusterIP
+  port: 8080
+  adminPort: 9090
+  annotations: {}
+
+route:
+  enabled: false
+  hostnames: []
+  parentRefs: []
+  admin:
+    enabled: false
+    hostnames: []
+    parentRefs: []
+
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+  prometheusRule:
+    enabled: false
+    labels: {}
+    unmatchedRatio: 0.2
+    callbackBacklog: 1000
+
+networkPolicy:
+  enabled: false
+  adminFrom: []
+  dataFrom: []
+  storage: true
+  egress:
+    enabled: false
+    rules: []
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: "2"
+    memory: 512Mi
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+serviceAccount:
+  create: true
+  name: ""
+
+securityContext:
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL

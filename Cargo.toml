@@ -1,0 +1,61 @@
+[workspace]
+resolver = "2"
+members = ["crates/fastmock-core", "crates/fastmock-store", "crates/fastmock-kafka", "crates/fastmock-server", "crates/fastmock-operator"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+axum = { version = "0.8", features = ["macros", "multipart"] }
+base64 = "0.22"
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
+handlebars = "6"
+hex = "0.4"
+hmac = "0.12"
+http = "1"
+jsonschema = { version = "0.60", default-features = false }
+serde_yaml_ng = "0.10"
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.17", default-features = false }
+rand = "0.9"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["server-auto", "server-graceful", "tokio", "service"] }
+roxmltree = "0.21"
+graphql-parser = "0.4"
+prost-reflect = { version = "0.16", features = ["serde"] }
+prost = "0.14"
+http-body-util = "0.1"
+redis = { version = "0.32", features = ["tokio-comp", "connection-manager", "script"] }
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_json_path = "0.7"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
+subtle = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "limit", "timeout", "request-id", "catch-panic"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+utoipa = { version = "5", features = ["chrono", "uuid", "preserve_order", "axum_extras"] }
+fastmock-core = { path = "crates/fastmock-core" }
+fastmock-store = { path = "crates/fastmock-store" }
+fastmock-kafka = { path = "crates/fastmock-kafka" }
+apache-avro = "0.22"
+rskafka = { version = "0.6", default-features = false }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

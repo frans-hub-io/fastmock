@@ -1,0 +1,30 @@
+apiVersion: mocks.microcks.io/v1alpha1
+kind: APIExamples
+metadata:
+  name: API Pastry - 2.0
+  version: '2.0.0'
+operations:
+  'GET /pastry/{name}':
+    Croissant:
+      request:
+        parameters:
+          name: Croissant
+      response:
+        mediaType: application/json
+        body:
+          name: Croissant
+          size: S
+          price: 1.2
+          servedBy: '{{ randomFirstName() }}'
+  'GET /pastry':
+    large:
+      request:
+        parameters:
+          size: L
+      response:
+        status: '200'
+        mediaType: application/json
+        body:
+          - name: Paris-Brest
+            size: L
+            price: 5.5
