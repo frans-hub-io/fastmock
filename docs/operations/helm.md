@@ -136,7 +136,8 @@ helm uninstall fastmock -n mocks
   `terminationGracePeriodSeconds` (45 s) must stay larger than `shutdownDelay` plus 20 s of draining.
 - Configuration changes roll the pods automatically (the ConfigMap checksum is a pod annotation). Changing only
   a Secret (for example the admin tokens) does not: run `kubectl -n mocks rollout restart deploy/fastmock`.
-- Database migrations run at start-up and are additive; the first new pod migrates, old pods keep working.
+- Database migrations run at start-up and are additive; the first new pod migrates, old pods keep working. See
+  [Database](database.md#how-migrations-run), also for running them as a separate Job.
 - `helm uninstall` keeps the PostgreSQL PersistentVolumeClaim (`data-<release>-postgresql-0`) and the
   CloudNativePG volumes until you delete them. The Valkey PersistentVolumeClaim (`<release>-valkey`) is part of the
   release and is deleted with it; Valkey holds only counters and caches that FastMock rebuilds.

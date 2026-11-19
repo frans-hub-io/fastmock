@@ -63,7 +63,8 @@ section for what you do.
 | [Configuration](operations/configuration.md) | Every environment variable with type, default and effect. |
 | [Helm chart](operations/helm.md) | Install, upgrade, every value, production checklist, Gateway API, NetworkPolicy. |
 | [Operator](operations/operator.md) | `FastMock` and `MockApi` resources, status conditions, policies, RBAC, CRD upgrades. |
-| [Security](operations/security.md) | Tokens and roles, origins, TLS, egress, secrets, redaction, limits, audit, hardening checklist. |
+| [Security](operations/security.md) | Tokens and roles, origins, TLS, storage connections, egress, secrets, redaction, limits, audit, hardening checklist. |
+| [Database](operations/database.md) | How migrations run, running them as a separate Job, migration policy, supported PostgreSQL and Valkey versions, PostgreSQL major upgrades. |
 | [Observability](operations/observability.md) | Every metric, PromQL examples, alerts, Grafana dashboard, tracing, logs, health checks. |
 | [Troubleshooting](operations/troubleshooting.md) | Symptom, cause and fix for the common problems. |
 | [Docker Compose example](examples/docker-compose.yaml) | FastMock with PostgreSQL 18 and Valkey 9. |

@@ -1,4 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
+use std::str::FromStr;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -8,8 +11,9 @@ use fastmock_core::{
     JournalEntry, JournalFilter, JournalStore, OutboxStore, StoreResult, Stub, StubStore,
 };
 use serde_json::Value;
-use sqlx::postgres::{PgListener, PgPoolOptions, PgRow};
-use sqlx::{PgPool, Postgres, QueryBuilder, Row};
+use sqlx::migrate::Migrator;
+use sqlx::postgres::{PgConnectOptions, PgListener, PgPoolOptions, PgRow, PgSslMode};
+use sqlx::{ConnectOptions, PgPool, Postgres, QueryBuilder, Row};
 use uuid::Uuid;
 
 pub const STUBS_CHANNEL: &str = "fastmock_stubs";
@@ -22,7 +26,189 @@ fn no_nul(s: &str) -> String {
     }
 }
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+static MIGRATOR: LazyLock<Migrator> = LazyLock::new(|| {
+    let mut m = sqlx::migrate!("./migrations");
+    m.set_ignore_missing(true);
+    m
+});
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SslMode {
+    Disable,
+    Allow,
+    Prefer,
+    Require,
+    VerifyCa,
+    VerifyFull,
+}
+
+impl SslMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SslMode::Disable => "disable",
+            SslMode::Allow => "allow",
+            SslMode::Prefer => "prefer",
+            SslMode::Require => "require",
+            SslMode::VerifyCa => "verify-ca",
+            SslMode::VerifyFull => "verify-full",
+        }
+    }
+
+    pub fn verifies(self) -> bool {
+        matches!(self, SslMode::VerifyCa | SslMode::VerifyFull)
+    }
+}
+
+impl std::fmt::Display for SslMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SslMode {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        Ok(match s.trim() {
+            "disable" => SslMode::Disable,
+            "allow" => SslMode::Allow,
+            "prefer" => SslMode::Prefer,
+            "require" => SslMode::Require,
+            "verify-ca" => SslMode::VerifyCa,
+            "verify-full" => SslMode::VerifyFull,
+            other => anyhow::bail!(
+                "unknown SSL mode `{other}`: use disable, allow, prefer, require, verify-ca or verify-full"
+            ),
+        })
+    }
+}
+
+impl From<SslMode> for PgSslMode {
+    fn from(m: SslMode) -> Self {
+        match m {
+            SslMode::Disable => PgSslMode::Disable,
+            SslMode::Allow => PgSslMode::Allow,
+            SslMode::Prefer => PgSslMode::Prefer,
+            SslMode::Require => PgSslMode::Require,
+            SslMode::VerifyCa => PgSslMode::VerifyCa,
+            SslMode::VerifyFull => PgSslMode::VerifyFull,
+        }
+    }
+}
+
+impl From<PgSslMode> for SslMode {
+    fn from(m: PgSslMode) -> Self {
+        match m {
+            PgSslMode::Disable => SslMode::Disable,
+            PgSslMode::Allow => SslMode::Allow,
+            PgSslMode::Prefer => SslMode::Prefer,
+            PgSslMode::Require => SslMode::Require,
+            PgSslMode::VerifyCa => SslMode::VerifyCa,
+            PgSslMode::VerifyFull => SslMode::VerifyFull,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PgTls {
+    pub mode: Option<SslMode>,
+    pub root_cert: Option<PathBuf>,
+    pub client_cert: Option<PathBuf>,
+    pub client_key: Option<PathBuf>,
+}
+
+pub struct PgConnectPlan {
+    pub options: PgConnectOptions,
+    pub mode: SslMode,
+    pub warnings: Vec<String>,
+}
+
+enum CertSource {
+    File(PathBuf),
+    Inline,
+}
+
+fn cert_source(v: &str) -> CertSource {
+    if v.starts_with("-----BEGIN") {
+        CertSource::Inline
+    } else {
+        CertSource::File(PathBuf::from(v.strip_prefix("file: ").unwrap_or(v)))
+    }
+}
+
+pub fn pg_connect_options(url: &str, tls: &PgTls) -> anyhow::Result<PgConnectPlan> {
+    let mut options = PgConnectOptions::from_str(url)
+        .map_err(|e| anyhow::anyhow!("not a valid PostgreSQL URL: {e}"))?;
+    if let Some(m) = tls.mode {
+        options = options.ssl_mode(m.into());
+    }
+    if let Some(p) = &tls.root_cert {
+        options = options.ssl_root_cert(p);
+    }
+    if let Some(p) = &tls.client_cert {
+        options = options.ssl_client_cert(p);
+    }
+    if let Some(p) = &tls.client_key {
+        options = options.ssl_client_key(p);
+    }
+    let effective = options.to_url_lossy();
+    let param = |name: &str| {
+        effective
+            .query_pairs()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| cert_source(&v))
+    };
+    let (root, cert, key) = (param("sslrootcert"), param("sslcert"), param("sslkey"));
+    match (&cert, &key) {
+        (Some(_), None) => anyhow::bail!(
+            "a client certificate is set (FASTMOCK_DATABASE_SSL_CERT or sslcert) without a key: set FASTMOCK_DATABASE_SSL_KEY or sslkey too"
+        ),
+        (None, Some(_)) => anyhow::bail!(
+            "a client key is set (FASTMOCK_DATABASE_SSL_KEY or sslkey) without a certificate: set FASTMOCK_DATABASE_SSL_CERT or sslcert too"
+        ),
+        _ => {}
+    }
+    if let Some(CertSource::File(p)) = &root {
+        crate::pem::read_certs(
+            "PostgreSQL CA file (FASTMOCK_DATABASE_SSL_ROOT_CERT or sslrootcert)",
+            p,
+        )?;
+    }
+    if let Some(CertSource::File(p)) = &cert {
+        crate::pem::read_certs(
+            "PostgreSQL client certificate (FASTMOCK_DATABASE_SSL_CERT or sslcert)",
+            p,
+        )?;
+    }
+    if let Some(CertSource::File(p)) = &key {
+        crate::pem::read_key(
+            "PostgreSQL client key (FASTMOCK_DATABASE_SSL_KEY or sslkey)",
+            p,
+        )?;
+    }
+    let mode = SslMode::from(options.get_ssl_mode());
+    let mut warnings = Vec::new();
+    if mode.verifies() && root.is_none() {
+        warnings.push(format!(
+            "sslmode={mode} without a CA file: only the public CAs bundled with FastMock (webpki-roots) are trusted; set FASTMOCK_DATABASE_SSL_ROOT_CERT for a private CA"
+        ));
+    }
+    if !mode.verifies() && root.is_some() {
+        warnings.push(format!(
+            "sslmode={mode} does not verify the server certificate, so the CA file is not used; set FASTMOCK_DATABASE_SSL_MODE=verify-full"
+        ));
+    }
+    if matches!(mode, SslMode::Disable | SslMode::Allow) && cert.is_some() {
+        warnings.push(format!(
+            "sslmode={mode} never uses TLS, so the client certificate is not sent"
+        ));
+    }
+    Ok(PgConnectPlan {
+        options,
+        mode,
+        warnings,
+    })
+}
 
 #[derive(Clone)]
 pub struct PgStore {
@@ -31,17 +217,88 @@ pub struct PgStore {
 
 impl PgStore {
     pub async fn connect(url: &str, max_connections: u32) -> anyhow::Result<Self> {
+        let options = PgConnectOptions::from_str(url)?;
+        Self::connect_with(options, max_connections).await
+    }
+
+    pub async fn connect_with(
+        options: PgConnectOptions,
+        max_connections: u32,
+    ) -> anyhow::Result<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(max_connections.max(2))
             .acquire_timeout(Duration::from_secs(5))
             .idle_timeout(Duration::from_secs(300))
-            .connect(url)
-            .await?;
+            .connect_with(options)
+            .await
+            .map_err(|e| {
+                let msg = e.to_string();
+                match crate::pem::tls_hint(&msg, "FASTMOCK_DATABASE_SSL_ROOT_CERT (or sslrootcert)")
+                {
+                    Some(hint) => anyhow::anyhow!("{msg} ({hint})"),
+                    None => anyhow::Error::from(e),
+                }
+            })?;
         Ok(Self { pool })
     }
 
     pub async fn migrate(&self) -> anyhow::Result<()> {
         MIGRATOR.run(&self.pool).await?;
+        Ok(())
+    }
+
+    pub fn expected_schema_version() -> i64 {
+        MIGRATOR
+            .iter()
+            .filter(|m| !m.migration_type.is_down_migration())
+            .map(|m| m.version)
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub async fn check_schema(&self) -> anyhow::Result<()> {
+        let present: bool =
+            sqlx::query_scalar("select to_regclass('_sqlx_migrations') is not null")
+                .fetch_one(&self.pool)
+                .await?;
+        if !present {
+            anyhow::bail!(
+                "the database has no FastMock schema (no _sqlx_migrations table): run `fastmock migrate` first, or set FASTMOCK_DATABASE_MIGRATE=auto"
+            );
+        }
+        let rows: Vec<(i64, Vec<u8>, bool)> =
+            sqlx::query_as("select version, checksum, success from _sqlx_migrations")
+                .fetch_all(&self.pool)
+                .await?;
+        let applied: HashMap<i64, (Vec<u8>, bool)> =
+            rows.into_iter().map(|(v, c, s)| (v, (c, s))).collect();
+        let mut missing = Vec::new();
+        for m in MIGRATOR
+            .iter()
+            .filter(|m| !m.migration_type.is_down_migration())
+        {
+            match applied.get(&m.version) {
+                None => missing.push(format!("{} ({})", m.version, m.description)),
+                Some((_, false)) => anyhow::bail!(
+                    "migration {} ({}) is marked as failed in _sqlx_migrations: repair the database, then run `fastmock migrate`",
+                    m.version,
+                    m.description
+                ),
+                Some((checksum, true)) if checksum.as_slice() != &*m.checksum => anyhow::bail!(
+                    "migration {} ({}) in the database differs from the one built into this FastMock version: applied migrations must never be edited",
+                    m.version,
+                    m.description
+                ),
+                Some(_) => {}
+            }
+        }
+        if !missing.is_empty() {
+            anyhow::bail!(
+                "the database schema is older than this FastMock version expects (version {}): migration(s) {} not applied; run `fastmock migrate` from this version before starting it with FASTMOCK_DATABASE_MIGRATE=skip",
+                Self::expected_schema_version(),
+                missing.join(", ")
+            );
+        }
         Ok(())
     }
 

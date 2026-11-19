@@ -3,9 +3,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
+use fastmock_store::{MigrateMode, PgTls, StorageOptions, ValkeyTls};
 use ipnet::IpNet;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum StorageKind {
     Memory,
     Postgres {
@@ -13,7 +14,142 @@ pub enum StorageKind {
         valkey_url: String,
         valkey_prefix: String,
         max_connections: u32,
+        options: Box<StorageOptions>,
     },
+}
+
+impl std::fmt::Debug for StorageKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StorageKind::Memory => f.write_str("Memory"),
+            StorageKind::Postgres {
+                database_url,
+                valkey_url,
+                valkey_prefix,
+                max_connections,
+                options,
+            } => f
+                .debug_struct("Postgres")
+                .field("database_url", &redact_url(database_url))
+                .field("valkey_url", &redact_url(valkey_url))
+                .field("valkey_prefix", valkey_prefix)
+                .field("max_connections", max_connections)
+                .field("options", options)
+                .finish(),
+        }
+    }
+}
+
+pub fn redact_url(url: &str) -> String {
+    let Ok(mut u) = reqwest::Url::parse(url) else {
+        return "<unparsable URL>".into();
+    };
+    if u.password().is_some() {
+        let _ = u.set_password(Some("REDACTED"));
+    }
+    if u.query().is_some() {
+        let pairs: Vec<(String, String)> = u
+            .query_pairs()
+            .map(|(k, v)| {
+                let secret = matches!(
+                    k.to_ascii_lowercase().as_str(),
+                    "password" | "pass" | "passwd"
+                );
+                (
+                    k.into_owned(),
+                    if secret {
+                        "REDACTED".into()
+                    } else {
+                        v.into_owned()
+                    },
+                )
+            })
+            .collect();
+        u.query_pairs_mut().clear().extend_pairs(pairs);
+    }
+    u.to_string()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DatabaseSettings {
+    pub url: String,
+    pub tls: PgTls,
+    pub migrate: MigrateMode,
+    pub migration_timeout: Duration,
+}
+
+pub fn database_from_env() -> anyhow::Result<DatabaseSettings> {
+    database_settings(&env)
+}
+
+fn database_settings(env: &dyn Fn(&str) -> Option<String>) -> anyhow::Result<DatabaseSettings> {
+    let url = with_password(
+        &env("DATABASE_URL").context("FASTMOCK_DATABASE_URL is required for postgres storage")?,
+        env("DATABASE_PASSWORD"),
+        "FASTMOCK_DATABASE_URL",
+    )?;
+    let tls = PgTls {
+        mode: env("DATABASE_SSL_MODE")
+            .map(|m| {
+                m.parse()
+                    .map_err(|e| anyhow::anyhow!("FASTMOCK_DATABASE_SSL_MODE: {e}"))
+            })
+            .transpose()?,
+        root_cert: env("DATABASE_SSL_ROOT_CERT").map(PathBuf::from),
+        client_cert: env("DATABASE_SSL_CERT").map(PathBuf::from),
+        client_key: env("DATABASE_SSL_KEY").map(PathBuf::from),
+    };
+    if tls.client_cert.is_some() != tls.client_key.is_some() {
+        bail!("set both FASTMOCK_DATABASE_SSL_CERT and FASTMOCK_DATABASE_SSL_KEY, or neither");
+    }
+    let migrate = match env("DATABASE_MIGRATE").as_deref().map(str::trim) {
+        None | Some("auto") => MigrateMode::Auto,
+        Some("skip") => MigrateMode::Skip,
+        Some(other) => bail!("FASTMOCK_DATABASE_MIGRATE must be auto or skip, got {other}"),
+    };
+    let migration_timeout = match env("DATABASE_MIGRATION_TIMEOUT") {
+        Some(v) => parse_duration(&v).context("FASTMOCK_DATABASE_MIGRATION_TIMEOUT")?,
+        None => fastmock_store::DEFAULT_MIGRATION_TIMEOUT,
+    };
+    if migration_timeout.is_zero() {
+        bail!("FASTMOCK_DATABASE_MIGRATION_TIMEOUT must be greater than zero");
+    }
+    fastmock_store::pg_connect_options(&url, &tls)
+        .context("invalid PostgreSQL connection settings")?;
+    Ok(DatabaseSettings {
+        url,
+        tls,
+        migrate,
+        migration_timeout,
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValkeySettings {
+    pub url: String,
+    pub username: Option<String>,
+    pub tls: ValkeyTls,
+}
+
+pub fn valkey_from_env() -> anyhow::Result<ValkeySettings> {
+    valkey_settings(&env)
+}
+
+fn valkey_settings(env: &dyn Fn(&str) -> Option<String>) -> anyhow::Result<ValkeySettings> {
+    let url = with_password(
+        &env("VALKEY_URL").context("FASTMOCK_VALKEY_URL is required for postgres storage")?,
+        env("VALKEY_PASSWORD"),
+        "FASTMOCK_VALKEY_URL",
+    )?;
+    let username = env("VALKEY_USERNAME").map(|u| u.trim().to_string());
+    let tls = ValkeyTls {
+        ca_file: env("VALKEY_TLS_CA_FILE").map(PathBuf::from),
+        cert_file: env("VALKEY_TLS_CERT_FILE").map(PathBuf::from),
+        key_file: env("VALKEY_TLS_KEY_FILE").map(PathBuf::from),
+    };
+    fastmock_store::valkey_client(&url, username.as_deref(), &tls)
+        .context("invalid Valkey connection settings")?;
+    Ok(ValkeySettings { url, username, tls })
 }
 
 #[derive(Clone, Debug)]
@@ -418,22 +554,23 @@ impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         let storage = match env("STORAGE").as_deref().unwrap_or("postgres") {
             "memory" => StorageKind::Memory,
-            "postgres" => StorageKind::Postgres {
-                database_url: with_password(
-                    &env("DATABASE_URL")
-                        .context("FASTMOCK_DATABASE_URL is required for postgres storage")?,
-                    env("DATABASE_PASSWORD"),
-                    "FASTMOCK_DATABASE_URL",
-                )?,
-                valkey_url: with_password(
-                    &env("VALKEY_URL")
-                        .context("FASTMOCK_VALKEY_URL is required for postgres storage")?,
-                    env("VALKEY_PASSWORD"),
-                    "FASTMOCK_VALKEY_URL",
-                )?,
-                valkey_prefix: env("VALKEY_PREFIX").unwrap_or_else(|| "fastmock:".into()),
-                max_connections: parse("DB_MAX_CONNECTIONS", 10u32)?,
-            },
+            "postgres" => {
+                let db = database_from_env()?;
+                let valkey = valkey_from_env()?;
+                StorageKind::Postgres {
+                    database_url: db.url,
+                    valkey_url: valkey.url,
+                    valkey_prefix: env("VALKEY_PREFIX").unwrap_or_else(|| "fastmock:".into()),
+                    max_connections: parse("DB_MAX_CONNECTIONS", 10u32)?,
+                    options: Box::new(StorageOptions {
+                        database_tls: db.tls,
+                        migrate: db.migrate,
+                        migration_timeout: db.migration_timeout,
+                        valkey_username: valkey.username,
+                        valkey_tls: valkey.tls,
+                    }),
+                }
+            }
             other => bail!("FASTMOCK_STORAGE must be memory or postgres, got {other}"),
         };
         let denied =
@@ -799,6 +936,300 @@ mod tests {
             fastmock_kafka::SaslMechanism::Plain
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    struct Files {
+        dir: PathBuf,
+    }
+
+    impl Files {
+        fn new() -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("fm-cfg-{}", uuid::Uuid::new_v4().simple()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let key = rcgen::KeyPair::generate().unwrap();
+            let cert = rcgen::CertificateParams::new(vec!["db.example.com".into()])
+                .unwrap()
+                .self_signed(&key)
+                .unwrap();
+            std::fs::write(dir.join("ca.pem"), cert.pem()).unwrap();
+            std::fs::write(dir.join("cert.pem"), cert.pem()).unwrap();
+            std::fs::write(dir.join("key.pem"), key.serialize_pem()).unwrap();
+            std::fs::write(dir.join("junk.pem"), "not a certificate").unwrap();
+            Self { dir }
+        }
+
+        fn path(&self, name: &str) -> String {
+            self.dir.join(name).display().to_string()
+        }
+    }
+
+    impl Drop for Files {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn lookup(pairs: &[(&str, String)]) -> impl Fn(&str) -> Option<String> {
+        let map: std::collections::HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect();
+        move |k| map.get(k).cloned()
+    }
+
+    fn db(pairs: &[(&str, String)]) -> anyhow::Result<DatabaseSettings> {
+        database_settings(&lookup(pairs))
+    }
+
+    fn valkey(pairs: &[(&str, String)]) -> anyhow::Result<ValkeySettings> {
+        valkey_settings(&lookup(pairs))
+    }
+
+    fn err<T: std::fmt::Debug>(r: anyhow::Result<T>) -> String {
+        format!("{:#}", r.unwrap_err())
+    }
+
+    const DB: &str = "postgres://fm@db.example.com:5432/fastmock";
+
+    #[test]
+    fn database_defaults_keep_password_merge() {
+        let d = db(&[
+            ("DATABASE_URL", DB.into()),
+            ("DATABASE_PASSWORD", "p@ss#1".into()),
+        ])
+        .unwrap();
+        assert_eq!(
+            d.url,
+            "postgres://fm:p%40ss%231@db.example.com:5432/fastmock"
+        );
+        assert_eq!(d.tls, PgTls::default());
+        assert_eq!(d.migrate, MigrateMode::Auto);
+        assert_eq!(d.migration_timeout, Duration::from_secs(120));
+        assert!(err(db(&[])).contains("FASTMOCK_DATABASE_URL is required"));
+    }
+
+    #[test]
+    fn database_tls_settings_are_validated() {
+        let f = Files::new();
+        let d = db(&[
+            ("DATABASE_URL", DB.into()),
+            ("DATABASE_SSL_MODE", "verify-full".into()),
+            ("DATABASE_SSL_ROOT_CERT", f.path("ca.pem")),
+            ("DATABASE_SSL_CERT", f.path("cert.pem")),
+            ("DATABASE_SSL_KEY", f.path("key.pem")),
+        ])
+        .unwrap();
+        assert_eq!(d.tls.mode, Some(fastmock_store::SslMode::VerifyFull));
+        assert_eq!(d.tls.root_cert, Some(PathBuf::from(f.path("ca.pem"))));
+        let plan = fastmock_store::pg_connect_options(&d.url, &d.tls).unwrap();
+        assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+
+        let e = err(db(&[
+            ("DATABASE_URL", DB.into()),
+            ("DATABASE_SSL_MODE", "verify-everything".into()),
+        ]));
+        assert!(e.contains("FASTMOCK_DATABASE_SSL_MODE"), "{e}");
+        assert!(e.contains("verify-full"), "{e}");
+
+        let e = err(db(&[
+            ("DATABASE_URL", DB.into()),
+            ("DATABASE_SSL_CERT", f.path("cert.pem")),
+        ]));
+        assert!(e.contains("FASTMOCK_DATABASE_SSL_KEY"), "{e}");
+
+        let e = err(db(&[
+            ("DATABASE_URL", DB.into()),
+            ("DATABASE_SSL_MODE", "verify-full".into()),
+            ("DATABASE_SSL_ROOT_CERT", f.path("missing.pem")),
+        ]));
+        assert!(e.contains("cannot read"), "{e}");
+        assert!(e.contains("missing.pem"), "{e}");
+
+        let e = err(db(&[
+            ("DATABASE_URL", DB.into()),
+            ("DATABASE_SSL_ROOT_CERT", f.path("junk.pem")),
+        ]));
+        assert!(e.contains("no PEM certificate"), "{e}");
+
+        let e = err(db(&[
+            ("DATABASE_URL", DB.into()),
+            ("DATABASE_SSL_CERT", f.path("cert.pem")),
+            ("DATABASE_SSL_KEY", f.path("junk.pem")),
+        ]));
+        assert!(e.contains("no usable private key"), "{e}");
+    }
+
+    #[test]
+    fn database_url_tls_parameters_still_work() {
+        let f = Files::new();
+        let url = format!(
+            "{DB}?sslmode=verify-ca&sslrootcert={}&sslcert={}&sslkey={}",
+            f.path("ca.pem"),
+            f.path("cert.pem"),
+            f.path("key.pem")
+        );
+        let d = db(&[("DATABASE_URL", url.clone())]).unwrap();
+        let plan = fastmock_store::pg_connect_options(&d.url, &d.tls).unwrap();
+        assert_eq!(plan.mode, fastmock_store::SslMode::VerifyCa);
+        assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+
+        let d = db(&[
+            ("DATABASE_URL", url),
+            ("DATABASE_SSL_MODE", "verify-full".into()),
+        ])
+        .unwrap();
+        let plan = fastmock_store::pg_connect_options(&d.url, &d.tls).unwrap();
+        assert_eq!(plan.mode, fastmock_store::SslMode::VerifyFull);
+
+        let e = err(db(&[(
+            "DATABASE_URL",
+            format!("{DB}?sslcert={}", f.path("cert.pem")),
+        )]));
+        assert!(e.contains("without a key"), "{e}");
+
+        let e = err(db(&[(
+            "DATABASE_URL",
+            format!(
+                "{DB}?sslmode=verify-full&sslrootcert={}",
+                f.path("nope.pem")
+            ),
+        )]));
+        assert!(e.contains("cannot read"), "{e}");
+
+        assert!(err(db(&[("DATABASE_URL", format!("{DB}?sslmode=strict"))])).contains("ssl"));
+    }
+
+    #[test]
+    fn database_tls_warnings_explain_trust() {
+        let f = Files::new();
+        let plan = fastmock_store::pg_connect_options(
+            DB,
+            &PgTls {
+                mode: Some(fastmock_store::SslMode::VerifyFull),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.warnings.len(), 1);
+        assert!(plan.warnings[0].contains("FASTMOCK_DATABASE_SSL_ROOT_CERT"));
+        assert!(plan.warnings[0].contains("public"));
+        let plan = fastmock_store::pg_connect_options(
+            DB,
+            &PgTls {
+                mode: Some(fastmock_store::SslMode::Require),
+                root_cert: Some(f.path("ca.pem").into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            plan.warnings[0].contains("does not verify"),
+            "{:?}",
+            plan.warnings
+        );
+    }
+
+    #[test]
+    fn migration_settings() {
+        let d = db(&[
+            ("DATABASE_URL", DB.into()),
+            ("DATABASE_MIGRATE", "skip".into()),
+            ("DATABASE_MIGRATION_TIMEOUT", "5m".into()),
+        ])
+        .unwrap();
+        assert_eq!(d.migrate, MigrateMode::Skip);
+        assert_eq!(d.migration_timeout, Duration::from_secs(300));
+        assert!(
+            err(db(&[
+                ("DATABASE_URL", DB.into()),
+                ("DATABASE_MIGRATE", "later".into())
+            ]))
+            .contains("auto or skip")
+        );
+        for bad in ["0s", "soon"] {
+            assert!(
+                err(db(&[
+                    ("DATABASE_URL", DB.into()),
+                    ("DATABASE_MIGRATION_TIMEOUT", bad.into())
+                ]))
+                .contains("FASTMOCK_DATABASE_MIGRATION_TIMEOUT")
+            );
+        }
+    }
+
+    #[test]
+    fn valkey_tls_and_acl_settings() {
+        let f = Files::new();
+        let v = valkey(&[
+            ("VALKEY_URL", "rediss://valkey.example.com:6380/".into()),
+            ("VALKEY_USERNAME", "fastmock".into()),
+            ("VALKEY_PASSWORD", "s3cret".into()),
+            ("VALKEY_TLS_CA_FILE", f.path("ca.pem")),
+            ("VALKEY_TLS_CERT_FILE", f.path("cert.pem")),
+            ("VALKEY_TLS_KEY_FILE", f.path("key.pem")),
+        ])
+        .unwrap();
+        assert_eq!(v.username.as_deref(), Some("fastmock"));
+        assert_eq!(v.url, "rediss://:s3cret@valkey.example.com:6380/");
+        assert!(
+            valkey(&[("VALKEY_URL", "valkeys://valkey.example.com/".into())]).is_ok(),
+            "TLS without extra settings uses the public roots"
+        );
+
+        let e = err(valkey(&[
+            ("VALKEY_URL", "redis://valkey.example.com:6379/".into()),
+            ("VALKEY_TLS_CA_FILE", f.path("ca.pem")),
+        ]));
+        assert!(e.contains("rediss://"), "{e}");
+        let e = err(valkey(&[
+            ("VALKEY_URL", "rediss://valkey.example.com/".into()),
+            ("VALKEY_TLS_CERT_FILE", f.path("cert.pem")),
+        ]));
+        assert!(e.contains("FASTMOCK_VALKEY_TLS_KEY_FILE"), "{e}");
+        let e = err(valkey(&[
+            ("VALKEY_URL", "rediss://valkey.example.com/".into()),
+            ("VALKEY_TLS_CA_FILE", f.path("missing.pem")),
+        ]));
+        assert!(e.contains("cannot read"), "{e}");
+        let e = err(valkey(&[
+            ("VALKEY_URL", "redis://valkey.example.com/".into()),
+            ("VALKEY_USERNAME", "fastmock".into()),
+        ]));
+        assert!(e.contains("FASTMOCK_VALKEY_PASSWORD"), "{e}");
+        let e = err(valkey(&[(
+            "VALKEY_URL",
+            "rediss://valkey.example.com/#insecure".into(),
+        )]));
+        assert!(e.contains("insecure"), "{e}");
+        assert!(err(valkey(&[])).contains("FASTMOCK_VALKEY_URL is required"));
+    }
+
+    #[test]
+    fn urls_are_redacted() {
+        let r = redact_url("postgres://fm:hunter2@db.example.com/fm?sslmode=require&password=x9");
+        assert!(!r.contains("hunter2"), "{r}");
+        assert!(!r.contains("x9"), "{r}");
+        assert!(r.contains("sslmode=require"), "{r}");
+        assert!(r.contains("db.example.com"), "{r}");
+        assert_eq!(
+            redact_url("redis://valkey.example.com:6379/"),
+            "redis://valkey.example.com:6379/"
+        );
+        assert_eq!(redact_url("::not a url::"), "<unparsable URL>");
+        let kind = StorageKind::Postgres {
+            database_url: "postgres://fm:hunter2@db.example.com/fm".into(),
+            valkey_url: "rediss://:t0psecret@valkey.example.com/".into(),
+            valkey_prefix: "fm:".into(),
+            max_connections: 5,
+            options: Box::default(),
+        };
+        let dbg = format!("{kind:?}");
+        assert!(
+            !dbg.contains("hunter2") && !dbg.contains("t0psecret"),
+            "{dbg}"
+        );
+        assert!(dbg.contains("REDACTED"), "{dbg}");
     }
 
     #[test]

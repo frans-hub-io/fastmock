@@ -109,11 +109,17 @@ pub async fn build(
             valkey_url,
             valkey_prefix,
             max_connections,
+            options,
         } => {
-            let (s, pg) =
-                fastmock_store::connect(database_url, valkey_url, valkey_prefix, *max_connections)
-                    .await
-                    .context("connecting to storage")?;
+            let (s, pg) = fastmock_store::connect(
+                database_url,
+                valkey_url,
+                valkey_prefix,
+                *max_connections,
+                options,
+            )
+            .await
+            .context("connecting to storage")?;
             (s, Some(pg))
         }
     };
