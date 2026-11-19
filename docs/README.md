@@ -53,6 +53,7 @@ section for what you do.
 | [Java client](guide/java-client.md) | The Java 25 client: every method, JUnit 5 patterns, Testcontainers. |
 | [Contract testing](guide/contract-testing.md) | Testing a real service against its OpenAPI or AsyncAPI contract. |
 | [Admin API](guide/admin-api.md) | Authentication, roles per endpoint, errors, pagination, every endpoint group. |
+| [Admin API reference](api/swagger/index.html) | Interactive Swagger UI for the admin API. |
 | [OpenAPI description](api/openapi.json) | Machine-readable description of the admin API (also served at `/openapi.json`). |
 
 ## Operating FastMock
@@ -72,7 +73,7 @@ section for what you do.
 | Page | What you learn |
 |---|---|
 | [Writing plugins](guide/plugins.md) | Implement a provider in Rust and build a binary that includes it. |
-| [Security policy](../SECURITY.md) | How to report a vulnerability. |
+| [Security policy](https://github.com/frans-hub-io/fastmock/blob/main/SECURITY.md) | How to report a vulnerability. |
 
 ## Conventions in these pages
 

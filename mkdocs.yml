@@ -1,0 +1,113 @@
+site_name: FastMock
+site_description: API mock server in Rust with WireMock, MockServer and Microcks compatibility, durable callbacks, shared state and full observability
+site_url: https://fastmock.franshub.io/
+repo_url: https://github.com/frans-hub-io/fastmock
+repo_name: frans-hub-io/fastmock
+edit_uri: edit/main/docs/
+copyright: FastMock is licensed under the Apache License 2.0
+docs_dir: docs
+site_dir: site
+strict: true
+
+
+theme:
+  name: material
+  language: en
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  font: false
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+    - toc.follow
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+validation:
+  links:
+    absolute_links: relative_to_docs
+    anchors: warn
+    unrecognized_links: warn
+
+nav:
+  - Home: README.md
+  - Getting started:
+      - guide/getting-started.md
+      - guide/concepts.md
+      - guide/ui.md
+  - Writing mocks:
+      - guide/request-matching.md
+      - guide/responses.md
+      - guide/templating.md
+      - guide/stub-lifecycle.md
+      - guide/scenarios-and-state.md
+      - guide/callbacks.md
+      - guide/proxy-and-chaos.md
+      - guide/sse.md
+      - guide/websocket.md
+      - guide/grpc.md
+      - guide/graphql.md
+      - guide/soap.md
+      - guide/kafka.md
+      - guide/asyncapi.md
+  - Importing:
+      - guide/importing.md
+      - guide/import-wiremock-mockserver.md
+      - guide/microcks-artifacts.md
+      - guide/service-catalog.md
+      - guide/recording.md
+      - guide/migrating-from-wiremock.md
+      - guide/migrating-from-mockserver.md
+      - guide/migrating-from-microcks.md
+  - Testing:
+      - guide/verification.md
+      - guide/java-client.md
+      - guide/contract-testing.md
+      - guide/admin-api.md
+      - Admin API reference: /api/swagger/
+  - Operations:
+      - operations/configuration.md
+      - operations/helm.md
+      - operations/operator.md
+      - operations/security.md
+      - operations/observability.md
+      - operations/troubleshooting.md
+  - Extending:
+      - guide/plugins.md

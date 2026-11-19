@@ -2,7 +2,7 @@
 
 FastMock runs in test environments next to real services, receives traffic that may contain real credentials,
 and sends requests into internal networks. It is built to be safe by default there. This page describes the
-security model and how to harden a deployment. To report a vulnerability, see [SECURITY.md](../../SECURITY.md).
+security model and how to harden a deployment. To report a vulnerability, see [SECURITY.md](https://github.com/frans-hub-io/fastmock/blob/main/SECURITY.md).
 
 - [Model](#model)
 - [Admin tokens and roles](#admin-tokens-and-roles)

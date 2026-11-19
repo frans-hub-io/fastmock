@@ -1,0 +1,39 @@
+admin:
+  tokensSecret:
+    name: fastmock-admin-tokens
+
+storage:
+  mode: postgres
+  database:
+    existingSecret: fastmock-database
+  valkey:
+    existingSecret: fastmock-valkey
+
+route:
+  enabled: true
+  hostnames:
+    - mocks.example.com
+  parentRefs:
+    - name: gateway
+      namespace: gateway-system
+  admin:
+    enabled: true
+    hostnames:
+      - mocks-admin.example.com
+    parentRefs:
+      - name: gateway
+        namespace: gateway-system
+
+metrics:
+  serviceMonitor:
+    enabled: true
+  prometheusRule:
+    enabled: true
+
+networkPolicy:
+  enabled: true
+  egress:
+    enabled: true
+
+autoscaling:
+  enabled: true

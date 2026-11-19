@@ -1,0 +1,16 @@
+admin:
+  tokensSecret:
+    name: fastmock-admin-tokens
+
+storage:
+  mode: postgres
+
+postgresql:
+  enabled: true
+  auth:
+    existingSecret: fastmock-postgresql
+
+valkey:
+  enabled: true
+  auth:
+    existingSecret: fastmock-valkey

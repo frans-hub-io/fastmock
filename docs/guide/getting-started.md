@@ -6,7 +6,7 @@ Docker Compose.
 
 You need Docker (or a Rust toolchain), `curl`, and optionally `jq`.
 
-- [1. Build the image](#1-build-the-image)
+- [1. Get the image](#1-get-the-image)
 - [2. Create an admin token](#2-create-an-admin-token)
 - [3. Start FastMock in memory mode](#3-start-fastmock-in-memory-mode)
 - [4. Your first stub](#4-your-first-stub)
@@ -17,9 +17,16 @@ You need Docker (or a Rust toolchain), `curl`, and optionally `jq`.
 - [9. Shared storage with Docker Compose](#9-shared-storage-with-docker-compose)
 - [Next steps](#next-steps)
 
-## 1. Build the image
+## 1. Get the image
 
-From the repository root:
+Pull the published image and tag it with the name used on this page:
+
+```sh
+docker pull franshub/fastmock:0.1.0-dev7
+docker tag franshub/fastmock:0.1.0-dev7 fastmock:0.1.0
+```
+
+Or build it from the repository root:
 
 ```sh
 docker build -t fastmock:0.1.0 .
