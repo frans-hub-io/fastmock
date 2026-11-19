@@ -74,15 +74,33 @@ storage:
 
 postgresql:
   enabled: false
-  image: docker.io/library/postgres:18.7-trixie
-  database: fastmock
-  username: fastmock
+  image:
+    registry: docker.io
+    repository: postgres
+    tag: "18.7-trixie"
+    imagePullPolicy: IfNotPresent
   auth:
     existingSecret: ""
-    passwordKey: password
-  storage:
+    secretKeys:
+      adminPasswordKey: postgres-password
+  customUser:
+    name: fastmock
+    database: fastmock
+    existingSecret: ""
+    secretKeys:
+      name: ""
+      database: ""
+      password: password
+  persistence:
     size: 10Gi
-    storageClassName: ""
+    storageClass: ""
+  serviceAccount:
+    create: true
+    automountServiceAccountToken: false
+  podSecurityContext:
+    fsGroup: 999
+    seccompProfile:
+      type: RuntimeDefault
   resources:
     requests:
       cpu: 100m
@@ -91,16 +109,64 @@ postgresql:
       cpu: "1"
       memory: 1Gi
 
+cnpg:
+  enabled: false
+  type: postgresql
+  mode: standalone
+  version:
+    postgresql: "18"
+  cluster:
+    instances: 1
+    imageName: ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie
+    storage:
+      size: 10Gi
+      storageClass: ""
+    enableSuperuserAccess: false
+    initdb:
+      database: fastmock
+      owner: fastmock
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+  backups:
+    enabled: false
+
 valkey:
   enabled: false
-  image: docker.io/valkey/valkey:9.1.4-trixie
+  image:
+    registry: docker.io
+    repository: valkey/valkey
+    tag: "9.1.4-trixie"
   auth:
-    existingSecret: ""
-    passwordKey: password
-  maxMemory: 256mb
-  storage:
-    size: 2Gi
-    storageClassName: ""
+    enabled: true
+    usersExistingSecret: ""
+    aclUsers:
+      default:
+        permissions: "~* &* +@all"
+        passwordKey: password
+  deploymentStrategy: Recreate
+  valkeyConfig: |
+    appendonly yes
+    appendfsync everysec
+    maxmemory 256mb
+    maxmemory-policy volatile-lru
+  readinessProbe:
+    enabled: true
+  initResources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+  dataStorage:
+    enabled: true
+    requestedSize: 2Gi
+    className: ""
   resources:
     requests:
       cpu: 50m

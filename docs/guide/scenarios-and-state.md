@@ -209,8 +209,8 @@ Values are strings; store JSON as a string as above. Keys are 1 to 512 bytes and
 | scenario states | process memory | Valkey key `<FASTMOCK_VALKEY_PREFIX>scenario:<name>` |
 | key-value entries | process memory | Valkey key `<FASTMOCK_VALKEY_PREFIX>kv:<key>` |
 
-Valkey should therefore keep its data across restarts (the chart's bundled Valkey uses append-only persistence)
-and must not evict keys without a TTL: the bundled Valkey uses `maxmemory-policy volatile-lru`. Scenario and
+Valkey should therefore keep its data across restarts and must not evict keys without a TTL; the Valkey that the
+Helm chart installs with `valkey.enabled` uses append-only persistence and `maxmemory-policy volatile-lru`. Scenario and
 key-value changes are recorded in the [audit log](../operations/security.md#audit-log).
 
 ## Limits

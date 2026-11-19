@@ -1,9 +1,17 @@
 {{- $fullname := include "fastmock.fullname" . -}}
-{{- if and (eq .Values.storage.mode "postgres") (not .Values.postgresql.enabled) (not .Values.storage.database.existingSecret) }}
-{{- fail "storage.database.existingSecret is required when postgresql.enabled is false" }}
+{{- if eq .Values.storage.mode "postgres" }}
+{{- if and .Values.postgresql.enabled .Values.cnpg.enabled }}
+{{- fail "enable only one of postgresql.enabled and cnpg.enabled" }}
 {{- end }}
-{{- if and (eq .Values.storage.mode "postgres") (not .Values.valkey.enabled) (not .Values.storage.valkey.existingSecret) }}
-{{- fail "storage.valkey.existingSecret is required when valkey.enabled is false" }}
+{{- if and (not .Values.postgresql.enabled) (not .Values.cnpg.enabled) (not .Values.storage.database.existingSecret) }}
+{{- fail "PostgreSQL is required in postgres mode: set postgresql.enabled, cnpg.enabled or storage.database.existingSecret" }}
+{{- end }}
+{{- if and .Values.cnpg.enabled (not (.Capabilities.APIVersions.Has "postgresql.cnpg.io/v1")) }}
+{{- fail "cnpg.enabled needs the CloudNativePG operator: install it first (https://cloudnative-pg.io/documentation/current/installation_upgrade/)" }}
+{{- end }}
+{{- if and (not .Values.valkey.enabled) (not .Values.storage.valkey.existingSecret) }}
+{{- fail "Valkey is required in postgres mode: set valkey.enabled or storage.valkey.existingSecret" }}
+{{- end }}
 {{- end }}
 {{- if not .Values.admin.tokensSecret.name }}
 {{- fail "admin.tokensSecret.name is required: FastMock never runs without admin authentication" }}
@@ -71,10 +79,16 @@ spec:
             - name: FASTMOCK_DATABASE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ required "postgresql.auth.existingSecret is required" .Values.postgresql.auth.existingSecret }}
-                  key: {{ .Values.postgresql.auth.passwordKey }}
+                  name: {{ required "postgresql.customUser.existingSecret is required" .Values.postgresql.customUser.existingSecret }}
+                  key: {{ .Values.postgresql.customUser.secretKeys.password }}
             - name: FASTMOCK_DATABASE_URL
-              value: {{ printf "postgres://%s@%s-postgresql:5432/%s" .Values.postgresql.username $fullname .Values.postgresql.database | quote }}
+              value: {{ printf "postgres://%s@%s:5432/%s" .Values.postgresql.customUser.name (include "fastmock.dependencyFullname" (dict "root" . "name" "postgresql")) .Values.postgresql.customUser.database | quote }}
+            {{- else if .Values.cnpg.enabled }}
+            - name: FASTMOCK_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ printf "%s-app" (include "fastmock.dependencyFullname" (dict "root" . "name" "cnpg")) }}
+                  key: uri
             {{- else }}
             - name: FASTMOCK_DATABASE_URL
               valueFrom:
@@ -86,10 +100,10 @@ spec:
             - name: FASTMOCK_VALKEY_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ required "valkey.auth.existingSecret is required" .Values.valkey.auth.existingSecret }}
-                  key: {{ .Values.valkey.auth.passwordKey }}
+                  name: {{ required "valkey.auth.usersExistingSecret is required" .Values.valkey.auth.usersExistingSecret }}
+                  key: {{ .Values.valkey.auth.aclUsers.default.passwordKey | default "default" }}
             - name: FASTMOCK_VALKEY_URL
-              value: {{ printf "redis://%s-valkey:6379/" $fullname | quote }}
+              value: {{ printf "redis://%s:6379/" (include "fastmock.dependencyFullname" (dict "root" . "name" "valkey")) | quote }}
             {{- else }}
             - name: FASTMOCK_VALKEY_URL
               valueFrom:

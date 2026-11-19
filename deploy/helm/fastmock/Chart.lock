@@ -1,0 +1,12 @@
+dependencies:
+- name: postgres
+  repository: oci://registry-1.docker.io/cloudpirates
+  version: 0.21.2
+- name: cluster
+  repository: https://cloudnative-pg.github.io/charts
+  version: 0.9.0
+- name: valkey
+  repository: https://valkey.io/valkey-helm/
+  version: 0.12.1
+digest: sha256:18cd32a1b3055bdec0e11073cc9664ed2cd81b7cdbe7932cdaaeea0f7d22c27a
+generated: "2026-11-19T21:44:22.367983002Z"

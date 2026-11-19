@@ -1,8 +1,24 @@
 # Helm chart
 
 `deploy/helm/fastmock` installs one FastMock instance: a Deployment, separate Services for the data and admin
-ports, and optionally bundled PostgreSQL and Valkey, Gateway API routes, a PodDisruptionBudget, an HPA,
-NetworkPolicies, a ServiceMonitor and a PrometheusRule. It needs Kubernetes 1.30 or newer.
+ports, and optionally PostgreSQL and Valkey from maintained dependency charts, Gateway API routes, a
+PodDisruptionBudget, an HPA, NetworkPolicies, a ServiceMonitor and a PrometheusRule. It needs Kubernetes 1.30 or
+newer.
+
+| Dependency | Chart | Enabled by | Use it for |
+|---|---|---|---|
+| PostgreSQL, single instance | [`postgres`](https://github.com/cloudpirates-io/helm-charts/tree/main/charts/postgres) from CloudPirates, official `postgres` image | `postgresql.enabled` | test environments without a managed database |
+| PostgreSQL cluster | [`cluster`](https://github.com/cloudnative-pg/charts/tree/main/charts/cluster) from CloudNativePG | `cnpg.enabled` | replicas, failover and backups through the CloudNativePG operator |
+| Valkey | [`valkey`](https://github.com/valkey-io/valkey-helm) from the Valkey project | `valkey.enabled` | a Valkey next to the release |
+
+With none of them enabled, FastMock connects to an external PostgreSQL and Valkey. When installing from a
+checkout, fetch the dependencies first:
+
+```sh
+helm repo add cnpg https://cloudnative-pg.github.io/charts
+helm repo add valkey https://valkey.io/valkey-helm/
+helm dependency build deploy/helm/fastmock
+```
 
 For many instances managed declaratively, see the [operator](operator.md) instead.
 
@@ -46,23 +62,44 @@ helm upgrade --install fastmock deploy/helm/fastmock -n mocks \
 
 Percent-encode special characters in passwords inside URLs.
 
-**2b. Bundled PostgreSQL 18 and Valkey 9** (single-instance StatefulSets, for test environments that do not have
-managed databases):
+**2b. PostgreSQL 18 and Valkey 9 with the release** (single instances, for test environments that do not have
+managed databases). One Secret holds the superuser password (`postgres-password`) and the password of the
+`fastmock` user (`password`), another the Valkey password:
 
 ```sh
-kubectl -n mocks create secret generic fastmock-db --from-literal=password="$(openssl rand -hex 24)"
+kubectl -n mocks create secret generic fastmock-postgresql \
+  --from-literal=postgres-password="$(openssl rand -hex 24)" --from-literal=password="$(openssl rand -hex 24)"
 kubectl -n mocks create secret generic fastmock-valkey --from-literal=password="$(openssl rand -hex 24)"
 helm upgrade --install fastmock deploy/helm/fastmock -n mocks \
   --set admin.tokensSecret.name=fastmock-admin-tokens \
-  --set postgresql.enabled=true --set postgresql.auth.existingSecret=fastmock-db \
-  --set valkey.enabled=true --set valkey.auth.existingSecret=fastmock-valkey
+  --set postgresql.enabled=true \
+  --set postgresql.auth.existingSecret=fastmock-postgresql \
+  --set postgresql.customUser.existingSecret=fastmock-postgresql \
+  --set valkey.enabled=true --set valkey.auth.usersExistingSecret=fastmock-valkey
 ```
 
-The passwords reach PostgreSQL, Valkey and FastMock through environment variables from the Secrets
-(`FASTMOCK_DATABASE_PASSWORD`, `FASTMOCK_VALKEY_PASSWORD`), never through command lines or ConfigMaps. With
-`networkPolicy.storage: true` (default) only FastMock pods may connect to the bundled databases.
+The passwords reach FastMock through environment variables from the Secrets (`FASTMOCK_DATABASE_PASSWORD`,
+`FASTMOCK_VALKEY_PASSWORD`), never through command lines or ConfigMaps. With `networkPolicy.storage: true`
+(default) only FastMock pods may connect to them.
 
-**2c. Memory mode** (one replica, nothing persisted):
+**2c. PostgreSQL through CloudNativePG** (replicas, automatic failover, backups). Install the
+[CloudNativePG operator](https://cloudnative-pg.io/documentation/current/installation_upgrade/) in the cluster
+once; the chart refuses `cnpg.enabled` without it. The chart then creates a `Cluster` named `<release>-cnpg` with
+a `fastmock` database, and FastMock reads the connection URL from the `<release>-cnpg-app` Secret that the
+operator generates:
+
+```sh
+helm upgrade --install fastmock deploy/helm/fastmock -n mocks \
+  --set admin.tokensSecret.name=fastmock-admin-tokens \
+  --set cnpg.enabled=true --set cnpg.cluster.instances=3 \
+  --set valkey.enabled=true --set valkey.auth.usersExistingSecret=fastmock-valkey
+```
+
+Everything under `cnpg` is passed to the CloudNativePG `cluster` chart: backups to object storage
+(`cnpg.backups`), storage class, PostgreSQL parameters, monitoring. See its
+[values](https://github.com/cloudnative-pg/charts/blob/main/charts/cluster/values.yaml).
+
+**2d. Memory mode** (one replica, nothing persisted):
 
 ```sh
 helm upgrade --install fastmock deploy/helm/fastmock -n mocks \
@@ -96,8 +133,9 @@ helm uninstall fastmock -n mocks
 - Configuration changes roll the pods automatically (the ConfigMap checksum is a pod annotation). Changing only
   a Secret (for example the admin tokens) does not: run `kubectl -n mocks rollout restart deploy/fastmock`.
 - Database migrations run at start-up and are additive; the first new pod migrates, old pods keep working.
-- `helm uninstall` keeps the PersistentVolumeClaims of the bundled databases (`data-<fullname>-postgresql-0`,
-  `data-<fullname>-valkey-0`); delete them to remove the data.
+- `helm uninstall` keeps the PostgreSQL PersistentVolumeClaim (`data-<release>-postgresql-0`) and the
+  CloudNativePG volumes until you delete them. The Valkey PersistentVolumeClaim (`<release>-valkey`) is part of the
+  release and is deleted with it; Valkey holds only counters and caches that FastMock rebuilds.
 
 ## Values
 
@@ -108,7 +146,7 @@ helm uninstall fastmock -n mocks
 | `image.repository` | `fastmock` | Server image repository. |
 | `image.tag` | `""` (chart `appVersion`) | Image tag. Pin a version or digest in production. |
 | `image.pullPolicy` | `IfNotPresent` | |
-| `imagePullSecrets` | `[]` | List of `{name: ...}`; also used by the bundled databases. |
+| `imagePullSecrets` | `[]` | List of `{name: ...}` for the FastMock pods. |
 | `replicaCount` | `2` | Replicas when autoscaling is off. Use 1 with `storage.mode: memory`. |
 | `resources` | requests `100m`/`64Mi`, limits `2`/`512Mi` | Server container resources. |
 | `podAnnotations`, `podLabels` | `{}` | Extra pod metadata. |
@@ -136,26 +174,31 @@ helm uninstall fastmock -n mocks
 | Key | Default | Meaning |
 |---|---|---|
 | `storage.mode` | `postgres` | `postgres` or `memory`. |
-| `storage.database.existingSecret` | `""` | Secret with the PostgreSQL URL; required in `postgres` mode unless `postgresql.enabled`. |
+| `storage.database.existingSecret` | `""` | Secret with the PostgreSQL URL; required in `postgres` mode unless `postgresql.enabled` or `cnpg.enabled`. |
 | `storage.database.secretKey` | `database-url` | Key of the URL. |
 | `storage.database.maxConnections` | `10` | `FASTMOCK_DB_MAX_CONNECTIONS` per pod. |
 | `storage.valkey.existingSecret` | `""` | Secret with the Valkey URL; required in `postgres` mode unless `valkey.enabled`. |
 | `storage.valkey.secretKey` | `valkey-url` | Key of the URL. |
 | `storage.valkey.prefix` | `fastmock:` | `FASTMOCK_VALKEY_PREFIX`; give each release that shares a Valkey its own prefix. |
-| `postgresql.enabled` | `false` | Deploy a PostgreSQL StatefulSet with the release. |
-| `postgresql.image` | `docker.io/library/postgres:18.7-trixie` | |
-| `postgresql.database`, `postgresql.username` | `fastmock`, `fastmock` | |
-| `postgresql.auth.existingSecret` | `""` (required when enabled) | Secret with the password. |
-| `postgresql.auth.passwordKey` | `password` | |
-| `postgresql.storage.size`, `postgresql.storage.storageClassName` | `10Gi`, `""` | PVC size and class. |
-| `postgresql.resources` | requests `100m`/`256Mi`, limits `1`/`1Gi` | |
-| `valkey.enabled` | `false` | Deploy a Valkey StatefulSet (append-only persistence, `volatile-lru`). |
-| `valkey.image` | `docker.io/valkey/valkey:9.1.4-trixie` | |
-| `valkey.auth.existingSecret` | `""` (required when enabled) | Secret with the password. |
-| `valkey.auth.passwordKey` | `password` | |
-| `valkey.maxMemory` | `256mb` | Valkey `maxmemory`. |
-| `valkey.storage.size`, `valkey.storage.storageClassName` | `2Gi`, `""` | |
-| `valkey.resources` | requests `50m`/`64Mi`, limits `500m`/`384Mi` | |
+| `postgresql.enabled` | `false` | Install the CloudPirates `postgres` chart with the release. |
+| `postgresql.auth.existingSecret` | `""` (required when enabled) | Secret with the superuser password under `postgresql.auth.secretKeys.adminPasswordKey` (`postgres-password`). |
+| `postgresql.customUser.name`, `.database` | `fastmock`, `fastmock` | User and database FastMock uses. |
+| `postgresql.customUser.existingSecret` | `""` (required when enabled) | Secret with that user's password under `postgresql.customUser.secretKeys.password` (`password`). |
+| `postgresql.image.tag` | `18.7-trixie` | Official `postgres` image. |
+| `postgresql.persistence.size`, `.storageClass` | `10Gi`, `""` | |
+| `postgresql.resources` | requests `100m`/`256Mi`, limits `1`/`1Gi` | Other keys: the [chart's values](https://github.com/cloudpirates-io/helm-charts/blob/main/charts/postgres/values.yaml). |
+| `cnpg.enabled` | `false` | Install the CloudNativePG `cluster` chart; needs the operator. |
+| `cnpg.cluster.instances` | `1` | Use `3` for failover. |
+| `cnpg.cluster.imageName` | `ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie` | |
+| `cnpg.cluster.storage.size`, `.storageClass` | `10Gi`, `""` | |
+| `cnpg.cluster.initdb` | database and owner `fastmock` | |
+| `cnpg.backups` | `enabled: false` | Object storage backups; see the [chart's values](https://github.com/cloudnative-pg/charts/blob/main/charts/cluster/values.yaml). |
+| `valkey.enabled` | `false` | Install the official `valkey` chart with the release. |
+| `valkey.auth.usersExistingSecret` | `""` (required when enabled) | Secret with the password of the `default` user under `valkey.auth.aclUsers.default.passwordKey` (`password`). |
+| `valkey.image.tag` | `9.1.4-trixie` | |
+| `valkey.valkeyConfig` | `appendonly yes`, `maxmemory 256mb`, `maxmemory-policy volatile-lru` | Keep persistence on and eviction limited to keys with a TTL: counters and scenario state have none. |
+| `valkey.dataStorage.requestedSize`, `.className` | `2Gi`, `""` | Persistent volume; the pod uses the `Recreate` strategy so the volume is never attached twice. |
+| `valkey.resources` | requests `50m`/`64Mi`, limits `500m`/`384Mi` | Other keys: the [chart's values](https://github.com/valkey-io/valkey-helm/blob/main/valkey/values.yaml). |
 
 ### Mock behaviour and limits
 
@@ -222,8 +265,8 @@ request is processed.
 | `networkPolicy.enabled` | `false` | Ingress (and optionally egress) policy for FastMock pods. |
 | `networkPolicy.dataFrom` | `[]` (any) | `from` peers allowed on the data port. |
 | `networkPolicy.adminFrom` | `[]` (any) | `from` peers allowed on the admin port (tests, Prometheus, the Gateway, the operator). |
-| `networkPolicy.storage` | `true` | With bundled databases, allow connections to them only from FastMock pods. |
-| `networkPolicy.egress.enabled` | `false` | Also restrict egress: DNS and the bundled databases are always allowed, plus `rules`. |
+| `networkPolicy.storage` | `true` | With `postgresql.enabled` or `valkey.enabled`, allow connections to them only from FastMock pods. CloudNativePG clusters are left to the operator's own policies. |
+| `networkPolicy.egress.enabled` | `false` | Also restrict egress: DNS and the databases installed with the release are always allowed, plus `rules`. |
 | `networkPolicy.egress.rules` | `[]` | Extra egress rules (external databases, Kafka, callback receivers, proxy targets). |
 | `pdb.enabled`, `pdb.minAvailable` | `true`, `1` | PodDisruptionBudget. Disable for a single replica. |
 | `autoscaling.enabled` | `false` | HorizontalPodAutoscaler on CPU (`postgres` mode only). |
@@ -386,10 +429,10 @@ With `networkPolicy.enabled: true` the chart creates one policy for FastMock pod
 
 - **ingress** on the data port from `dataFrom` (or anywhere when empty), on the admin port from `adminFrom` (or
   anywhere when empty). Set `adminFrom`.
-- **egress** (with `egress.enabled`): DNS to `kube-dns`, the bundled databases, and your `egress.rules`. Callback
+- **egress** (with `egress.enabled`): DNS to `kube-dns`, the databases installed with the release (including the CloudNativePG cluster on port 5432), and your `egress.rules`. Callback
   receivers, proxy targets, Kafka, external PostgreSQL/Valkey and the OTLP collector must be covered by rules.
 
-With bundled databases, `networkPolicy.storage: true` adds a second policy that lets only FastMock pods of the
+With `postgresql.enabled` or `valkey.enabled`, `networkPolicy.storage: true` adds a second policy that lets only FastMock pods of the
 release reach them.
 
 ## Upgrade notes

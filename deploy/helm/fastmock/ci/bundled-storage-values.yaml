@@ -9,8 +9,15 @@ postgresql:
   enabled: true
   auth:
     existingSecret: fastmock-postgresql
+  customUser:
+    existingSecret: fastmock-postgresql
 
 valkey:
   enabled: true
   auth:
-    existingSecret: fastmock-valkey
+    usersExistingSecret: fastmock-valkey
+
+networkPolicy:
+  enabled: true
+  egress:
+    enabled: true

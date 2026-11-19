@@ -104,12 +104,19 @@ jobs:
       - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e
         with:
           version: v3.17.4
+      - name: fetch chart dependencies
+        run: |
+          helm repo add cnpg https://cloudnative-pg.github.io/charts
+          helm repo add valkey https://valkey.io/valkey-helm/
+          helm dependency build deploy/helm/fastmock
       - name: lint and render fastmock
         run: |
           for f in deploy/helm/fastmock/ci/*.yaml; do
             echo "::group::$f"
-            helm lint --strict deploy/helm/fastmock -f "$f"
-            helm template fastmock deploy/helm/fastmock -f "$f" > /dev/null
+            if [ "$(basename "$f")" != cnpg-values.yaml ]; then
+              helm lint --strict deploy/helm/fastmock -f "$f"
+            fi
+            helm template fastmock deploy/helm/fastmock -f "$f" --api-versions postgresql.cnpg.io/v1 > /dev/null
             echo "::endgroup::"
           done
       - name: lint and render fastmock-operator

@@ -1,0 +1,21 @@
+admin:
+  tokensSecret:
+    name: fastmock-admin-tokens
+
+storage:
+  mode: postgres
+
+cnpg:
+  enabled: true
+  cluster:
+    instances: 3
+
+valkey:
+  enabled: true
+  auth:
+    usersExistingSecret: fastmock-valkey
+
+networkPolicy:
+  enabled: true
+  egress:
+    enabled: true

@@ -153,9 +153,18 @@ spec:
               - key: app.kubernetes.io/instance
                 operator: In
                 values: [{{ .Release.Name | quote }}]
-              - key: app.kubernetes.io/component
+              - key: app.kubernetes.io/name
                 operator: In
                 values: ["postgresql", "valkey"]
+    {{- end }}
+    {{- if .Values.cnpg.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: {{ include "fastmock.dependencyFullname" (dict "root" . "name" "cnpg") | quote }}
+      ports:
+        - port: 5432
+          protocol: TCP
     {{- end }}
     {{- with .Values.networkPolicy.egress.rules }}
     {{- toYaml . | nindent 4 }}
@@ -176,9 +185,11 @@ spec:
       - key: app.kubernetes.io/instance
         operator: In
         values: [{{ .Release.Name | quote }}]
-      - key: app.kubernetes.io/component
+      - key: app.kubernetes.io/name
         operator: In
         values: ["postgresql", "valkey"]
+      - key: cnpg.io/cluster
+        operator: DoesNotExist
   policyTypes:
     - Ingress
   ingress:

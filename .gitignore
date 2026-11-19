@@ -3,3 +3,4 @@
 .DS_Store
 /site
 /docs/api/swagger/vendor
+/deploy/helm/*/charts/
