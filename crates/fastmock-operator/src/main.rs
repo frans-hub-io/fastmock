@@ -13,7 +13,7 @@ use tracing_subscriber::EnvFilter;
 
 fn crds_yaml() -> anyhow::Result<String> {
     let mut out = String::new();
-    for crd in [crd::MockServer::crd(), crd::MockApi::crd()] {
+    for crd in [crd::FastMock::crd(), crd::MockApi::crd()] {
         out.push_str("---\n");
         out.push_str(&serde_yaml_ng::to_string(&crd)?);
     }
@@ -91,21 +91,21 @@ mod tests {
     fn crds_render() {
         let y = super::crds_yaml().unwrap();
         assert!(y.contains("kind: CustomResourceDefinition"));
-        assert!(y.contains("mockservers.fastmock.io"));
-        assert!(y.contains("mockapis.fastmock.io"));
+        assert!(y.contains("fastmocks.fastmock.franshub.io"));
+        assert!(y.contains("mockapis.fastmock.franshub.io"));
         assert!(y.contains("x-kubernetes-preserve-unknown-fields: true"));
         assert!(!y.contains("mode: ''"));
     }
 
     #[test]
     fn spec_defaults_are_usable() {
-        let spec: crate::crd::MockServerSpec =
+        let spec: crate::crd::FastMockSpec =
             serde_json::from_value(serde_json::json!({"adminTokensSecret": {"name": "t"}}))
                 .unwrap();
         assert_eq!(spec.storage.mode, "memory");
         assert_eq!(spec.admin_tokens_secret.unwrap().key, "tokens");
-        let crd = serde_json::to_value(<crate::crd::MockServer as kube::CustomResourceExt>::crd())
-            .unwrap();
+        let crd =
+            serde_json::to_value(<crate::crd::FastMock as kube::CustomResourceExt>::crd()).unwrap();
         let storage = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
             ["properties"]["storage"];
         assert_eq!(storage["default"]["mode"], "memory");

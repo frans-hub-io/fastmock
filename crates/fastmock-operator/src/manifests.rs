@@ -4,7 +4,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::crd::MockServerSpec;
+use crate::crd::FastMockSpec;
 
 pub const MANAGER: &str = "fastmock-operator";
 pub const OPERATOR_PRINCIPAL: &str = "fastmock-operator";
@@ -54,7 +54,7 @@ pub fn tokens_file(user_lines: &str, operator_token: &str) -> String {
     out.join("\n") + "\n"
 }
 
-pub fn env_map(name: &str, spec: &MockServerSpec) -> BTreeMap<String, String> {
+pub fn env_map(name: &str, spec: &FastMockSpec) -> BTreeMap<String, String> {
     let mut m = BTreeMap::new();
     m.insert("FASTMOCK_LISTEN".into(), "0.0.0.0:8080".into());
     m.insert("FASTMOCK_ADMIN_LISTEN".into(), "0.0.0.0:9090".into());
@@ -153,7 +153,7 @@ pub fn deployment(
     name: &str,
     ns: &str,
     owner: &OwnerReference,
-    spec: &MockServerSpec,
+    spec: &FastMockSpec,
     image: &str,
     checksum: &str,
 ) -> Value {
@@ -192,7 +192,7 @@ pub fn deployment(
             "selector": {"matchLabels": selector(name)},
             "strategy": {"type": "RollingUpdate", "rollingUpdate": {"maxUnavailable": 0, "maxSurge": 1}},
             "template": {
-                "metadata": {"labels": selector(name), "annotations": {"fastmock.io/config-checksum": checksum}},
+                "metadata": {"labels": selector(name), "annotations": {"fastmock.franshub.io/config-checksum": checksum}},
                 "spec": {
                     "serviceAccountName": name,
                     "automountServiceAccountToken": false,
@@ -227,8 +227,8 @@ mod tests {
 
     fn owner() -> OwnerReference {
         OwnerReference {
-            api_version: "fastmock.io/v1alpha1".into(),
-            kind: "MockServer".into(),
+            api_version: "fastmock.franshub.io/v1alpha1".into(),
+            kind: "FastMock".into(),
             name: "m".into(),
             uid: "u".into(),
             controller: Some(true),
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn deployment_is_hardened_and_wires_storage() {
-        let spec = MockServerSpec {
+        let spec = FastMockSpec {
             image: "img:1".into(),
             replicas: 2,
             storage: StorageSpec {
@@ -280,7 +280,7 @@ mod tests {
             d["spec"]["template"]["spec"]["automountServiceAccountToken"],
             false
         );
-        assert_eq!(d["metadata"]["ownerReferences"][0]["kind"], "MockServer");
+        assert_eq!(d["metadata"]["ownerReferences"][0]["kind"], "FastMock");
         let env = env_map("m", &spec);
         assert_eq!(env["FASTMOCK_PLUGIN_EXAMPLE_CALLBACK_URL"], "http://x");
         assert_eq!(env["FASTMOCK_VALKEY_PREFIX"], "fastmock:m:");

@@ -18,20 +18,20 @@ Build and publish the client to your Maven repository (or to the local one):
 
 ```sh
 cd clients/java
-gradle publishToMavenLocal        # io.fastmock:fastmock-client:0.1.0
+gradle publishToMavenLocal        # io.franshub:fastmock-client:0.1.0
 ```
 
 ```kotlin
 // build.gradle.kts
 dependencies {
-    testImplementation("io.fastmock:fastmock-client:0.1.0")
+    testImplementation("io.franshub:fastmock-client:0.1.0")
 }
 ```
 
 ```xml
 <!-- pom.xml -->
 <dependency>
-  <groupId>io.fastmock</groupId>
+  <groupId>io.franshub</groupId>
   <artifactId>fastmock-client</artifactId>
   <version>0.1.0</version>
   <scope>test</scope>

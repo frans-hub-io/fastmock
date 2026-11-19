@@ -1,4 +1,4 @@
-package io.fastmock.client;
+package io.franshub.fastmock.client;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;

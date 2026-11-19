@@ -19,15 +19,15 @@ use serde_json::{Value, json};
 use thiserror::Error;
 
 use crate::crd::{
-    Condition, DocumentSource, MockApi, MockApiSpec, MockApiStatus, MockServer, MockServerSpec,
-    MockServerStatus, condition, merge_conditions, status_changed,
+    Condition, DocumentSource, FastMock, FastMockSpec, FastMockStatus, MockApi, MockApiSpec,
+    MockApiStatus, condition, merge_conditions, status_changed,
 };
 use crate::manifests::{self, MANAGER};
 use crate::policy::{
     ALLOW_MOUNT_LABEL, ImagePolicy, denied_env_keys, referenced_secrets, secret_allowed,
 };
 
-pub const FINALIZER: &str = "fastmock.io/stubs";
+pub const FINALIZER: &str = "fastmock.franshub.io/stubs";
 
 const RESYNC: Duration = Duration::from_secs(300);
 
@@ -161,15 +161,15 @@ pub fn trigger_hash<K: Resource>(obj: &K) -> Option<u64> {
     Some(h.finish())
 }
 
-pub async fn reconcile_server(ms: Arc<MockServer>, ctx: Arc<Ctx>) -> Result<Action, Error> {
+pub async fn reconcile_server(ms: Arc<FastMock>, ctx: Arc<Ctx>) -> Result<Action, Error> {
     let start = Instant::now();
     let r = reconcile_server_inner(&ms, &ctx).await;
-    observe("MockServer", start, &r);
+    observe("FastMock", start, &r);
     reset_failures(&ctx, ms.as_ref(), &r);
     r
 }
 
-fn storage_problem(spec: &MockServerSpec) -> Option<&'static str> {
+fn storage_problem(spec: &FastMockSpec) -> Option<&'static str> {
     let invalid = match spec.storage.mode.as_str() {
         "memory" => None,
         "postgres" if spec.storage.database.is_none() || spec.storage.valkey.is_none() => {
@@ -186,7 +186,7 @@ fn storage_problem(spec: &MockServerSpec) -> Option<&'static str> {
 
 async fn check_secrets(
     secrets: &Api<Secret>,
-    spec: &MockServerSpec,
+    spec: &FastMockSpec,
 ) -> Result<Option<(&'static str, String)>, Error> {
     let mut missing = vec![];
     let mut denied = vec![];
@@ -217,10 +217,10 @@ async fn check_secrets(
     Ok(None)
 }
 
-async fn reconcile_server_inner(ms: &MockServer, ctx: &Ctx) -> Result<Action, Error> {
+async fn reconcile_server_inner(ms: &FastMock, ctx: &Ctx) -> Result<Action, Error> {
     let ns = ms
         .namespace()
-        .ok_or_else(|| Error::Spec("MockServer must be namespaced".into()))?;
+        .ok_or_else(|| Error::Spec("FastMock must be namespaced".into()))?;
     let name = ms.name_any();
     let owner = ms
         .controller_owner_ref(&())
@@ -228,11 +228,11 @@ async fn reconcile_server_inner(ms: &MockServer, ctx: &Ctx) -> Result<Action, Er
     let spec = &ms.spec;
     let generation = ms.metadata.generation.unwrap_or(0);
     let prev = ms.status.as_ref();
-    let servers: Api<MockServer> = Api::namespaced(ctx.client.clone(), &ns);
+    let servers: Api<FastMock> = Api::namespaced(ctx.client.clone(), &ns);
     let secrets: Api<Secret> = Api::namespaced(ctx.client.clone(), &ns);
     let blocked = |reason: &str, msg: &str| {
         let base = prev.cloned().unwrap_or_default();
-        MockServerStatus {
+        FastMockStatus {
             observed_generation: generation,
             conditions: merge_conditions(
                 &base.conditions,
@@ -262,7 +262,7 @@ async fn reconcile_server_inner(ms: &MockServer, ctx: &Ctx) -> Result<Action, Er
             .map(|(r, m)| (r, m, Duration::from_secs(60)))
     };
     if let Some((reason, msg, requeue)) = refusal {
-        tracing::warn!(mockserver = %name, namespace = %ns, %reason, %msg, "MockServer refused");
+        tracing::warn!(fastmock = %name, namespace = %ns, %reason, %msg, "FastMock refused");
         write_status(&servers, &name, prev, &blocked(reason, &msg)).await?;
         return Ok(Action::requeue(requeue));
     }
@@ -349,7 +349,7 @@ async fn reconcile_server_inner(ms: &MockServer, ctx: &Ctx) -> Result<Action, Er
         &format!("{ready}/{} replicas ready", spec.replicas),
     )];
     conditions.extend(route_condition);
-    let st = MockServerStatus {
+    let st = FastMockStatus {
         ready_replicas: ready,
         observed_generation: generation,
         admin_url: format!("http://{name}-admin.{ns}.svc:9090"),
@@ -371,7 +371,7 @@ async fn reconcile_server_inner(ms: &MockServer, ctx: &Ctx) -> Result<Action, Er
 
 async fn reconcile_route(
     ctx: &Ctx,
-    ms: &MockServer,
+    ms: &FastMock,
     ns: &str,
     name: &str,
     owner: &k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference,
@@ -384,7 +384,7 @@ async fn reconcile_route(
     let routes: Api<DynamicObject> = Api::namespaced_with(ctx.client.clone(), ns, &ar);
     let Some(route) = &ms.spec.route else {
         if let Err(e) = delete_owned(&routes, name, &owner.uid).await {
-            tracing::warn!(mockserver = %name, namespace = %ns, error = %e, "removing HTTPRoute failed");
+            tracing::warn!(fastmock = %name, namespace = %ns, error = %e, "removing HTTPRoute failed");
         }
         return None;
     };
@@ -400,7 +400,7 @@ async fn reconcile_route(
         {
             Ok(_) => condition("RouteReady", true, "Applied", "HTTPRoute applied"),
             Err(e) => {
-                tracing::warn!(mockserver = %name, namespace = %ns, error = %e, "applying HTTPRoute failed");
+                tracing::warn!(fastmock = %name, namespace = %ns, error = %e, "applying HTTPRoute failed");
                 condition(
                     "RouteReady",
                     false,
@@ -672,7 +672,7 @@ async fn sync_api(api: Arc<MockApi>, ctx: &Ctx) -> Result<Action, Error> {
     let ns = api.namespace().unwrap_or_default();
     let name = api.name_any();
     let apis: Api<MockApi> = Api::namespaced(ctx.client.clone(), &ns);
-    let servers: Api<MockServer> = Api::namespaced(ctx.client.clone(), &ns);
+    let servers: Api<FastMock> = Api::namespaced(ctx.client.clone(), &ns);
     let generation = api.metadata.generation.unwrap_or(0);
     let prev = api.status.as_ref();
     let base = prev.cloned().unwrap_or_default();
@@ -707,7 +707,7 @@ async fn sync_api(api: Arc<MockApi>, ctx: &Ctx) -> Result<Action, Error> {
             base.last_sync_time.clone(),
             false,
             "ServerNotReady",
-            &format!("MockServer {server_name} is missing or not ready"),
+            &format!("FastMock {server_name} is missing or not ready"),
         );
         write_status(&apis, &name, prev, &st).await?;
         return Ok(Action::requeue(Duration::from_secs(15)));
@@ -788,11 +788,11 @@ async fn cleanup_api(api: Arc<MockApi>, ctx: &Ctx) -> Result<Action, Error> {
     let ns = api.namespace().unwrap_or_default();
     let name = api.name_any();
     let server_name = &api.spec.server_ref.name;
-    let servers: Api<MockServer> = Api::namespaced(ctx.client.clone(), &ns);
+    let servers: Api<FastMock> = Api::namespaced(ctx.client.clone(), &ns);
     match servers.get_opt(server_name).await? {
         Some(s) if s.metadata.deletion_timestamp.is_none() => {}
         _ => {
-            tracing::info!(mockapi = %name, namespace = %ns, server = %server_name, "MockServer is gone; releasing MockApi without stub cleanup");
+            tracing::info!(mockapi = %name, namespace = %ns, server = %server_name, "FastMock is gone; releasing MockApi without stub cleanup");
             return Ok(Action::await_change());
         }
     }
@@ -842,7 +842,7 @@ fn error_policy<K: Resource<DynamicType = ()>>(obj: Arc<K>, err: &Error, ctx: Ar
 
 pub async fn run(ctx: Arc<Ctx>, namespace: Option<String>) {
     let client = ctx.client.clone();
-    let (servers, apis, deps): (Api<MockServer>, Api<MockApi>, Api<Deployment>) = match &namespace {
+    let (servers, apis, deps): (Api<FastMock>, Api<MockApi>, Api<Deployment>) = match &namespace {
         Some(ns) => (
             Api::namespaced(client.clone(), ns),
             Api::namespaced(client.clone(), ns),
@@ -860,7 +860,7 @@ pub async fn run(ctx: Arc<Ctx>, namespace: Option<String>) {
         .default_backoff()
         .reflect(server_writer)
         .applied_objects()
-        .predicate_filter(trigger_hash::<MockServer>, Default::default());
+        .predicate_filter(trigger_hash::<FastMock>, Default::default());
     let server_ctrl = Controller::for_stream(server_events, server_reader)
         .owns(
             deps,
@@ -870,7 +870,7 @@ pub async fn run(ctx: Arc<Ctx>, namespace: Option<String>) {
         .run(reconcile_server, error_policy, ctx.clone())
         .for_each(|r| async move {
             if let Err(e) = r {
-                tracing::debug!(error = %e, "MockServer controller event");
+                tracing::debug!(error = %e, "FastMock controller event");
             }
         });
     let (api_reader, api_writer) = reflector::store();
@@ -988,7 +988,7 @@ mod tests {
 
     #[test]
     fn storage_rules() {
-        let mut spec = MockServerSpec {
+        let mut spec = FastMockSpec {
             replicas: 1,
             storage: crate::crd::StorageSpec {
                 mode: "memory".into(),

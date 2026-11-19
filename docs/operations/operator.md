@@ -2,16 +2,16 @@
 
 The operator manages FastMock declaratively with two custom resources:
 
-- **`MockServer`** describes a FastMock instance. The operator creates its Deployment, Services, configuration,
+- **`FastMock`** describes a FastMock instance. The operator creates its Deployment, Services, configuration,
   admin tokens, PodDisruptionBudget and optional HTTPRoute.
-- **`MockApi`** describes mocks for a `MockServer`: inline stubs, an OpenAPI document or WireMock mappings. The
+- **`MockApi`** describes mocks for a `FastMock`: inline stubs, an OpenAPI document or WireMock mappings. The
   operator imports them through the admin API and keeps them in sync.
 
 Teams can then keep their mocks next to their application manifests (GitOps), and platform owners keep control
 over images, secrets and security settings through operator policies.
 
 - [Install](#install)
-- [MockServer](#mockserver)
+- [FastMock](#fastmock)
 - [MockApi](#mockapi)
 - [Status and conditions](#status-and-conditions)
 - [Policies](#policies)
@@ -27,14 +27,14 @@ helm upgrade --install fastmock-operator deploy/helm/fastmock-operator -n fastmo
   --set server.image.repository=registry.example.com/platform/fastmock --set server.image.tag=0.1.0
 ```
 
-Helm installs the CRDs (`mockservers.fastmock.io`, `mockapis.fastmock.io`, version `v1alpha1`) on first install.
+Helm installs the CRDs (`fastmocks.fastmock.franshub.io`, `mockapis.fastmock.franshub.io`, version `v1alpha1`) on first install.
 
 | Value | Default | Meaning |
 |---|---|---|
 | `image.repository`, `image.tag`, `image.pullPolicy` | `fastmock-operator`, chart `appVersion`, `IfNotPresent` | Operator image. |
 | `imagePullSecrets` | `[]` | For the operator pod. |
-| `server.image.repository`, `server.image.tag` | `fastmock`, chart `appVersion` | Default FastMock image for `MockServer`s without `spec.image` (`FASTMOCK_OPERATOR_SERVER_IMAGE`). |
-| `server.allowedImagePrefixes` | `[]` (the repository of the default image) | Image prefixes a `MockServer` may use (`FASTMOCK_OPERATOR_ALLOWED_IMAGE_PREFIXES`). |
+| `server.image.repository`, `server.image.tag` | `fastmock`, chart `appVersion` | Default FastMock image for `FastMock`s without `spec.image` (`FASTMOCK_OPERATOR_SERVER_IMAGE`). |
+| `server.allowedImagePrefixes` | `[]` (the repository of the default image) | Image prefixes a `FastMock` may use (`FASTMOCK_OPERATOR_ALLOWED_IMAGE_PREFIXES`). |
 | `watchNamespace` | `""` (all namespaces) | Watch only one namespace; the operator then gets a Role instead of a ClusterRole. |
 | `logLevel` | `info` | Operator log level. |
 | `resources` | requests `50m`/`64Mi`, limits `500m`/`256Mi` | |
@@ -44,11 +44,11 @@ Helm installs the CRDs (`mockservers.fastmock.io`, `mockapis.fastmock.io`, versi
 
 The operator runs one replica (`Recreate` strategy) and serves `/healthz`, `/readyz` and `/metrics` on port 8081.
 
-## MockServer
+## FastMock
 
 ```yaml
-apiVersion: fastmock.io/v1alpha1
-kind: MockServer
+apiVersion: fastmock.franshub.io/v1alpha1
+kind: FastMock
 metadata:
   name: payments
   namespace: team-payments
@@ -73,13 +73,13 @@ spec:
       - {name: internal-gateway, namespace: gateway-system}
 ```
 
-Every Secret it references must carry the label `fastmock.io/allow-mount: "true"` (see [Policies](#policies)):
+Every Secret it references must carry the label `fastmock.franshub.io/allow-mount: "true"` (see [Policies](#policies)):
 
 ```sh
 kubectl -n team-payments create secret generic payments-mock-storage \
   --from-literal=database-url='postgres://fastmock:<password>@db.example.com:5432/payments_mock?sslmode=verify-full' \
   --from-literal=valkey-url='redis://:<password>@valkey.example.com:6379/'
-kubectl -n team-payments label secret payments-mock-storage fastmock.io/allow-mount=true
+kubectl -n team-payments label secret payments-mock-storage fastmock.franshub.io/allow-mount=true
 ```
 
 ### Fields
@@ -104,7 +104,7 @@ kubectl -n team-payments label secret payments-mock-storage fastmock.io/allow-mo
 
 ### What the operator creates
 
-All objects are named after the `MockServer`, owned by it (deleted with it) and labelled
+All objects are named after the `FastMock`, owned by it (deleted with it) and labelled
 `app.kubernetes.io/managed-by: fastmock-operator`.
 
 | Object | Name | Content |
@@ -122,7 +122,7 @@ The status shows the in-cluster URLs: `status.adminUrl` = `http://<name>-admin.<
 `status.dataUrl` = `http://<name>.<namespace>.svc:8080`.
 
 ```sh
-kubectl -n team-payments get mockservers
+kubectl -n team-payments get fastmocks
 ```
 
 ```text
@@ -133,7 +133,7 @@ payments   2       postgres   5m
 ## MockApi
 
 ```yaml
-apiVersion: fastmock.io/v1alpha1
+apiVersion: fastmock.franshub.io/v1alpha1
 kind: MockApi
 metadata:
   name: billing
@@ -161,7 +161,7 @@ spec:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `serverRef.name` | required | `MockServer` in the same namespace. |
+| `serverRef.name` | required | `FastMock` in the same namespace. |
 | `tag` | `<namespace>.<name>` | Tag of the imported stubs. |
 | `stubs` | `[]` | Stub objects exactly as in the admin API ([Concepts: stubs](../guide/concepts.md#stubs)). |
 | `openapi.inline` or `openapi.configMapRef` | none | OpenAPI 3 document (JSON or YAML) inline or from a ConfigMap key. |
@@ -176,11 +176,11 @@ How it is applied:
   removes it from the server; removing a whole section deletes its tag. Details of the conversions:
   [Importing](../guide/importing.md), [WireMock and MockServer import](../guide/import-wiremock-mockserver.md).
 - The operator imports only when the effective input changed: the spec, the content of the referenced
-  ConfigMaps, or the server (a re-created `MockServer` gets a new UID). Every 5 minutes it re-reads the
+  ConfigMaps, or the server (a re-created `FastMock` gets a new UID). Every 5 minutes it re-reads the
   ConfigMaps and checks that the server still has the expected number of stubs (for example after a memory-mode
   server restarted); missing stubs are re-imported.
-- Deleting a `MockApi` deletes its stubs. The finalizer `fastmock.io/stubs` keeps the resource until the removal
-  succeeded, as long as the `MockServer` exists; if the server is gone, the finalizer is released without
+- Deleting a `MockApi` deletes its stubs. The finalizer `fastmock.franshub.io/stubs` keeps the resource until the removal
+  succeeded, as long as the `FastMock` exists; if the server is gone, the finalizer is released without
   cleanup.
 
 ```sh
@@ -194,7 +194,7 @@ billing   payments   14      True
 
 ## Status and conditions
 
-### MockServer
+### FastMock
 
 | Field | Meaning |
 |---|---|
@@ -210,7 +210,7 @@ billing   payments   14      True
 | `Ready` | False | `InvalidSpec` | `storage.mode` is not `memory`/`postgres`, `postgres` without `database` and `valkey`, or more than one replica with memory storage. |
 | `Ready` | False | `ImageNotAllowed` | The image does not match an allowed prefix. |
 | `Ready` | False | `EnvNotAllowed` | `spec.env` sets a variable that is reserved for dedicated fields. |
-| `Ready` | False | `SecretNotAllowed` | A referenced Secret lacks the label `fastmock.io/allow-mount: "true"`. |
+| `Ready` | False | `SecretNotAllowed` | A referenced Secret lacks the label `fastmock.franshub.io/allow-mount: "true"`. |
 | `Ready` | False | `SecretNotFound` | A referenced Secret does not exist. |
 | `RouteReady` | True / False | `Applied` / `ApplyFailed` | Only when `route` is set; `ApplyFailed` usually means Gateway API is not installed. |
 
@@ -219,11 +219,11 @@ When a resource is refused (`InvalidSpec`, `ImageNotAllowed`, `EnvNotAllowed`, `
 re-checked every minute, the others when the resource changes and every 5 minutes.
 
 ```sh
-kubectl -n team-payments get mockserver payments -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.reason}: {.message}{"\n"}{end}'
+kubectl -n team-payments get fastmock payments -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.reason}: {.message}{"\n"}{end}'
 ```
 
 ```text
-Ready=False SecretNotAllowed: referenced Secrets must carry the label fastmock.io/allow-mount=true: storage.database=payments-mock-storage
+Ready=False SecretNotAllowed: referenced Secrets must carry the label fastmock.franshub.io/allow-mount=true: storage.database=payments-mock-storage
 ```
 
 ### MockApi
@@ -239,12 +239,12 @@ Ready=False SecretNotAllowed: referenced Secrets must carry the label fastmock.i
 | Condition | Status | Reason | Meaning |
 |---|---|---|---|
 | `Synced` | True | `Synced` | `14 stubs applied with tag team-payments.billing` |
-| `Synced` | False | `ServerNotReady` | The `MockServer` is missing, being deleted or has no ready replica; retried every 15 s. |
+| `Synced` | False | `ServerNotReady` | The `FastMock` is missing, being deleted or has no ready replica; retried every 15 s. |
 | `Synced` | False | `SyncFailed` | The import failed: invalid stub, unparsable document, missing ConfigMap or key, admin API error. The message tells which. |
 
 ## Policies
 
-`MockServer` resources are written by application teams, while the operator runs with broad permissions. To keep
+`FastMock` resources are written by application teams, while the operator runs with broad permissions. To keep
 the operator from being used to run arbitrary images, read arbitrary Secrets or weaken FastMock's security
 settings, it enforces three policies:
 
@@ -254,7 +254,7 @@ settings, it enforces three policies:
    `registry.example.com/fastmock@sha256:...` but not `registry.example.com/fastmock-other`. Without explicit
    prefixes only the repository of the default image is allowed. Otherwise: `ImageNotAllowed`.
 2. **Secret opt-in.** Every Secret named in `storage.database`, `storage.valkey`, `adminTokensSecret`,
-   `secretsSecret` and `imagePullSecrets` must have the label `fastmock.io/allow-mount: "true"`. A Secret owner
+   `secretsSecret` and `imagePullSecrets` must have the label `fastmock.franshub.io/allow-mount: "true"`. A Secret owner
    thereby agrees that FastMock pods may mount it. Otherwise: `SecretNotAllowed`.
 3. **Reserved environment.** `spec.env` must not set `FASTMOCK_AUTH_DISABLED`, `FASTMOCK_ADMIN_TOKENS`,
    `FASTMOCK_ADMIN_TOKENS_FILE`, `FASTMOCK_ADMIN_ALLOWED_ORIGINS`, `FASTMOCK_SECRETS_DIR`, `FASTMOCK_SECRET_*`,
@@ -272,10 +272,10 @@ The chart grants the operator (as a ClusterRole, or a Role in `watchNamespace`):
 
 | API group | Resources | Verbs |
 |---|---|---|
-| `fastmock.io` | `mockservers` | get, list, watch |
-| `fastmock.io` | `mockapis` | list, watch, patch |
-| `fastmock.io` | `mockservers/status`, `mockapis/status` | patch |
-| `fastmock.io` | `mockservers/finalizers` | update |
+| `fastmock.franshub.io` | `fastmocks` | get, list, watch |
+| `fastmock.franshub.io` | `mockapis` | list, watch, patch |
+| `fastmock.franshub.io` | `fastmocks/status`, `mockapis/status` | patch |
+| `fastmock.franshub.io` | `fastmocks/finalizers` | update |
 | core | `secrets`, `configmaps` | get, create, patch |
 | core | `services`, `serviceaccounts` | create, patch |
 | `apps` | `deployments` | get, list, watch, create, patch |
@@ -283,7 +283,7 @@ The chart grants the operator (as a ClusterRole, or a Role in `watchNamespace`):
 | `gateway.networking.k8s.io` | `httproutes` | get, create, patch, delete |
 
 It cannot list Secrets, only read those it is pointed at, and the Secret-label policy limits which of those it
-mounts. Users need RBAC on `mockservers` and `mockapis` in their namespaces; reading the generated
+mounts. Users need RBAC on `fastmocks` and `mockapis` in their namespaces; reading the generated
 `<name>-operator-token` Secret is equivalent to admin access to that FastMock, so do not grant `get secrets` more
 widely than needed.
 
@@ -291,10 +291,10 @@ widely than needed.
 
 | Metric | Labels | Meaning |
 |---|---|---|
-| `fastmock_operator_reconciles_total` | `kind` (`MockServer`, `MockApi`), `result` (`ok`, `error`) | Reconciliations. |
+| `fastmock_operator_reconciles_total` | `kind` (`FastMock`, `MockApi`), `result` (`ok`, `error`) | Reconciliations. |
 | `fastmock_operator_reconcile_duration_seconds` | `kind` | Reconciliation time. |
 
-Logs are JSON; a refused resource logs `MockServer refused` with `reason` and `msg`. Failed reconciliations are
+Logs are JSON; a refused resource logs `FastMock refused` with `reason` and `msg`. Failed reconciliations are
 retried with backoff from 5 s up to 5 minutes. The [Grafana dashboard](observability.md#grafana-dashboard) has an
 operator panel.
 
@@ -305,14 +305,14 @@ yourself:
 
 ```sh
 helm upgrade fastmock-operator deploy/helm/fastmock-operator -n fastmock-system -f values.yaml
-kubectl apply --server-side -f deploy/helm/fastmock-operator/crds/fastmock.io.yaml
+kubectl apply --server-side -f deploy/helm/fastmock-operator/crds/fastmock.franshub.io.yaml
 ```
 
 The CRD file is generated from the operator code (`fastmock-operator crd`), so it always matches the operator
-version of the same chart. Existing `MockServer`s are re-applied with the new operator's manifests; their pods
+version of the same chart. Existing `FastMock`s are re-applied with the new operator's manifests; their pods
 roll only if the generated Deployment changed. Changing the default server image (`server.image.tag`) rolls
-every `MockServer` that does not pin `spec.image`.
+every `FastMock` that does not pin `spec.image`.
 
-Uninstalling the chart leaves the CRDs and therefore all `MockServer`/`MockApi` resources and their objects in
+Uninstalling the chart leaves the CRDs and therefore all `FastMock`/`MockApi` resources and their objects in
 place. Delete the resources first if you want everything removed; deleting the CRDs deletes all resources of
 those kinds.

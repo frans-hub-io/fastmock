@@ -200,19 +200,19 @@ make pods unready (no traffic) but do not restart them.
 
 ## Operator conditions
 
-`kubectl get mockserver <name> -o yaml` and `kubectl get mockapi <name> -o yaml` show `status.conditions`; the
-operator log has a line per refusal (`MockServer refused`).
+`kubectl get fastmock <name> -o yaml` and `kubectl get mockapi <name> -o yaml` show `status.conditions`; the
+operator log has a line per refusal (`FastMock refused`).
 
 | Condition | Fix |
 |---|---|
 | `Ready=False ImageNotAllowed` | Use an image under an allowed prefix, or extend `server.allowedImagePrefixes` in the operator chart. |
-| `Ready=False SecretNotAllowed` | Label the Secret named in the message: `kubectl label secret <name> fastmock.io/allow-mount=true`. |
+| `Ready=False SecretNotAllowed` | Label the Secret named in the message: `kubectl label secret <name> fastmock.franshub.io/allow-mount=true`. |
 | `Ready=False SecretNotFound` | Create the Secret, or fix the name. |
 | `Ready=False EnvNotAllowed` | Remove the listed variables from `spec.env` and use the dedicated fields (`storage`, `adminTokensSecret`, `secretsSecret`). |
 | `Ready=False InvalidSpec` | Set `spec.storage.mode` (`memory` or `postgres`); `postgres` needs `database` and `valkey`; memory allows one replica. |
 | `Ready=False Progressing` | Pods are not ready: `kubectl describe deploy <name>`, pod logs, [Readiness fails](#readiness-fails). |
 | `RouteReady=False ApplyFailed` | Gateway API CRDs are missing or the route is invalid; the message has the API error. |
-| `Synced=False ServerNotReady` | The `MockServer` is missing or not ready yet; the `MockApi` retries every 15 s. |
+| `Synced=False ServerNotReady` | The `FastMock` is missing or not ready yet; the `MockApi` retries every 15 s. |
 | `Synced=False SyncFailed` | The message names the problem: invalid stub JSON, unparsable OpenAPI/WireMock document, missing ConfigMap or key, admin API error. |
 
-While a `MockServer` is refused, nothing is changed: the previous Deployment keeps serving.
+While a `FastMock` is refused, nothing is changed: the previous Deployment keeps serving.

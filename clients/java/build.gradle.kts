@@ -3,7 +3,7 @@ plugins {
     `maven-publish`
 }
 
-group = "io.fastmock"
+group = "io.franshub"
 version = "0.1.0"
 
 java {

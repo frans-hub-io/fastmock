@@ -20,7 +20,7 @@ requires a token.
 | **Security by default** | Separate admin port, no start without tokens, viewer/editor/admin roles, origin checks, security settings only at start-up, templates without code execution, one egress policy against SSRF, secrets masked in journal and logs, bounded inputs, audit log. [Security](docs/operations/security.md) |
 | **Observability** | Prometheus metrics with bounded labels, OpenTelemetry traces that continue through callbacks, JSON logs with trace ids, a Grafana dashboard and alert rules in the chart. [Observability](docs/operations/observability.md) |
 | **Bring your existing mocks** | Imports WireMock mappings, MockServer expectations, OpenAPI, AsyncAPI, Postman, HAR, WSDL/SoapUI, GraphQL schemas and Microcks artifacts; records real traffic. [Importing](docs/guide/importing.md) |
-| **Kubernetes native** | Helm chart with NetworkPolicy, PDB, HPA, ServiceMonitor, PrometheusRule, Gateway API; operator with `MockServer` and `MockApi` resources and policies for images, Secrets and settings. [Helm](docs/operations/helm.md), [Operator](docs/operations/operator.md) |
+| **Kubernetes native** | Helm chart with NetworkPolicy, PDB, HPA, ServiceMonitor, PrometheusRule, Gateway API; operator with `FastMock` and `MockApi` resources and policies for images, Secrets and settings. [Helm](docs/operations/helm.md), [Operator](docs/operations/operator.md) |
 
 FastMock covers the features that test suites typically use in WireMock 3, MockServer 5 and Microcks 1:
 
@@ -123,7 +123,7 @@ helm upgrade --install fastmock deploy/helm/fastmock -n mocks \
 ```
 
 ```yaml
-apiVersion: fastmock.io/v1alpha1
+apiVersion: fastmock.franshub.io/v1alpha1
 kind: MockApi
 metadata: {name: billing}
 spec:
@@ -153,7 +153,7 @@ FASTMOCK_TEST_DATABASE_URL=postgres://user@localhost:5432/postgres \
 FASTMOCK_TEST_VALKEY_URL=redis://localhost:6379/ \
 FASTMOCK_TEST_KAFKA=localhost:9092 FASTMOCK_TEST_SCHEMA_REGISTRY=http://localhost:8081 \
 cargo test --workspace        # also runs the storage contract, replica and Kafka tests
-cargo run -p fastmock-operator -- crd > deploy/helm/fastmock-operator/crds/fastmock.io.yaml
+cargo run -p fastmock-operator -- crd > deploy/helm/fastmock-operator/crds/fastmock.franshub.io.yaml
 ```
 
 The web UI lives in `ui/` (React, TypeScript, Vite); `npm ci && npm run build` there before `cargo build` embeds

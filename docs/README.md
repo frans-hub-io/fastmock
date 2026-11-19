@@ -62,7 +62,7 @@ section for what you do.
 |---|---|
 | [Configuration](operations/configuration.md) | Every environment variable with type, default and effect. |
 | [Helm chart](operations/helm.md) | Install, upgrade, every value, production checklist, Gateway API, NetworkPolicy. |
-| [Operator](operations/operator.md) | `MockServer` and `MockApi` resources, status conditions, policies, RBAC, CRD upgrades. |
+| [Operator](operations/operator.md) | `FastMock` and `MockApi` resources, status conditions, policies, RBAC, CRD upgrades. |
 | [Security](operations/security.md) | Tokens and roles, origins, TLS, egress, secrets, redaction, limits, audit, hardening checklist. |
 | [Observability](operations/observability.md) | Every metric, PromQL examples, alerts, Grafana dashboard, tracing, logs, health checks. |
 | [Troubleshooting](operations/troubleshooting.md) | Symptom, cause and fix for the common problems. |

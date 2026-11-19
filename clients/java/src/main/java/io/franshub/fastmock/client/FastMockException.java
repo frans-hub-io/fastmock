@@ -1,4 +1,4 @@
-package io.fastmock.client;
+package io.franshub.fastmock.client;
 
 /** Raised when the FastMock admin API answers with an error or cannot be reached. */
 public final class FastMockException extends RuntimeException {

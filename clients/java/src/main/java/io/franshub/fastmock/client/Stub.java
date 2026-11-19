@@ -1,4 +1,4 @@
-package io.fastmock.client;
+package io.franshub.fastmock.client;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;

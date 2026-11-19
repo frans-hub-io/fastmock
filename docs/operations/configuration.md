@@ -208,8 +208,8 @@ The operator (`fastmock-operator`) reads these variables; the operator chart set
 | Variable | Default | Effect |
 |---|---|---|
 | `FASTMOCK_OPERATOR_NAMESPACE` | empty (all namespaces) | Watch only this namespace. |
-| `FASTMOCK_OPERATOR_SERVER_IMAGE` | `fastmock:<operator version>` | Image used when a `MockServer` does not set `spec.image`. |
-| `FASTMOCK_OPERATOR_ALLOWED_IMAGE_PREFIXES` | the repository of the default image | Comma-separated image prefixes a `MockServer` may use. |
+| `FASTMOCK_OPERATOR_SERVER_IMAGE` | `fastmock:<operator version>` | Image used when a `FastMock` does not set `spec.image`. |
+| `FASTMOCK_OPERATOR_ALLOWED_IMAGE_PREFIXES` | the repository of the default image | Comma-separated image prefixes a `FastMock` may use. |
 | `FASTMOCK_OPERATOR_ADMIN_URL_TEMPLATE` | `http://{name}-admin.{namespace}.svc:9090` | How the operator reaches a server's admin API. |
 | `FASTMOCK_OPERATOR_LISTEN` | `0.0.0.0:8081` | Operator `/healthz`, `/readyz` and `/metrics`. |
 | `RUST_LOG` | `info,kube=warn,hyper=warn` | Operator log levels. |

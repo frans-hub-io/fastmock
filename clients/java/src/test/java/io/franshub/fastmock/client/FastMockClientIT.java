@@ -1,7 +1,7 @@
-package io.fastmock.client;
+package io.franshub.fastmock.client;
 
-import io.fastmock.client.Stub.Callback;
-import io.fastmock.client.Stub.Match;
+import io.franshub.fastmock.client.Stub.Callback;
+import io.franshub.fastmock.client.Stub.Match;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 

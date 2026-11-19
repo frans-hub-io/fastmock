@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::crd::MockServerSpec;
+use crate::crd::FastMockSpec;
 
-pub const ALLOW_MOUNT_LABEL: &str = "fastmock.io/allow-mount";
+pub const ALLOW_MOUNT_LABEL: &str = "fastmock.franshub.io/allow-mount";
 
 const DENIED_ENV: &[&str] = &[
     "FASTMOCK_AUTH_DISABLED",
@@ -103,7 +103,7 @@ pub fn denied_env_keys(env: &BTreeMap<String, String>) -> Vec<String> {
         .collect()
 }
 
-pub fn referenced_secrets(spec: &MockServerSpec) -> Vec<(String, String)> {
+pub fn referenced_secrets(spec: &FastMockSpec) -> Vec<(String, String)> {
     let mut out = vec![];
     if let Some(s) = &spec.secrets_secret {
         out.push(("secretsSecret".to_string(), s.clone()));
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn referenced_secrets_are_collected_once() {
-        let spec = MockServerSpec {
+        let spec = FastMockSpec {
             secrets_secret: Some("payments-secrets".into()),
             storage: StorageSpec {
                 mode: "postgres".into(),

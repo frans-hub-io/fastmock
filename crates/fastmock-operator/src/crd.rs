@@ -80,18 +80,18 @@ pub struct RouteSpec {
 
 #[derive(CustomResource, Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[kube(
-    group = "fastmock.io",
+    group = "fastmock.franshub.io",
     version = "v1alpha1",
-    kind = "MockServer",
+    kind = "FastMock",
     namespaced,
-    status = "MockServerStatus",
-    shortname = "fms",
+    status = "FastMockStatus",
+    shortname = "fm",
     printcolumn = r#"{"name":"Ready","type":"integer","jsonPath":".status.readyReplicas"}"#,
     printcolumn = r#"{"name":"Storage","type":"string","jsonPath":".spec.storage.mode"}"#,
     printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
 )]
 #[serde(rename_all = "camelCase")]
-pub struct MockServerSpec {
+pub struct FastMockSpec {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub image: String,
     #[serde(default = "one")]
@@ -136,7 +136,7 @@ pub struct Condition {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct MockServerStatus {
+pub struct FastMockStatus {
     #[serde(default)]
     pub ready_replicas: i32,
     #[serde(default)]
@@ -188,12 +188,12 @@ fn yes() -> bool {
 
 #[derive(CustomResource, Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[kube(
-    group = "fastmock.io",
+    group = "fastmock.franshub.io",
     version = "v1alpha1",
     kind = "MockApi",
     namespaced,
     status = "MockApiStatus",
-    shortname = "fma",
+    shortname = "fmapi",
     printcolumn = r#"{"name":"Server","type":"string","jsonPath":".spec.serverRef.name"}"#,
     printcolumn = r#"{"name":"Stubs","type":"integer","jsonPath":".status.importedStubs"}"#,
     printcolumn = r#"{"name":"Synced","type":"string","jsonPath":".status.conditions[?(@.type==\"Synced\")].status"}"#
