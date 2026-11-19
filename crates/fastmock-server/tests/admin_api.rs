@@ -42,6 +42,7 @@ async fn pg_storage() -> Option<StorageKind> {
         valkey_url,
         valkey_prefix: format!("api:{}:", uuid::Uuid::new_v4().simple()),
         max_connections: 5,
+        options: Default::default(),
     })
 }
 

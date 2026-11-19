@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use anyhow::Context;
 use clap::{Parser, Subcommand};
 use fastmock_core::memory::memory_stores;
 use fastmock_core::template::Templates;
@@ -42,11 +41,17 @@ pub async fn run() -> anyhow::Result<()> {
     match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => serve().await,
         Command::Migrate => {
-            let url = std::env::var("FASTMOCK_DATABASE_URL")
-                .context("FASTMOCK_DATABASE_URL is required")?;
-            let pg = fastmock_store::PgStore::connect(&url, 2).await?;
-            pg.migrate().await?;
-            println!("migrations applied");
+            let db = crate::config::database_from_env()?;
+            let plan = fastmock_store::pg_connect_options(&db.url, &db.tls)?;
+            for w in &plan.warnings {
+                eprintln!("warning: PostgreSQL TLS: {w}");
+            }
+            let pg = fastmock_store::connect_postgres(&db.url, &db.tls, 2).await?;
+            fastmock_store::migrate(&pg, db.migration_timeout).await?;
+            println!(
+                "migrations applied (schema version {})",
+                fastmock_store::PgStore::expected_schema_version()
+            );
             Ok(())
         }
         Command::HashToken { generate, token } => {

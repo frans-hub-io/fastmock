@@ -27,15 +27,58 @@ An invalid value stops the server at start-up with a message that names the vari
 | `FASTMOCK_LISTEN` | address | `0.0.0.0:8080` | Data plane: the port that serves mocks (HTTP/1.1, h2c, HTTPS with HTTP/2 when TLS is configured, gRPC, SSE, plugins). |
 | `FASTMOCK_ADMIN_LISTEN` | address | `0.0.0.0:9090` | Control plane: admin API, UI, `/metrics`, `/healthz`, `/readyz`. Must differ from `FASTMOCK_LISTEN`; the server refuses to start otherwise. |
 | `FASTMOCK_STORAGE` | `postgres` \| `memory` | `postgres` | `memory` keeps everything in the process (one instance, development and CI). `postgres` stores stubs, journal, callbacks, audit and data in PostgreSQL and hot state in Valkey, so replicas share everything. See [Concepts: storage](../guide/concepts.md#storage-modes). |
-| `FASTMOCK_DATABASE_URL` | URL | none, required for `postgres` | PostgreSQL connection URL, for example `postgres://fastmock@db.example.com:5432/fastmock?sslmode=verify-full`. Migrations run automatically at start-up. |
+| `FASTMOCK_DATABASE_URL` | URL | none, required for `postgres` | PostgreSQL connection URL, for example `postgres://fastmock@db.example.com:5432/fastmock?sslmode=verify-full`. The URL parameters `sslmode`, `sslrootcert`, `sslcert` and `sslkey` work; the `FASTMOCK_DATABASE_SSL_*` variables below override them. |
 | `FASTMOCK_DATABASE_PASSWORD` | string | none | Password added to `FASTMOCK_DATABASE_URL` with correct URL encoding. Use it to keep the password out of the URL (for example from a separate Secret key). |
+| `FASTMOCK_DATABASE_SSL_MODE` | `disable` \| `allow` \| `prefer` \| `require` \| `verify-ca` \| `verify-full` | `sslmode` from the URL, else `prefer` | How the PostgreSQL connection uses TLS; see [Storage TLS](#storage-tls). Use `verify-full` in production. |
+| `FASTMOCK_DATABASE_SSL_ROOT_CERT` | path | none | PEM file with the CA certificate(s) that issued the PostgreSQL server certificate. They are trusted in addition to the public CAs compiled into the binary. |
+| `FASTMOCK_DATABASE_SSL_CERT` | path | none | PEM client certificate (chain) for PostgreSQL `cert` authentication. Set together with `FASTMOCK_DATABASE_SSL_KEY`. |
+| `FASTMOCK_DATABASE_SSL_KEY` | path | none | PEM private key (PKCS#8, PKCS#1 or SEC1) of the client certificate. |
+| `FASTMOCK_DATABASE_MIGRATE` | `auto` \| `skip` | `auto` | `auto` applies pending migrations at start-up. `skip` applies nothing and only checks that the schema is at least the version this binary needs; run `fastmock migrate` separately. See [Database](database.md#running-migrations-separately). |
+| `FASTMOCK_DATABASE_MIGRATION_TIMEOUT` | duration | `120s` | Upper limit for migrations at start-up and in `fastmock migrate`, including the wait for another replica that holds the migration lock. |
 | `FASTMOCK_DB_MAX_CONNECTIONS` | integer | `10` | Size of the PostgreSQL connection pool per replica. |
-| `FASTMOCK_VALKEY_URL` | URL | none, required for `postgres` | Valkey (or any Redis-protocol server) URL, for example `redis://valkey.example.com:6379/`. Plain TCP; run Valkey in the same trusted network or behind a TLS-terminating sidecar. |
+| `FASTMOCK_VALKEY_URL` | URL | none, required for `postgres` | Valkey (or any Redis-protocol server) URL: `redis://valkey.example.com:6379/` for plain TCP, `rediss://valkey.example.com:6380/` (or `valkeys://`) for TLS. A database number goes in the path (`/2`). |
+| `FASTMOCK_VALKEY_USERNAME` | string | none | ACL user name. Its password is `FASTMOCK_VALKEY_PASSWORD` (or the password in the URL); a user name without a password is refused. Without a user name the password authenticates the `default` user. |
 | `FASTMOCK_VALKEY_PASSWORD` | string | none | Password added to `FASTMOCK_VALKEY_URL` with correct URL encoding. |
+| `FASTMOCK_VALKEY_TLS_CA_FILE` | path | none | PEM file with the CA certificate(s) of the Valkey server. When set, only these CAs are trusted for Valkey (the public CAs are not). Needs a `rediss://` URL. |
+| `FASTMOCK_VALKEY_TLS_CERT_FILE` | path | none | PEM client certificate (chain) for Valkey servers that require client certificates (`tls-auth-clients yes`). Set together with `FASTMOCK_VALKEY_TLS_KEY_FILE`; needs a `rediss://` URL. |
+| `FASTMOCK_VALKEY_TLS_KEY_FILE` | path | none | PEM private key of the Valkey client certificate. |
 | `FASTMOCK_VALKEY_PREFIX` | string | `fastmock:` | Prefix of every Valkey key. Give each FastMock instance that shares a Valkey database its own prefix (the operator uses `fastmock:<name>:`). |
 | `FASTMOCK_STUB_POLL` | duration | `5s` | Interval of the maintenance loop: reloads stubs when their revision changed (PostgreSQL `LISTEN/NOTIFY` normally reloads them at once, polling is the fallback), refreshes gRPC descriptors, updates the `fastmock_stubs_loaded` and `fastmock_callbacks_pending` gauges, and once a minute applies retention. |
 
-`fastmock migrate` applies the database migrations and exits; it needs only `FASTMOCK_DATABASE_URL`.
+`fastmock migrate` applies the database migrations and exits. It reads only the `FASTMOCK_DATABASE_*` variables
+(URL, password, TLS and migration timeout), so a migration Job needs no Valkey settings.
+
+### Storage TLS
+
+PostgreSQL modes, as implemented by the client library FastMock uses (they differ from libpq in two places):
+
+| Mode | Encrypted | Server certificate checked |
+|---|---|---|
+| `disable`, `allow` | no (`allow` never tries TLS) | no |
+| `prefer` | if the server offers TLS | no |
+| `require` | yes | no, even when a CA file is set |
+| `verify-ca` | yes | chain to a trusted CA |
+| `verify-full` | yes | chain to a trusted CA and the host name in the URL |
+
+The trusted CAs are the public ones compiled into the binary (`webpki-roots`) plus `FASTMOCK_DATABASE_SSL_ROOT_CERT`.
+The standard `PGSSLMODE`, `PGSSLROOTCERT`, `PGSSLCERT` and `PGSSLKEY` variables are honoured too; the URL
+parameters override them and the `FASTMOCK_DATABASE_SSL_*` variables override both.
+
+Valkey uses TLS when the URL scheme is `rediss://` or `valkeys://`. The server certificate is always verified,
+including the host name: against the public CAs, or only against `FASTMOCK_VALKEY_TLS_CA_FILE` when it is set.
+The `#insecure` URL fragment, which would switch verification off, is refused.
+
+Checked at start-up (the server and `fastmock migrate` stop with a message that names the setting):
+
+- an unknown `FASTMOCK_DATABASE_SSL_MODE` or `FASTMOCK_DATABASE_MIGRATE` value, a zero or invalid timeout;
+- a client certificate without its key or the other way round, from the variables or the URL;
+- a CA, certificate or key file that cannot be read or holds no PEM certificate or key;
+- `FASTMOCK_VALKEY_TLS_*` with a `redis://` URL (an error, not ignored), `FASTMOCK_VALKEY_USERNAME` without a password.
+
+Warnings are logged, without stopping, for `verify-ca` or `verify-full` without a CA file (only public CAs are
+trusted, which fails for a private CA with `UnknownIssuer`) and for a CA file with a mode that does not use it.
+Connection errors caused by certificates say which variable to set. Passwords are never logged; the start-up log
+shows host, port, database, SSL mode, Valkey address and ACL user only.
 
 ## Admin authentication
 
@@ -190,7 +233,7 @@ are read by the SDK. Prometheus metrics are always available on `/metrics`. See
 
 ```text
 fastmock serve            run the server (the default command)
-fastmock migrate          apply PostgreSQL migrations and exit (needs FASTMOCK_DATABASE_URL)
+fastmock migrate          apply PostgreSQL migrations and exit (uses the FASTMOCK_DATABASE_* variables)
 fastmock hash-token       print the SHA-256 of a token read from the argument or stdin
 fastmock hash-token --generate   generate a new random token and print it with its hash
 fastmock validate FILE    validate a stub, a list of stubs or {"stubs": [...]} without a server

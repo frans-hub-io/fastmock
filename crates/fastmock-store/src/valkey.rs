@@ -1,9 +1,13 @@
+use std::path::PathBuf;
 use std::time::Duration;
 
+use anyhow::bail;
 use async_trait::async_trait;
 use fastmock_core::{HotStore, StoreResult};
 use redis::aio::ConnectionManager;
-use redis::{AsyncCommands, Script};
+use redis::{
+    AsyncCommands, ClientTlsConfig, ConnectionAddr, IntoConnectionInfo, Script, TlsCertificates,
+};
 
 const CAS: &str = r#"
 local cur = redis.call('GET', KEYS[1])
@@ -51,14 +55,112 @@ fn ttl_ms(ttl: Option<Duration>) -> String {
         .unwrap_or_default()
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ValkeyTls {
+    pub ca_file: Option<PathBuf>,
+    pub cert_file: Option<PathBuf>,
+    pub key_file: Option<PathBuf>,
+}
+
+impl ValkeyTls {
+    pub fn is_set(&self) -> bool {
+        self.ca_file.is_some() || self.cert_file.is_some() || self.key_file.is_some()
+    }
+}
+
+pub fn valkey_client(
+    url: &str,
+    username: Option<&str>,
+    tls: &ValkeyTls,
+) -> anyhow::Result<redis::Client> {
+    let mut info = url
+        .into_connection_info()
+        .map_err(|e| anyhow::anyhow!("not a valid Valkey URL: {e}"))?;
+    let is_tls = match &info.addr {
+        ConnectionAddr::TcpTls { insecure: true, .. } => bail!(
+            "the `#insecure` URL fragment disables certificate verification and is not supported: set FASTMOCK_VALKEY_TLS_CA_FILE instead"
+        ),
+        ConnectionAddr::TcpTls { .. } => true,
+        _ => false,
+    };
+    if tls.is_set() && !is_tls {
+        bail!(
+            "FASTMOCK_VALKEY_TLS_CA_FILE, FASTMOCK_VALKEY_TLS_CERT_FILE and FASTMOCK_VALKEY_TLS_KEY_FILE need a rediss:// (or valkeys://) URL"
+        );
+    }
+    if let Some(u) = username {
+        info.redis.username = Some(u.to_string());
+    }
+    if info.redis.username.is_some() && info.redis.password.is_none() {
+        bail!(
+            "a Valkey ACL user is set without a password: set FASTMOCK_VALKEY_PASSWORD (or put the password in the URL)"
+        );
+    }
+    let client_tls = match (&tls.cert_file, &tls.key_file) {
+        (Some(c), Some(k)) => Some(ClientTlsConfig {
+            client_cert: crate::pem::read_certs(
+                "Valkey client certificate (FASTMOCK_VALKEY_TLS_CERT_FILE)",
+                c,
+            )?,
+            client_key: crate::pem::read_key(
+                "Valkey client key (FASTMOCK_VALKEY_TLS_KEY_FILE)",
+                k,
+            )?,
+        }),
+        (None, None) => None,
+        _ => bail!("set both FASTMOCK_VALKEY_TLS_CERT_FILE and FASTMOCK_VALKEY_TLS_KEY_FILE"),
+    };
+    let root_cert = tls
+        .ca_file
+        .as_deref()
+        .map(|p| crate::pem::read_certs("Valkey CA file (FASTMOCK_VALKEY_TLS_CA_FILE)", p))
+        .transpose()?;
+    if is_tls {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+    let client = if tls.is_set() {
+        redis::Client::build_with_tls(
+            info,
+            TlsCertificates {
+                client_tls,
+                root_cert,
+            },
+        )
+    } else {
+        redis::Client::open(info)
+    };
+    client.map_err(|e| anyhow::anyhow!("invalid Valkey settings: {e}"))
+}
+
 impl ValkeyStore {
     pub async fn connect(url: &str, prefix: &str) -> anyhow::Result<Self> {
-        let client = redis::Client::open(url)?;
+        Self::connect_with(valkey_client(url, None, &ValkeyTls::default())?, prefix).await
+    }
+
+    pub async fn connect_with(client: redis::Client, prefix: &str) -> anyhow::Result<Self> {
         let config = redis::aio::ConnectionManagerConfig::new()
             .set_connection_timeout(Duration::from_secs(5))
             .set_response_timeout(Duration::from_secs(5))
             .set_number_of_retries(3);
-        let conn = ConnectionManager::new_with_config(client, config).await?;
+        let explain = |e: redis::RedisError| {
+            let msg = e.to_string();
+            match crate::pem::tls_hint(&msg, "FASTMOCK_VALKEY_TLS_CA_FILE") {
+                Some(hint) => anyhow::anyhow!("{msg} ({hint})"),
+                None => anyhow::Error::from(e),
+            }
+        };
+        let probe = redis::AsyncConnectionConfig::new()
+            .set_connection_timeout(Duration::from_secs(5))
+            .set_response_timeout(Duration::from_secs(5));
+        drop(
+            client
+                .get_multiplexed_async_connection_with_config(&probe)
+                .await
+                .map_err(explain)?,
+        );
+        let conn = ConnectionManager::new_with_config(client, config)
+            .await
+            .map_err(explain)?;
         Ok(Self {
             conn,
             prefix: prefix.to_string(),

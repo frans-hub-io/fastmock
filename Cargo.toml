@@ -32,7 +32,7 @@ graphql-parser = "0.4"
 prost-reflect = { version = "0.16", features = ["serde"] }
 prost = "0.14"
 http-body-util = "0.1"
-redis = { version = "0.32", features = ["tokio-comp", "connection-manager", "script"] }
+redis = { version = "0.32", features = ["tokio-comp", "connection-manager", "script", "tokio-rustls-comp", "tls-rustls-webpki-roots"] }
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde = { version = "1", features = ["derive"] }

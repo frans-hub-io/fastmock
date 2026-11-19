@@ -9,6 +9,7 @@ security model and how to harden a deployment. To report a vulnerability, see [S
 - [Rotating tokens](#rotating-tokens)
 - [Browsers, origins and the UI](#browsers-origins-and-the-ui)
 - [TLS and mTLS](#tls-and-mtls)
+- [Storage connections](#storage-connections)
 - [Egress policy](#egress-policy)
 - [Secrets](#secrets)
 - [Redaction](#redaction)
@@ -112,11 +113,37 @@ inline or third-party scripts) and renders data as text, never as HTML. Publish 
   `fastmock_tls_handshake_failures_total`.
 - **Admin port:** plain HTTP; terminate TLS at the Gateway or ingress and keep the port reachable only from
   inside the cluster.
-- **PostgreSQL:** use `sslmode=verify-full` in `FASTMOCK_DATABASE_URL`.
+- **PostgreSQL and Valkey:** see [Storage connections](#storage-connections).
 - **Outgoing:** callbacks, proxy stubs and recording to `https://` URLs verify the server certificate against
   the public Mozilla root certificates compiled into the binary (`webpki-roots`), plus the certificates in
   `FASTMOCK_OUTBOUND_CA_FILE` when it is set (Helm: `outboundCA.configMap`). Use it for receivers whose
   certificates are issued by your organisation's CA; certificate verification is never switched off.
+
+## Storage connections
+
+- **PostgreSQL:** set `FASTMOCK_DATABASE_SSL_MODE=verify-full` and, for a private CA,
+  `FASTMOCK_DATABASE_SSL_ROOT_CERT`. `prefer` and `require` encrypt but do not check the server certificate, so
+  they do not protect against an attacker in the path. For certificate authentication add
+  `FASTMOCK_DATABASE_SSL_CERT` and `FASTMOCK_DATABASE_SSL_KEY` (the certificate's common name is the database
+  user, as with PostgreSQL `cert` authentication).
+- **Valkey:** use a `rediss://` URL; the server certificate and host name are always verified. Set
+  `FASTMOCK_VALKEY_TLS_CA_FILE` for a private CA and `FASTMOCK_VALKEY_TLS_CERT_FILE` with
+  `FASTMOCK_VALKEY_TLS_KEY_FILE` when the server requires client certificates.
+- **Least privilege:** give FastMock its own database and user. With the default `FASTMOCK_DATABASE_MIGRATE=auto`
+  the server user needs `CREATE` on the schema, even when no migration is pending. With `skip` it needs only
+  `USAGE` on the schema and `SELECT`, `INSERT`, `UPDATE` and `DELETE` on its tables (including
+  `_sqlx_migrations`); the schema owner is used only by the `fastmock migrate` Job
+  ([Database](database.md#running-migrations-separately)). In Valkey use an ACL user limited to FastMock's key
+  prefix and commands, with `FASTMOCK_VALKEY_USERNAME` and `FASTMOCK_VALKEY_PASSWORD`:
+
+  ```text
+  ACL SETUSER fastmock on >CHANGE-ME ~fastmock:* -@all +get +set +psetex +del +incrby +pexpire +mget +unlink +scan +zadd +zrangebyscore +zrem +evalsha +script|load +ping
+  ```
+
+  Add `+select` when the URL selects a database other than `0`. The key pattern must match
+  `FASTMOCK_VALKEY_PREFIX`.
+- Mount CA files, client certificates and keys from Secrets; FastMock reads them once at start-up, so a rotated
+  certificate needs a restart.
 
 ## Egress policy
 
@@ -269,6 +296,8 @@ FastMock sends no telemetry anywhere unless you configure an OTLP endpoint.
       topics contract tests must read (empty disables reading).
 - [ ] `FASTMOCK_UI_DATA_PLANE_URL` set to the public data-plane origin when the UI is exposed.
 - [ ] Journal and callback retention as short as your tests allow.
-- [ ] PostgreSQL over TLS, dedicated database and user; Valkey password set.
+- [ ] PostgreSQL with `FASTMOCK_DATABASE_SSL_MODE=verify-full`, dedicated database and user; the server user
+      without DDL rights when migrations run as a separate Job.
+- [ ] Valkey over `rediss://` with an ACL user limited to FastMock's prefix and commands.
 - [ ] Image from your registry, pinned by digest; operator `server.allowedImagePrefixes` set.
 - [ ] Alerts from the chart's PrometheusRule routed to the owning team; audit log shipped.

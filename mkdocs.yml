@@ -107,6 +107,7 @@ nav:
       - operations/helm.md
       - operations/operator.md
       - operations/security.md
+      - operations/database.md
       - operations/observability.md
       - operations/troubleshooting.md
   - Extending:

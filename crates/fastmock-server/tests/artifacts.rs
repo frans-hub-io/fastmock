@@ -140,6 +140,7 @@ async fn storages() -> Vec<StorageKind> {
             valkey_url,
             valkey_prefix: format!("art:{}:", uuid::Uuid::new_v4().simple()),
             max_connections: 5,
+            options: Default::default(),
         });
     }
     v

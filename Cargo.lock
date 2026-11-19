@@ -1227,7 +1227,9 @@ dependencies = [
  "async-trait",
  "chrono",
  "fastmock-core",
+ "rcgen",
  "redis",
+ "rustls",
  "serde_json",
  "sqlx",
  "tokio",
@@ -3352,12 +3354,16 @@ dependencies = [
  "num-bigint",
  "percent-encoding",
  "pin-project-lite",
+ "rustls",
+ "rustls-native-certs",
  "ryu",
  "sha1_smol",
  "socket2",
  "tokio",
+ "tokio-rustls",
  "tokio-util",
  "url",
+ "webpki-roots 1.0.12",
 ]
 
 [[package]]
