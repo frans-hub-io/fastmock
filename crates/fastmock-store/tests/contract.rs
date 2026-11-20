@@ -410,6 +410,8 @@ async fn audit_contract() {
                 at: Utc::now(),
                 principal: "ci".into(),
                 role: "admin".into(),
+                principal_kind: Some("token".into()),
+                space: (i == 1).then(|| "payments".to_string()),
                 action: format!("stub.create.{i}"),
                 detail: json!({"i": i}),
             };
@@ -419,6 +421,8 @@ async fn audit_contract() {
         assert_eq!(l.len(), 2, "{name}");
         assert_eq!(l[0].action, "stub.create.2", "{name}: newest first");
         assert_eq!(l[0].detail, json!({"i": 2}), "{name}");
+        assert_eq!(l[0].principal_kind.as_deref(), Some("token"), "{name}");
+        assert_eq!(l[1].space.as_deref(), Some("payments"), "{name}");
         assert_eq!(
             s.audit
                 .purge_older_than(Utc::now() + chrono::Duration::seconds(1))

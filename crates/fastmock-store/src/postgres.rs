@@ -925,6 +925,8 @@ fn row_to_audit(r: &PgRow) -> StoreResult<AuditEvent> {
         at: r.try_get("at")?,
         principal: r.try_get("principal")?,
         role: r.try_get("role")?,
+        principal_kind: r.try_get("principal_kind")?,
+        space: r.try_get("space")?,
         action: r.try_get("action")?,
         detail: r.try_get("detail")?,
     })
@@ -933,10 +935,12 @@ fn row_to_audit(r: &PgRow) -> StoreResult<AuditEvent> {
 #[async_trait]
 impl AuditStore for PgStore {
     async fn record(&self, e: &AuditEvent) -> StoreResult<()> {
-        sqlx::query("insert into fm_audit (at, principal, role, action, detail) values ($1, $2, $3, $4, $5)")
+        sqlx::query("insert into fm_audit (at, principal, role, principal_kind, space, action, detail) values ($1, $2, $3, $4, $5, $6, $7)")
             .bind(e.at)
             .bind(&e.principal)
             .bind(&e.role)
+            .bind(&e.principal_kind)
+            .bind(&e.space)
             .bind(&e.action)
             .bind(&e.detail)
             .execute(&self.pool)
@@ -945,7 +949,7 @@ impl AuditStore for PgStore {
     }
 
     async fn list(&self, limit: i64) -> StoreResult<Vec<AuditEvent>> {
-        let rows = sqlx::query("select id, at, principal, role, action, detail from fm_audit order by id desc limit $1")
+        let rows = sqlx::query("select id, at, principal, role, principal_kind, space, action, detail from fm_audit order by id desc limit $1")
             .bind(limit.clamp(1, 10_000))
             .fetch_all(&self.pool)
             .await?;
@@ -954,7 +958,7 @@ impl AuditStore for PgStore {
 
     async fn query(&self, f: &AuditFilter) -> StoreResult<Vec<AuditEvent>> {
         let mut qb = QueryBuilder::<Postgres>::new(
-            "select id, at, principal, role, action, detail from fm_audit where true",
+            "select id, at, principal, role, principal_kind, space, action, detail from fm_audit where true",
         );
         match (f.action_prefix(), &f.action) {
             (Some(p), _) => {

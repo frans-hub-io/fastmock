@@ -988,7 +988,14 @@ pub struct AuditEvent {
     pub id: i64,
     pub at: DateTime<Utc>,
     pub principal: String,
+    /// Role names of the principal's bindings, comma-separated.
     pub role: String,
+    /// `token`, `apiToken`, `user` or `anonymous`; absent on events recorded before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal_kind: Option<String>,
+    /// Space the change applied to; absent for global changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
     pub action: String,
     pub detail: Value,
 }

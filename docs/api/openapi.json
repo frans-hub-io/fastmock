@@ -4426,6 +4426,43 @@
         ]
       }
     },
+    "/__admin/spaces": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Spaces the caller can see",
+        "description": "Spaces come from the access file (`FASTMOCK_ACCESS_FILE`). A principal holding a permission globally sees every space; a principal bound to spaces sees only those.",
+        "operationId": "listSpaces",
+        "responses": {
+          "200": {
+            "description": "Spaces with the caller's permissions in each",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpaceList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/__admin/stubs": {
       "get": {
         "tags": [
@@ -5779,7 +5816,22 @@
             "type": "string"
           },
           "role": {
-            "type": "string"
+            "type": "string",
+            "description": "Role names of the principal's bindings, comma-separated."
+          },
+          "principalKind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`token`, `apiToken`, `user` or `anonymous`; absent on events recorded before it was kept."
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Space the change applied to; absent for global changes."
           },
           "action": {
             "type": "string"
@@ -6617,6 +6669,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "required": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "On 403: the built-in role (for principals holding only global built-in roles) or the permission the request needs."
           }
         }
       },
@@ -7818,6 +7877,45 @@
           "IDS"
         ]
       },
+      "PermissionsView": {
+        "type": "object",
+        "required": [
+          "global",
+          "spaces"
+        ],
+        "properties": {
+          "global": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Permissions granted everywhere.",
+            "example": [
+              "stubs:read",
+              "info:read"
+            ]
+          },
+          "spaces": {
+            "type": "object",
+            "description": "Permissions granted only in single spaces, by space; the effective permissions in a space are these plus the global ones.",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "example": {
+              "payments": [
+                "stubs:write",
+                "journal:read"
+              ]
+            }
+          }
+        }
+      },
       "PluginInfo": {
         "type": "object",
         "required": [
@@ -7883,16 +7981,34 @@
         "type": "object",
         "required": [
           "name",
-          "role"
+          "role",
+          "kind",
+          "permissions"
         ],
         "properties": {
           "name": {
             "type": "string"
           },
           "role": {
-            "$ref": "#/components/schemas/Role"
+            "$ref": "#/components/schemas/Role",
+            "description": "The highest built-in role whose permissions the principal holds everywhere (`viewer` when it holds less); kept for older clients, decide with `permissions`."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PrincipalKind"
+          },
+          "permissions": {
+            "$ref": "#/components/schemas/PermissionsView"
           }
         }
+      },
+      "PrincipalKind": {
+        "type": "string",
+        "enum": [
+          "token",
+          "apiToken",
+          "user",
+          "anonymous"
+        ]
       },
       "ProxyDef": {
         "type": "object",
@@ -8918,6 +9034,62 @@
         },
         "additionalProperties": false
       },
+      "SpaceInfo": {
+        "type": "object",
+        "required": [
+          "name",
+          "pathPrefixes",
+          "hosts",
+          "permissions"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "payments"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pathPrefixes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Data-plane path prefixes the space's stubs must stay under (empty: no restriction)."
+          },
+          "hosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Hosts the space's stubs must match (empty: no restriction)."
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The caller's effective permissions in the space."
+          }
+        }
+      },
+      "SpaceList": {
+        "type": "object",
+        "required": [
+          "spaces"
+        ],
+        "properties": {
+          "spaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SpaceInfo"
+            }
+          }
+        }
+      },
       "SseEvent": {
         "type": "object",
         "properties": {
@@ -9624,7 +9796,7 @@
       "bearer": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Admin token from FASTMOCK_ADMIN_TOKENS. GET/HEAD and read-only POSTs need viewer, other changes editor; deleting all stubs, reset and the audit log need admin."
+        "description": "Admin token from FASTMOCK_ADMIN_TOKENS. Every route needs a permission (`resource:action`); the built-in roles viewer, editor and admin are permission sets, custom roles and space bindings come from FASTMOCK_ACCESS_FILE. Without an access file: GET/HEAD and read-only POSTs need viewer, other changes editor; deleting all stubs, reset and the audit log need admin."
       }
     }
   },

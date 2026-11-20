@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::auth::{Principal, Role, admin_auth};
+use crate::access::Permission;
+use crate::auth::{Principal, admin_auth};
 use crate::state::AppState;
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -19,18 +20,33 @@ pub struct ErrorBody {
     #[schema(example = "stub not found")]
     pub error: String,
     pub details: Vec<String>,
+    /// On 403: the built-in role (for principals holding only global built-in roles) or the permission the request needs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required: Option<String>,
 }
 
 #[derive(Debug)]
 pub struct ApiError(pub StatusCode, pub String);
 
+fn required_of(status: StatusCode, msg: &str) -> Option<String> {
+    if status != StatusCode::FORBIDDEN {
+        return None;
+    }
+    msg.strip_prefix("requires role ")
+        .or_else(|| msg.strip_prefix("requires permission "))
+        .and_then(|r| r.split_whitespace().next())
+        .map(String::from)
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        let required = required_of(self.0, &self.1);
         (
             self.0,
             Json(ErrorBody {
                 error: self.1,
                 details: vec![],
+                required,
             }),
         )
             .into_response()
@@ -47,6 +63,7 @@ impl IntoResponse for DetailedError {
             Json(ErrorBody {
                 error: self.1,
                 details: self.2,
+                required: None,
             }),
         )
             .into_response()
@@ -80,24 +97,36 @@ pub fn bad(msg: impl Into<String>) -> ApiError {
     ApiError(StatusCode::BAD_REQUEST, m)
 }
 
-pub fn require(p: &Principal, role: Role) -> ApiResult<()> {
-    if p.role < role {
-        return Err(ApiError(
-            StatusCode::FORBIDDEN,
-            format!("requires role {role:?}").to_lowercase(),
-        ));
+/// Handler-level permission check (`allowed(permission, space)`); answers 403 when it fails.
+pub fn require(p: &Principal, perm: Permission, space: Option<&str>) -> ApiResult<()> {
+    if p.allowed(perm, space) {
+        return Ok(());
     }
-    Ok(())
+    p.count_denial();
+    tracing::warn!(target: "audit", principal = %p.name, kind = p.kind.as_str(), permission = %perm, space = space.unwrap_or_default(), "admin request rejected: permission missing");
+    Err(ApiError(StatusCode::FORBIDDEN, p.denial(perm, space).0))
 }
 
 pub async fn audit_event(app: &AppState, p: &Principal, action: &str, detail: Value) {
+    audit_event_in(app, p, None, action, detail).await
+}
+
+pub async fn audit_event_in(
+    app: &AppState,
+    p: &Principal,
+    space: Option<&str>,
+    action: &str,
+    detail: Value,
+) {
     metrics::counter!("fastmock_admin_changes_total", "action" => action.to_string()).increment(1);
-    tracing::info!(target: "audit", principal = %p.name, role = ?p.role, action, detail = %detail, "admin change");
+    tracing::info!(target: "audit", principal = %p.name, kind = p.kind.as_str(), role = %p.role_label, space = space.unwrap_or_default(), action, detail = %detail, "admin change");
     let e = fastmock_core::AuditEvent {
         id: 0,
         at: chrono::Utc::now(),
         principal: p.name.clone(),
-        role: format!("{:?}", p.role).to_lowercase(),
+        role: p.role_label.clone(),
+        principal_kind: Some(p.kind.as_str().to_string()),
+        space: space.map(String::from),
         action: action.to_string(),
         detail,
     };
@@ -305,12 +334,12 @@ pub fn mask_stub_secrets(r: &crate::redact::Redactor, s: &mut Stub) {
     mask_json_opt(r, &mut s.metadata);
 }
 
+/// Masks credentials unless the principal may change the stub (`stubs:write` in its space).
 pub fn mask_for(app: &AppState, p: &Principal, stubs: &mut [Stub]) {
-    if p.role >= Role::Editor {
-        return;
-    }
     for s in stubs {
-        mask_stub_secrets(&app.redactor, s);
+        if !p.allowed(Permission::StubsWrite, None) {
+            mask_stub_secrets(&app.redactor, s);
+        }
     }
 }
 
@@ -691,7 +720,7 @@ pub async fn delete_stubs(
     let n = match &q.tag {
         Some(t) => app.stores.stubs.delete_by_tag(t).await?,
         None => {
-            require(&p, Role::Admin)?;
+            require(&p, Permission::StubsPurge, None)?;
             app.stores.stubs.clear().await?
         }
     };
@@ -1589,7 +1618,7 @@ pub async fn reset(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
 ) -> ApiResult<Json<ResetResult>> {
-    require(&p, Role::Admin)?;
+    require(&p, Permission::SystemReset, None)?;
     let r = ResetResult {
         requests: app.stores.journal.clear().await?,
         callbacks: app.stores.outbox.clear().await?,
@@ -1647,6 +1676,59 @@ pub async fn info(
         principal: p,
         auth_disabled: app.auth.disabled(),
     })
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceInfo {
+    #[schema(example = "payments")]
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Data-plane path prefixes the space's stubs must stay under (empty: no restriction).
+    pub path_prefixes: Vec<String>,
+    /// Hosts the space's stubs must match (empty: no restriction).
+    pub hosts: Vec<String>,
+    /// The caller's effective permissions in the space.
+    pub permissions: Vec<String>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct SpaceList {
+    pub spaces: Vec<SpaceInfo>,
+}
+
+#[utoipa::path(
+    get, path = "/__admin/spaces", tag = "system", operation_id = "listSpaces",
+    summary = "Spaces the caller can see",
+    description = "Spaces come from the access file (`FASTMOCK_ACCESS_FILE`). A principal holding a permission globally sees every space; a principal bound to spaces sees only those.",
+    responses(
+        (status = 200, description = "Spaces with the caller's permissions in each", body = SpaceList),
+        (status = 401, description = "Missing or invalid token", body = ErrorBody),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn list_spaces(
+    State(app): State<AppState>,
+    Extension(p): Extension<Principal>,
+) -> Json<SpaceList> {
+    let all = p.permissions.sees_all_spaces();
+    let spaces = app
+        .auth
+        .access()
+        .spaces()
+        .filter_map(|s| {
+            let perms = p.permissions.in_space(&s.name);
+            (all || p.permissions.bound_spaces().any(|(n, _)| *n == s.name)).then(|| SpaceInfo {
+                name: s.name.clone(),
+                description: s.description.clone(),
+                path_prefixes: s.path_prefixes.clone(),
+                hosts: s.hosts.clone(),
+                permissions: perms.names().into_iter().map(String::from).collect(),
+            })
+        })
+        .collect();
+    Json(SpaceList { spaces })
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -1734,7 +1816,7 @@ pub async fn list_audit(
     Extension(p): Extension<Principal>,
     Query(q): Query<AuditQuery>,
 ) -> ApiResult<Json<AuditList>> {
-    require(&p, Role::Admin)?;
+    require(&p, Permission::AuditRead, None)?;
     if q.action.as_ref().is_some_and(|a| a.len() > 128)
         || q.principal.as_ref().is_some_and(|a| a.len() > 128)
     {
@@ -2473,6 +2555,7 @@ pub async fn json_errors(req: axum::extract::Request, next: middleware::Next) ->
         Json(ErrorBody {
             error: msg,
             details: vec![],
+            required: None,
         }),
     )
         .into_response();
@@ -2535,6 +2618,7 @@ pub fn router(app: AppState, plugin_admin: Vec<(String, Router)>) -> Router {
         .route("/kv/{key}", get(kv_get).put(kv_put).delete(kv_delete))
         .route("/reset", post(reset))
         .route("/info", get(info))
+        .route("/spaces", get(list_spaces))
         .route("/version", get(version))
         .route("/plugins", get(plugins))
         .route("/audit", get(list_audit))

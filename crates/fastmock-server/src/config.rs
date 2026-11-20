@@ -160,6 +160,7 @@ pub struct Config {
     pub auth_disabled: bool,
     pub admin_tokens: Vec<String>,
     pub admin_tokens_file: Option<PathBuf>,
+    pub access_file: Option<PathBuf>,
     pub admin_allowed_origins: Vec<String>,
     pub max_body_bytes: usize,
     pub max_delay: Duration,
@@ -532,6 +533,7 @@ impl Config {
             auth_disabled: false,
             admin_tokens: tokens,
             admin_tokens_file: None,
+            access_file: None,
             admin_allowed_origins: vec![],
             max_body_bytes: 1024 * 1024,
             max_delay: Duration::from_secs(5),
@@ -616,6 +618,7 @@ impl Config {
             auth_disabled: bool_env("AUTH_DISABLED", false)?,
             admin_tokens: env("ADMIN_TOKENS").map(|v| list(&v)).unwrap_or_default(),
             admin_tokens_file: env("ADMIN_TOKENS_FILE").map(PathBuf::from),
+            access_file: env("ACCESS_FILE").map(PathBuf::from),
             admin_allowed_origins: env("ADMIN_ALLOWED_ORIGINS")
                 .map(|v| list(&v))
                 .unwrap_or_default(),

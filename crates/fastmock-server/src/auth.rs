@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use axum::extract::{Request, State};
@@ -9,6 +10,10 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
+use crate::access::{
+    AccessConfig, BUILTIN_ROLES, Binding, BindingScope, Grants, PermSet, Permission, PrincipalKind,
+    ScopeKind, editor_permissions, minimal_role, route_rule,
+};
 use crate::state::AppState;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, utoipa::ToSchema)]
@@ -20,32 +25,110 @@ pub enum Role {
 }
 
 impl Role {
-    fn parse(s: &str) -> anyhow::Result<Self> {
-        Ok(match s {
-            "viewer" => Role::Viewer,
-            "editor" => Role::Editor,
-            "admin" => Role::Admin,
-            other => bail!("unknown role `{other}`"),
-        })
+    pub fn name(self) -> &'static str {
+        match self {
+            Role::Viewer => "viewer",
+            Role::Editor => "editor",
+            Role::Admin => "admin",
+        }
+    }
+
+    fn effective(global: PermSet) -> Self {
+        if global.includes(PermSet::all()) {
+            Role::Admin
+        } else if global.includes(editor_permissions()) {
+            Role::Editor
+        } else {
+            Role::Viewer
+        }
     }
 }
 
 #[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Principal {
     pub name: String,
+    /// The highest built-in role whose permissions the principal holds everywhere (`viewer` when it holds less); kept for older clients, decide with `permissions`.
     pub role: Role,
+    pub kind: PrincipalKind,
+    #[schema(value_type = crate::access::PermissionsView)]
+    pub permissions: Grants,
+    /// Role names of the bindings, for the audit log.
+    #[serde(skip)]
+    pub role_label: String,
+    /// Every binding is a global binding of a built-in role: denials name the role, as before.
+    #[serde(skip)]
+    pub legacy: bool,
+}
+
+impl Principal {
+    pub fn from_bindings(name: &str, kind: PrincipalKind, bindings: &[Binding]) -> Self {
+        let grants = Grants::from_bindings(bindings);
+        let mut labels: Vec<&str> = Vec::new();
+        for b in bindings {
+            if !labels.contains(&b.role.as_str()) {
+                labels.push(&b.role);
+            }
+        }
+        Principal {
+            name: name.to_string(),
+            role: Role::effective(grants.global()),
+            kind,
+            legacy: !bindings.is_empty()
+                && bindings.iter().all(|b| {
+                    b.scope == BindingScope::Global && BUILTIN_ROLES.contains(&b.role.as_str())
+                }),
+            role_label: labels.join(","),
+            permissions: grants,
+        }
+    }
+
+    pub fn anonymous() -> Self {
+        let mut p = Self::from_bindings(
+            "anonymous",
+            PrincipalKind::Anonymous,
+            &[Binding::global("admin", PermSet::all())],
+        );
+        p.permissions = Grants::admin();
+        p
+    }
+
+    pub fn allowed(&self, perm: Permission, space: Option<&str>) -> bool {
+        self.permissions.allowed(perm, space)
+    }
+
+    /// Text and `required` value of a denial: the lowest built-in role for principals that only
+    /// hold global built-in roles (as before custom roles existed), the permission otherwise.
+    pub fn denial(&self, perm: Permission, space: Option<&str>) -> (String, String) {
+        if self.legacy {
+            let r = minimal_role(perm);
+            (format!("requires role {r}"), r.to_string())
+        } else {
+            let place = space.map(|s| format!(" in space {s}")).unwrap_or_default();
+            (
+                format!("requires permission {perm}{place}"),
+                perm.name().to_string(),
+            )
+        }
+    }
+
+    pub fn count_denial(&self) {
+        let reason = if self.legacy { "role" } else { "permission" };
+        metrics::counter!("fastmock_admin_auth_failures_total", "reason" => reason).increment(1);
+    }
 }
 
 struct TokenEntry {
-    name: String,
-    role: Role,
     hash: [u8; 32],
+    bindings: Vec<Binding>,
+    principal: Principal,
 }
 
 pub struct Authenticator {
     tokens: Vec<TokenEntry>,
     disabled: bool,
     allowed_origins: Vec<String>,
+    access: Arc<AccessConfig>,
 }
 
 pub fn hash_token(token: &str) -> String {
@@ -57,7 +140,13 @@ pub fn generate_token() -> String {
     format!("fm_{}", hex::encode(bytes))
 }
 
-fn parse_entry(line: &str) -> anyhow::Result<TokenEntry> {
+struct RawEntry {
+    name: String,
+    role: Option<String>,
+    hash: [u8; 32],
+}
+
+fn parse_entry(line: &str) -> anyhow::Result<RawEntry> {
     let parts: Vec<&str> = line.trim().split(':').collect();
     if parts.len() != 3 {
         bail!("expected name:role:sha256hex");
@@ -74,9 +163,10 @@ fn parse_entry(line: &str) -> anyhow::Result<TokenEntry> {
     let hash: [u8; 32] = raw
         .try_into()
         .map_err(|_| anyhow::anyhow!("hash must be a SHA-256 (64 hex chars)"))?;
-    Ok(TokenEntry {
+    let role = parts[1].trim();
+    Ok(RawEntry {
         name: name.to_string(),
-        role: Role::parse(parts[1].trim())?,
+        role: (!role.is_empty()).then(|| role.to_string()),
         hash,
     })
 }
@@ -87,6 +177,22 @@ impl Authenticator {
         file: Option<&Path>,
         disabled: bool,
         allowed_origins: Vec<String>,
+    ) -> anyhow::Result<Self> {
+        Self::with_access(
+            entries,
+            file,
+            disabled,
+            allowed_origins,
+            Arc::new(AccessConfig::default()),
+        )
+    }
+
+    pub fn with_access(
+        entries: &[String],
+        file: Option<&Path>,
+        disabled: bool,
+        allowed_origins: Vec<String>,
+        access: Arc<AccessConfig>,
     ) -> anyhow::Result<Self> {
         let mut lines: Vec<String> = entries.to_vec();
         if let Some(f) = file {
@@ -100,20 +206,53 @@ impl Authenticator {
                     .map(String::from),
             );
         }
-        let tokens = lines
+        let raw = lines
             .iter()
             .enumerate()
             .map(|(i, l)| parse_entry(l).with_context(|| format!("admin token entry #{}", i + 1)))
             .collect::<anyhow::Result<Vec<_>>>()?;
-        if tokens.is_empty() && !disabled {
+        if raw.is_empty() && !disabled {
             bail!(
                 "no admin tokens configured: set FASTMOCK_ADMIN_TOKENS or FASTMOCK_ADMIN_TOKENS_FILE (or FASTMOCK_AUTH_DISABLED=true for local development only)"
             );
+        }
+        let mut tokens = Vec::with_capacity(raw.len());
+        for (i, e) in raw.into_iter().enumerate() {
+            let at = format!("admin token entry #{} ({})", i + 1, e.name);
+            let mut bindings = Vec::new();
+            if let Some(role) = &e.role {
+                let perms = access
+                    .role(role)
+                    .ok_or_else(|| anyhow::anyhow!("{at}: unknown role `{role}`"))?;
+                bindings.push(Binding::global(role, perms));
+            }
+            bindings.extend(access.bindings_for(PrincipalKind::Token, &e.name, &[]));
+            if bindings.is_empty() {
+                bail!(
+                    "{at}: the role is empty and the access file has no binding for token:{}",
+                    e.name
+                );
+            }
+            tokens.push(TokenEntry {
+                hash: e.hash,
+                principal: Principal::from_bindings(&e.name, PrincipalKind::Token, &bindings),
+                bindings,
+            });
+        }
+        if !disabled {
+            for name in access.token_subjects() {
+                if !tokens.iter().any(|t| t.principal.name == name) {
+                    bail!(
+                        "access file: the binding for token:{name} names no token of FASTMOCK_ADMIN_TOKENS or FASTMOCK_ADMIN_TOKENS_FILE"
+                    );
+                }
+            }
         }
         Ok(Self {
             tokens,
             disabled,
             allowed_origins,
+            access,
         })
     }
 
@@ -121,12 +260,38 @@ impl Authenticator {
         self.disabled
     }
 
+    pub fn access(&self) -> &AccessConfig {
+        &self.access
+    }
+
+    /// Bindings of a principal: for static tokens the global binding of their entry plus `token:`
+    /// bindings; for users `user:` and `group:` bindings of the access file.
+    pub fn bindings_for(&self, kind: PrincipalKind, name: &str, groups: &[String]) -> Vec<Binding> {
+        match kind {
+            PrincipalKind::Token => self
+                .tokens
+                .iter()
+                .find(|t| t.principal.name == name)
+                .map(|t| t.bindings.clone())
+                .unwrap_or_default(),
+            _ => self.access.bindings_for(kind, name, groups),
+        }
+    }
+
+    /// The principal for a kind, name and groups, or `None` when no binding applies.
+    pub fn principal_for(
+        &self,
+        kind: PrincipalKind,
+        name: &str,
+        groups: &[String],
+    ) -> Option<Principal> {
+        let b = self.bindings_for(kind, name, groups);
+        (!b.is_empty()).then(|| Principal::from_bindings(name, kind, &b))
+    }
+
     pub fn authenticate(&self, headers: &HeaderMap) -> Option<Principal> {
         if self.disabled {
-            return Some(Principal {
-                name: "anonymous".into(),
-                role: Role::Admin,
-            });
+            return Some(Principal::anonymous());
         }
         let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
         let token = value
@@ -143,10 +308,7 @@ impl Authenticator {
                 found = Some(t);
             }
         }
-        found.map(|t| Principal {
-            name: t.name.clone(),
-            role: t.role,
-        })
+        found.map(|t| t.principal.clone())
     }
 
     fn origin_allowed(&self, headers: &HeaderMap) -> bool {
@@ -170,32 +332,16 @@ impl Authenticator {
     }
 }
 
-pub const VIEWER_POSTS: &[&str] = &[
-    "/__admin/requests/count",
-    "/__admin/requests/near-misses",
-    "/__admin/requests/find",
-    "/__admin/verify",
-    "/__admin/verify/sequence",
-    "/__admin/stubs/find-by-metadata",
-    "/__admin/stubs/validate",
-];
-
-pub fn required_role(method: &axum::http::Method, path: &str) -> Role {
-    let path = path.strip_suffix('/').unwrap_or(path);
-    let read_only_post = method == axum::http::Method::POST && VIEWER_POSTS.contains(&path);
-    if method == axum::http::Method::GET || method == axum::http::Method::HEAD || read_only_post {
-        Role::Viewer
-    } else {
-        Role::Editor
-    }
-}
-
 fn full_path(req: &Request) -> String {
     req.extensions()
         .get::<axum::extract::OriginalUri>()
         .map(|u| u.0.path().to_string())
         .unwrap_or_else(|| req.uri().path().to_string())
 }
+
+/// Whether the route's handler checks the space it acts on. Until it does, space-scoped
+/// permissions must be held globally.
+const SPACE_AWARE_HANDLERS: bool = false;
 
 pub async fn admin_auth(State(app): State<AppState>, mut req: Request, next: Next) -> Response {
     if !app.auth.origin_allowed(req.headers()) {
@@ -216,16 +362,22 @@ pub async fn admin_auth(State(app): State<AppState>, mut req: Request, next: Nex
         )
             .into_response();
     };
-    let need = required_role(req.method(), &full_path(&req));
-    if principal.role < need {
-        metrics::counter!("fastmock_admin_auth_failures_total", "reason" => "role").increment(1);
-        tracing::warn!(target: "audit", principal = %principal.name, path = %full_path(&req), "admin request rejected: role too low");
+    let path = full_path(&req);
+    let (perm, scope) = route_rule(req.method(), &path);
+    let ok = match scope {
+        ScopeKind::Space if SPACE_AWARE_HANDLERS => principal.permissions.anywhere(perm),
+        _ => principal.permissions.global_has(perm),
+    };
+    if !ok {
+        principal.count_denial();
+        tracing::warn!(target: "audit", principal = %principal.name, kind = principal.kind.as_str(), path = %path, permission = %perm, "admin request rejected: permission missing");
+        let (detail, required) = principal.denial(perm, None);
         return (
             StatusCode::FORBIDDEN,
             axum::Json(serde_json::json!({
                 "error": "forbidden",
-                "details": [format!("requires role {}", format!("{need:?}").to_lowercase())],
-                "required": need
+                "details": [detail],
+                "required": required
             })),
         )
             .into_response();
@@ -310,30 +462,70 @@ mod tests {
     }
 
     #[test]
-    fn read_only_posts_need_viewer_only() {
-        use axum::http::Method;
-        for p in VIEWER_POSTS {
-            assert_eq!(required_role(&Method::POST, p), Role::Viewer, "{p}");
-        }
-        assert_eq!(required_role(&Method::GET, "/__admin/stubs"), Role::Viewer);
-        for p in [
-            "/__admin/requests/remove",
-            "/__admin/stubs/remove-by-metadata",
-            "/__admin/recordings/snapshot",
-            "/__admin/import",
-            "/__admin/plugins/x/verify",
-            "/__admin/plugins/x/requests/count",
-        ] {
-            assert_eq!(required_role(&Method::POST, p), Role::Editor, "{p}");
-        }
+    fn static_tokens_get_global_bindings_and_file_bindings() {
+        let access = AccessConfig::parse(
+            "roles: [{name: reader, permissions: [stubs:read]}]\nspaces: [{name: billing}]\nbindings: [{subject: 'token:ci', role: editor, spaces: [billing]}]",
+        )
+        .unwrap();
+        let a = Authenticator::with_access(
+            &[
+                format!("ci::{}", hash_token("ci-token")),
+                format!("dash:reader:{}", hash_token("dash-token")),
+                format!("ops:admin:{}", hash_token("ops-token")),
+            ],
+            None,
+            false,
+            vec![],
+            Arc::new(access.clone()),
+        )
+        .unwrap();
+        let ci = a.authenticate(&headers("Bearer ci-token")).unwrap();
+        assert!(ci.allowed(Permission::StubsWrite, Some("billing")));
+        assert!(!ci.allowed(Permission::StubsRead, None));
+        assert!(!ci.legacy);
+        assert_eq!(ci.kind, PrincipalKind::Token);
         assert_eq!(
-            required_role(&Method::PATCH, "/__admin/stubs/1"),
-            Role::Editor
+            ci.denial(Permission::StubsWrite, Some("x")).1,
+            "stubs:write"
         );
+        let dash = a.authenticate(&headers("Bearer dash-token")).unwrap();
+        assert!(dash.allowed(Permission::StubsRead, Some("billing")));
+        assert!(!dash.allowed(Permission::JournalRead, None));
+        assert_eq!(dash.role, Role::Viewer);
+        let ops = a.authenticate(&headers("Bearer ops-token")).unwrap();
+        assert!(ops.legacy);
+        assert_eq!(ops.role, Role::Admin);
+        assert_eq!(ops.role_label, "admin");
+        assert_eq!(a.bindings_for(PrincipalKind::Token, "ci", &[]).len(), 1);
+        assert_eq!(a.bindings_for(PrincipalKind::Token, "ops", &[]).len(), 1);
+        assert!(
+            a.principal_for(PrincipalKind::User, "nobody", &[])
+                .is_none()
+        );
+        let err = |entries: &[String]| {
+            Authenticator::with_access(entries, None, false, vec![], Arc::new(access.clone()))
+                .err()
+                .map(|e| format!("{e:#}"))
+                .unwrap_or_default()
+        };
+        assert!(err(&[format!("x::{}", hash_token("x"))]).contains("admin token entry #1 (x)"));
+        assert!(err(&[format!("x:nobody:{}", hash_token("x"))]).contains("unknown role `nobody`"));
+        assert!(err(&[format!("y:viewer:{}", hash_token("y"))]).contains("token:ci"));
+    }
+
+    #[test]
+    fn legacy_denials_name_the_lowest_role() {
+        let a = auth();
+        let v = a.authenticate(&headers("Bearer viewer-token")).unwrap();
+        assert!(v.legacy);
         assert_eq!(
-            required_role(&Method::PUT, "/__admin/files/a"),
-            Role::Editor
+            v.denial(Permission::StubsWrite, None),
+            ("requires role editor".to_string(), "editor".to_string())
         );
+        assert_eq!(v.denial(Permission::AuditRead, None).1, "admin");
+        let anon = Principal::anonymous();
+        assert!(anon.allowed(Permission::SystemReset, None));
+        assert_eq!(anon.kind, PrincipalKind::Anonymous);
     }
 
     #[test]

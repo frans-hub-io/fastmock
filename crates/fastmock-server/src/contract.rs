@@ -19,9 +19,10 @@ use tokio::time::Instant;
 use tracing::Instrument;
 use uuid::Uuid;
 
+use crate::access::Permission;
 use crate::admin::{ApiError, ApiResult, ErrorBody, audit_event as audit, bad, require};
 use crate::asyncmock::parse_spec;
-use crate::auth::{Principal, Role};
+use crate::auth::Principal;
 use crate::state::AppState;
 use fastmock_core::outbound::{blocked_outbound_header, blocked_reason};
 
@@ -1272,11 +1273,15 @@ pub async fn start(
     Json(req): Json<ContractTestRequest>,
 ) -> ApiResult<Response> {
     if !req.secret_headers.is_empty() {
-        require(&p, Role::Admin).map_err(|_| {
-            ApiError(
-                StatusCode::FORBIDDEN,
-                "secretHeaders require the admin role".into(),
-            )
+        require(&p, Permission::ContractsSecrets, None).map_err(|e| {
+            if p.legacy {
+                ApiError(
+                    StatusCode::FORBIDDEN,
+                    "secretHeaders require the admin role".into(),
+                )
+            } else {
+                e
+            }
         })?;
     }
     let doc = match (&req.spec, &req.spec_ref) {
@@ -1494,7 +1499,7 @@ pub async fn get_run(
         .get(NAMESPACE, &id.to_string())
         .await?
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "contract test run not found".into()))?;
-    if p.role >= Role::Editor {
+    if p.allowed(Permission::ContractsDetails, None) {
         return Ok(Json(v));
     }
     let mut run: ContractRun = serde_json::from_value(v)

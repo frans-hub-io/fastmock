@@ -852,6 +852,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/__admin/spaces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Spaces the caller can see
+         * @description Spaces come from the access file (`FASTMOCK_ACCESS_FILE`). A principal holding a permission globally sees every space; a principal bound to spaces sees only those.
+         */
+        get: operations["listSpaces"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/__admin/stubs": {
         parameters: {
             query?: never;
@@ -1141,7 +1161,12 @@ export interface components {
             /** Format: date-time */
             at: string;
             principal: string;
+            /** @description Role names of the principal's bindings, comma-separated. */
             role: string;
+            /** @description `token`, `apiToken`, `user` or `anonymous`; absent on events recorded before it was kept. */
+            principalKind?: string | null;
+            /** @description Space the change applied to; absent for global changes. */
+            space?: string | null;
             action: string;
             detail: unknown;
         };
@@ -1352,6 +1377,8 @@ export interface components {
             /** @example stub not found */
             error: string;
             details: string[];
+            /** @description On 403: the built-in role (for principals holding only global built-in roles) or the permission the request needs. */
+            required?: string | null;
         };
         ExportResult: {
             stubs: components["schemas"]["Stub"][];
@@ -1661,6 +1688,28 @@ export interface components {
         };
         /** @enum {string} */
         OutputFormat: "FULL" | "IDS";
+        PermissionsView: {
+            /**
+             * @description Permissions granted everywhere.
+             * @example [
+             *       "stubs:read",
+             *       "info:read"
+             *     ]
+             */
+            global: string[];
+            /**
+             * @description Permissions granted only in single spaces, by space; the effective permissions in a space are these plus the global ones.
+             * @example {
+             *       "payments": [
+             *         "stubs:write",
+             *         "journal:read"
+             *       ]
+             *     }
+             */
+            spaces: {
+                [key: string]: string[];
+            };
+        };
         PluginInfo: {
             name: string;
             description: string;
@@ -1681,8 +1730,13 @@ export interface components {
         };
         Principal: {
             name: string;
+            /** @description The highest built-in role whose permissions the principal holds everywhere (`viewer` when it holds less); kept for older clients, decide with `permissions`. */
             role: components["schemas"]["Role"];
+            kind: components["schemas"]["PrincipalKind"];
+            permissions: components["schemas"]["PermissionsView"];
         };
+        /** @enum {string} */
+        PrincipalKind: "token" | "apiToken" | "user" | "anonymous";
         ProxyDef: {
             baseUrl: string;
             additionalHeaders?: {
@@ -1931,6 +1985,20 @@ export interface components {
             mockService?: string | null;
             replace?: boolean;
             dryRun?: boolean;
+        };
+        SpaceInfo: {
+            /** @example payments */
+            name: string;
+            description?: string | null;
+            /** @description Data-plane path prefixes the space's stubs must stay under (empty: no restriction). */
+            pathPrefixes: string[];
+            /** @description Hosts the space's stubs must match (empty: no restriction). */
+            hosts: string[];
+            /** @description The caller's effective permissions in the space. */
+            permissions: string[];
+        };
+        SpaceList: {
+            spaces: components["schemas"]["SpaceInfo"][];
         };
         SseEvent: {
             event?: string | null;
@@ -5338,6 +5406,35 @@ export interface operations {
             };
             /** @description Requires the editor role */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    listSpaces: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Spaces with the caller's permissions in each */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpaceList"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };

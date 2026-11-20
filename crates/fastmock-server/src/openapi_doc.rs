@@ -18,7 +18,7 @@ impl utoipa::Modify for BearerScheme {
                 HttpBuilder::new()
                     .scheme(HttpAuthScheme::Bearer)
                     .description(Some(
-                        "Admin token from FASTMOCK_ADMIN_TOKENS. GET/HEAD and read-only POSTs need viewer, other changes editor; deleting all stubs, reset and the audit log need admin.",
+                        "Admin token from FASTMOCK_ADMIN_TOKENS. Every route needs a permission (`resource:action`); the built-in roles viewer, editor and admin are permission sets, custom roles and space bindings come from FASTMOCK_ACCESS_FILE. Without an access file: GET/HEAD and read-only POSTs need viewer, other changes editor; deleting all stubs, reset and the audit log need admin.",
                     ))
                     .build(),
             ),
@@ -63,6 +63,7 @@ impl utoipa::Modify for BearerScheme {
         admin::kv_delete,
         admin::reset,
         admin::info,
+        admin::list_spaces,
         admin::version,
         admin::plugins,
         admin::list_audit,

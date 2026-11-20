@@ -1,3 +1,4 @@
+pub mod access;
 pub mod admin;
 pub mod admin_core;
 pub mod asyncmock;
@@ -132,11 +133,16 @@ pub async fn build(
     });
     let engine = Arc::new(Engine::new(stores.clone(), templates.clone(), stub_secrets));
     engine.reload().await?;
-    let auth = Arc::new(auth::Authenticator::new(
+    let access = match &cfg.access_file {
+        Some(path) => access::AccessConfig::load(path)?,
+        None => access::AccessConfig::default(),
+    };
+    let auth = Arc::new(auth::Authenticator::with_access(
         &cfg.admin_tokens,
         cfg.admin_tokens_file.as_deref(),
         cfg.auth_disabled,
         cfg.admin_allowed_origins.clone(),
+        Arc::new(access),
     )?);
     let redactor = Arc::new(redact::Redactor::new(
         &cfg.redact_headers,
