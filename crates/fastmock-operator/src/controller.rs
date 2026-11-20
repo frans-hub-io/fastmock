@@ -48,6 +48,7 @@ pub struct Ctx {
     pub http: reqwest::Client,
     pub admin_url_template: String,
     pub images: ImagePolicy,
+    pub space_from_namespace: bool,
     pub failures: Mutex<HashMap<String, u32>>,
 }
 
@@ -453,9 +454,31 @@ pub struct OpenApiInput {
 pub struct ApiInputs {
     pub openapi: Option<OpenApiInput>,
     pub wiremock: Option<Value>,
+    pub space: Option<String>,
+}
+
+/// The space a MockApi's stubs go to: `spec.space`, or the namespace when the operator forces
+/// spaces from namespaces (a different `spec.space` is then an error).
+pub fn effective_space(
+    from_namespace: bool,
+    ns: &str,
+    requested: Option<&str>,
+) -> Result<Option<String>, Error> {
+    match (from_namespace, requested) {
+        (true, Some(s)) if s != ns => Err(Error::Spec(format!(
+            "spec.space must be empty or {ns}: the operator puts the stubs of a namespace into the space of the same name"
+        ))),
+        (true, _) => Ok(Some(ns.to_string())),
+        (false, s) => Ok(s.map(String::from)),
+    }
+}
+
+fn space_param(space: Option<&str>) -> String {
+    space.map(|s| format!("space={s}")).unwrap_or_default()
 }
 
 async fn resolve_inputs(ctx: &Ctx, ns: &str, spec: &MockApiSpec) -> Result<ApiInputs, Error> {
+    let space = effective_space(ctx.space_from_namespace, ns, spec.space.as_deref())?;
     let openapi = match &spec.openapi {
         Some(o) => Some(OpenApiInput {
             doc: document(ctx, ns, &o.source).await?,
@@ -475,7 +498,11 @@ async fn resolve_inputs(ctx: &Ctx, ns: &str, spec: &MockApiSpec) -> Result<ApiIn
         }
         None => None,
     };
-    Ok(ApiInputs { openapi, wiremock })
+    Ok(ApiInputs {
+        openapi,
+        wiremock,
+        space,
+    })
 }
 
 fn canonical_json(v: &Value, out: &mut String) {
@@ -521,6 +548,10 @@ pub fn inputs_hash(stubs: &[Value], tag: &str, server_uid: &str, inputs: &ApiInp
         })),
         "wiremock": inputs.wiremock,
     });
+    let mut v = v;
+    if let Some(space) = &inputs.space {
+        v["space"] = json!(space);
+    }
     let mut s = String::new();
     canonical_json(&v, &mut s);
     manifests::sha256_hex(&s)
@@ -573,15 +604,27 @@ impl Admin<'_> {
         Ok(v)
     }
 
-    async fn delete_tag(&self, tag: &str) -> Result<(), Error> {
+    async fn delete_tag(&self, tag: &str, space: Option<&str>) -> Result<(), Error> {
         let q = tag.replace('/', "%2F").replace(':', "%3A");
-        self.call(reqwest::Method::DELETE, &format!("stubs?tag={q}"), None)
-            .await
-            .map(|_| ())
+        let s = space_param(space);
+        let sep = if s.is_empty() { "" } else { "&" };
+        self.call(
+            reqwest::Method::DELETE,
+            &format!("stubs?tag={q}{sep}{s}"),
+            None,
+        )
+        .await
+        .map(|_| ())
     }
 
-    async fn count_tagged(&self, tags: &[String]) -> Result<i64, Error> {
-        let v = self.call(reqwest::Method::GET, "stubs", None).await?;
+    async fn count_tagged(&self, tags: &[String], space: Option<&str>) -> Result<i64, Error> {
+        let s = space_param(space);
+        let path = if s.is_empty() {
+            "stubs".to_string()
+        } else {
+            format!("stubs?{s}")
+        };
+        let v = self.call(reqwest::Method::GET, &path, None).await?;
         Ok(count_tagged(&v, tags))
     }
 }
@@ -625,13 +668,18 @@ async fn import_all(
     warnings: &mut Vec<String>,
 ) -> Result<(), Error> {
     let [stub_tag, openapi_tag, wm_tag] = api_tags(tag);
+    let space = inputs.space.as_deref();
+    let q = match space_param(space) {
+        s if s.is_empty() => s,
+        s => format!("?{s}"),
+    };
     if spec.stubs.is_empty() {
-        admin.delete_tag(&stub_tag).await?;
+        admin.delete_tag(&stub_tag, space).await?;
     } else {
         let r = admin
             .call(
                 reqwest::Method::POST,
-                "stubs/import",
+                &format!("stubs/import{q}"),
                 Some(json!({"stubs": spec.stubs, "replaceTag": stub_tag})),
             )
             .await?;
@@ -642,28 +690,28 @@ async fn import_all(
             let r = admin
                 .call(
                     reqwest::Method::POST,
-                    "import/openapi",
+                    &format!("import/openapi{q}"),
                     Some(json!({"spec": o.doc, "tag": openapi_tag, "pathPrefix": o.path_prefix, "validateRequests": o.validate_requests})),
                 )
                 .await?;
             *imported += r["imported"].as_i64().unwrap_or(0);
             warnings.extend(warnings_of(&r));
         }
-        None => admin.delete_tag(&openapi_tag).await?,
+        None => admin.delete_tag(&openapi_tag, space).await?,
     }
     match &inputs.wiremock {
         Some(parsed) => {
             let r = admin
                 .call(
                     reqwest::Method::POST,
-                    "import/wiremock",
+                    &format!("import/wiremock{q}"),
                     Some(json!({"mappings": parsed, "tag": wm_tag})),
                 )
                 .await?;
             *imported += r["imported"].as_i64().unwrap_or(0);
             warnings.extend(warnings_of(&r));
         }
-        None => admin.delete_tag(&wm_tag).await?,
+        None => admin.delete_tag(&wm_tag, space).await?,
     }
     Ok(())
 }
@@ -688,6 +736,7 @@ async fn sync_api(api: Arc<MockApi>, ctx: &Ctx) -> Result<Action, Error> {
         observed_generation: generation,
         last_sync_time: synced_at,
         applied_hash: hash,
+        space: base.space.clone(),
         conditions: merge_conditions(&base.conditions, vec![condition("Synced", ok, reason, msg)]),
     };
     let server_name = &api.spec.server_ref.name;
@@ -739,7 +788,9 @@ async fn sync_api(api: Arc<MockApi>, ctx: &Ctx) -> Result<Action, Error> {
         &inputs,
     );
     if base.applied_hash == hash && base.observed_generation == generation && synced(&base) {
-        let present = admin.count_tagged(&api_tags(&tag)).await?;
+        let present = admin
+            .count_tagged(&api_tags(&tag), inputs.space.as_deref())
+            .await?;
         if present >= base.imported_stubs {
             return Ok(Action::requeue(RESYNC));
         }
@@ -747,6 +798,11 @@ async fn sync_api(api: Arc<MockApi>, ctx: &Ctx) -> Result<Action, Error> {
     }
     let mut imported = 0i64;
     let mut warnings: Vec<String> = vec![];
+    if !base.applied_hash.is_empty() && base.space != inputs.space {
+        for t in api_tags(&tag) {
+            admin.delete_tag(&t, base.space.as_deref()).await?;
+        }
+    }
     let outcome = import_all(
         &admin,
         &api.spec,
@@ -757,15 +813,21 @@ async fn sync_api(api: Arc<MockApi>, ctx: &Ctx) -> Result<Action, Error> {
     )
     .await;
     let st = match &outcome {
-        Ok(()) => make(
-            imported,
-            warnings,
-            hash,
-            chrono::Utc::now().to_rfc3339(),
-            true,
-            "Synced",
-            &format!("{imported} stubs applied with tag {tag}"),
-        ),
+        Ok(()) => MockApiStatus {
+            space: inputs.space.clone(),
+            ..make(
+                imported,
+                warnings,
+                hash,
+                chrono::Utc::now().to_rfc3339(),
+                true,
+                "Synced",
+                &match &inputs.space {
+                    Some(s) => format!("{imported} stubs applied with tag {tag} in space {s}"),
+                    None => format!("{imported} stubs applied with tag {tag}"),
+                },
+            )
+        },
         Err(e) => make(
             imported,
             warnings,
@@ -800,8 +862,13 @@ async fn cleanup_api(api: Arc<MockApi>, ctx: &Ctx) -> Result<Action, Error> {
         tracing::info!(mockapi = %name, namespace = %ns, server = %server_name, "operator token is gone; releasing MockApi without stub cleanup");
         return Ok(Action::await_change());
     };
+    let space = match api.status.as_ref().filter(|s| !s.applied_hash.is_empty()) {
+        Some(st) => st.space.clone(),
+        None => effective_space(ctx.space_from_namespace, &ns, api.spec.space.as_deref())
+            .unwrap_or(None),
+    };
     for t in api_tags(&tag_of(&api)) {
-        admin.delete_tag(&t).await?;
+        admin.delete_tag(&t, space.as_deref()).await?;
     }
     Ok(Action::await_change())
 }
@@ -921,6 +988,7 @@ mod tests {
                 validate_requests: true,
             }),
             wiremock: None,
+            space: None,
         };
         let h1 = inputs_hash(&[Value::Object(a)], "t", "uid", &inputs);
         let h2 = inputs_hash(&[Value::Object(b)], "t", "uid", &inputs);
@@ -941,6 +1009,7 @@ mod tests {
                 }
             }),
             wiremock: None,
+            space: None,
         };
         assert_ne!(base, inputs_hash(&stubs, "t", "uid", &flipped));
         let wm = ApiInputs {
@@ -951,6 +1020,36 @@ mod tests {
             inputs_hash(&stubs, "t", "uid", &ApiInputs::default()),
             inputs_hash(&stubs, "t", "uid", &wm)
         );
+    }
+
+    #[test]
+    fn space_comes_from_the_spec_or_the_namespace() {
+        assert_eq!(effective_space(false, "team-a", None).unwrap(), None);
+        assert_eq!(
+            effective_space(false, "team-a", Some("payments")).unwrap(),
+            Some("payments".into())
+        );
+        assert_eq!(
+            effective_space(true, "team-a", None).unwrap(),
+            Some("team-a".into())
+        );
+        assert_eq!(
+            effective_space(true, "team-a", Some("team-a")).unwrap(),
+            Some("team-a".into())
+        );
+        assert!(matches!(
+            effective_space(true, "team-a", Some("payments")),
+            Err(Error::Spec(_))
+        ));
+        let stubs = [json!({"request": {"method": "GET"}})];
+        let global = inputs_hash(&stubs, "t", "uid", &ApiInputs::default());
+        let spaced = ApiInputs {
+            space: Some("team-a".into()),
+            ..Default::default()
+        };
+        assert_ne!(global, inputs_hash(&stubs, "t", "uid", &spaced));
+        assert_eq!(space_param(Some("team-a")), "space=team-a");
+        assert_eq!(space_param(None), "");
     }
 
     #[test]

@@ -84,8 +84,9 @@ shows host, port, database, SSL mode, Valkey address and ACL user only.
 
 | Variable | Type | Default | Effect |
 |---|---|---|---|
-| `FASTMOCK_ADMIN_TOKENS` | list | none | Admin tokens as `name:role:sha256hex` entries. `name` is letters, digits, `-`, `_`, `.`, `@`; `role` is `viewer`, `editor` or `admin`; the hash is the hex SHA-256 of the token (`fastmock hash-token`). |
+| `FASTMOCK_ADMIN_TOKENS` | list | none | Admin tokens as `name:role:sha256hex` entries. `name` is letters, digits, `-`, `_`, `.`, `@`; `role` is `viewer`, `editor`, `admin` or a custom role of the access file (a global binding), or empty for a token that gets only the bindings of the access file; the hash is the hex SHA-256 of the token (`fastmock hash-token`). |
 | `FASTMOCK_ADMIN_TOKENS_FILE` | path | none | File with one `name:role:sha256hex` entry per line; blank lines and lines starting with `#` are ignored. Entries from the file and from `FASTMOCK_ADMIN_TOKENS` are combined. |
+| `FASTMOCK_ACCESS_FILE` | path | none | YAML file with custom roles, spaces and bindings, read once at start-up; an invalid file stops the server with a message naming the entry. See [Access control](access-control.md). |
 | `FASTMOCK_AUTH_DISABLED` | boolean | `false` | Turns admin authentication off: every caller becomes `anonymous` with the `admin` role and the same-origin exception for browsers is disabled. For a developer laptop only; the server logs a warning at start-up. The operator refuses this variable in `MockServer.spec.env`. |
 | `FASTMOCK_ADMIN_ALLOWED_ORIGINS` | list | none | Browser origins (exact `scheme://host[:port]`) allowed to call the admin port, for example `https://fastmock-admin.example.com`. Requests without an `Origin` header (curl, test clients) are not affected. A request whose `Origin` equals `http(s)://` plus its own `Host` header is also accepted while authentication is enabled. Anything else gets `403 {"error":"origin not allowed","details":[]}`. |
 
@@ -95,7 +96,8 @@ shows host, port, database, SSL mode, Valkey address and ACL user only.
 | `FASTMOCK_UI_DATA_PLANE_URL` | list | none | Exact origins (`scheme://host[:port]`, no path, no wildcard) of the data plane as browsers reach it, for example `https://mock.example.com`. The UI's `Content-Security-Policy` allows `connect-src` to `'self'` and these origins only, and the first one is the default target of the test-request panel. Without it, `connect-src` allows `'self'` and the data port on the host name the browser used for the UI (`http(s)://<ui host>:<FASTMOCK_LISTEN port>`). An invalid entry is a start-up error. |
 
 The server does not start without at least one token unless `FASTMOCK_AUTH_DISABLED=true`. Roles and token
-handling are described in [Security](security.md#admin-tokens-and-roles).
+handling are described in [Security](security.md#admin-tokens-and-roles), permissions, custom roles and spaces in
+[Access control](access-control.md).
 
 ## Data-plane TLS and mTLS
 
@@ -268,6 +270,7 @@ The operator (`fastmock-operator`) reads these variables; the operator chart set
 | `FASTMOCK_OPERATOR_NAMESPACE` | empty (all namespaces) | Watch only this namespace. |
 | `FASTMOCK_OPERATOR_SERVER_IMAGE` | `fastmock:<operator version>` | Image used when a `FastMock` does not set `spec.image`. |
 | `FASTMOCK_OPERATOR_ALLOWED_IMAGE_PREFIXES` | the repository of the default image | Comma-separated image prefixes a `FastMock` may use. |
+| `FASTMOCK_OPERATOR_SPACE_FROM_NAMESPACE` | `false` | `true` puts the stubs of every `MockApi` into the space named like its namespace; a different `spec.space` is refused. |
 | `FASTMOCK_OPERATOR_ADMIN_URL_TEMPLATE` | `http://{name}-admin.{namespace}.svc:9090` | How the operator reaches a server's admin API. |
 | `FASTMOCK_OPERATOR_LISTEN` | `0.0.0.0:8081` | Operator `/healthz`, `/readyz` and `/metrics`. |
 | `RUST_LOG` | `info,kube=warn,hyper=warn` | Operator log levels. |

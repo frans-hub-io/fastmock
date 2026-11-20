@@ -210,6 +210,10 @@ pub struct MockApiSpec {
     pub openapi: Option<OpenApiSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wiremock: Option<DocumentSource>,
+    /// Space of the FastMock server the stubs go to; it must be defined in the server's access file. With the operator policy `spaceFromNamespace` the space is the MockApi namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(regex(pattern = r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"))]
+    pub space: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -225,6 +229,9 @@ pub struct MockApiStatus {
     pub last_sync_time: String,
     #[serde(default)]
     pub applied_hash: String,
+    /// Space the stubs were applied to; absent for the global area.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
 }

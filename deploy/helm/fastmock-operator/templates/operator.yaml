@@ -110,6 +110,8 @@ spec:
               value: {{ printf "%s:%s" .Values.server.image.repository (default .Chart.AppVersion .Values.server.image.tag) | quote }}
             - name: FASTMOCK_OPERATOR_ALLOWED_IMAGE_PREFIXES
               value: {{ join "," .Values.server.allowedImagePrefixes | quote }}
+            - name: FASTMOCK_OPERATOR_SPACE_FROM_NAMESPACE
+              value: {{ .Values.policy.spaceFromNamespace | toString | quote }}
           ports:
             - name: http
               containerPort: 8081

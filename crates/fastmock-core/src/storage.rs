@@ -6,7 +6,9 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::model::{AuditEvent, CallbackFilter, CallbackJob, JournalEntry, JournalFilter, Stub};
+use crate::model::{
+    AuditEvent, CallbackFilter, CallbackJob, JournalEntry, JournalFilter, SpaceFilter, Stub,
+};
 
 pub type StoreResult<T> = anyhow::Result<T>;
 
@@ -17,9 +19,15 @@ pub trait StubStore: Send + Sync {
     async fn upsert(&self, stub: &Stub) -> StoreResult<()>;
     async fn insert(&self, stub: &Stub) -> StoreResult<bool>;
     async fn delete(&self, id: Uuid) -> StoreResult<bool>;
-    async fn delete_by_tag(&self, tag: &str) -> StoreResult<u64>;
-    async fn replace_tag(&self, tag: Option<&str>, stubs: &[Stub]) -> StoreResult<u64>;
-    async fn clear(&self) -> StoreResult<u64>;
+    async fn delete_by_tag(&self, tag: &str, spaces: &SpaceFilter) -> StoreResult<u64>;
+    /// Deletes the stubs carrying `tag` within `spaces` and inserts or replaces `stubs`, atomically.
+    async fn replace_tag(
+        &self,
+        tag: Option<&str>,
+        spaces: &SpaceFilter,
+        stubs: &[Stub],
+    ) -> StoreResult<u64>;
+    async fn clear(&self, spaces: &SpaceFilter) -> StoreResult<u64>;
     async fn revision(&self) -> StoreResult<i64>;
 }
 
@@ -34,7 +42,7 @@ pub trait JournalStore: Send + Sync {
     }
     async fn query(&self, filter: &JournalFilter) -> StoreResult<Vec<JournalEntry>>;
     async fn count(&self, filter: &JournalFilter) -> StoreResult<i64>;
-    async fn clear(&self) -> StoreResult<u64>;
+    async fn clear(&self, spaces: &SpaceFilter) -> StoreResult<u64>;
     async fn purge_older_than(&self, at: DateTime<Utc>) -> StoreResult<u64>;
     async fn get(&self, id: i64) -> StoreResult<Option<JournalEntry>> {
         let all = self
@@ -98,7 +106,7 @@ pub trait OutboxStore: Send + Sync {
     ) -> StoreResult<bool>;
     async fn list(&self, filter: &CallbackFilter) -> StoreResult<Vec<CallbackJob>>;
     async fn pending_count(&self) -> StoreResult<i64>;
-    async fn clear(&self) -> StoreResult<u64>;
+    async fn clear(&self, spaces: &SpaceFilter) -> StoreResult<u64>;
     async fn purge_finished_older_than(&self, at: DateTime<Utc>) -> StoreResult<u64>;
 }
 

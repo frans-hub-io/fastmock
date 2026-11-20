@@ -174,6 +174,7 @@ helm uninstall fastmock -n mocks
 | `admin.tokensSecret.key` | `tokens` | Key inside the Secret. |
 | `admin.allowedOrigins` | `[]` | `FASTMOCK_ADMIN_ALLOWED_ORIGINS`: browser origins allowed besides the same origin. |
 | `admin.uiDataPlaneUrls` | `[]` | `FASTMOCK_UI_DATA_PLANE_URL`: exact public origins of the data plane that the web UI may call (its `connect-src`). |
+| `access.roles`, `access.spaces`, `access.bindings` | `[]` | Custom roles, spaces and bindings, see [Access control](#access-control). |
 
 ### Storage
 
@@ -483,6 +484,36 @@ With `networkPolicy.enabled: true` the chart creates one policy for FastMock pod
 
 With `postgresql.enabled` or `valkey.enabled`, `networkPolicy.storage: true` adds a second policy that lets only FastMock pods of the
 release reach them.
+
+## Access control
+
+The `access` values become the access file ([Access control](access-control.md)): the chart renders them into the
+ConfigMap `<fullname>-access`, mounts it read-only at `/etc/fastmock/access/access.yaml` and sets
+`FASTMOCK_ACCESS_FILE`. Nothing is rendered while all three lists are empty. The pods carry a `checksum/access`
+annotation, so `helm upgrade` with changed values rolls them.
+
+```yaml
+access:
+  roles:
+    - name: stub-author
+      permissions: [stubs:read, stubs:write, imports:run, journal:read, state:read]
+  spaces:
+    - name: payments
+      pathPrefixes: [/payments/]
+      hosts: [psp.example.com]
+    - name: billing
+  bindings:
+    - subject: token:ci-billing
+      role: stub-author
+      spaces: [billing]
+    - subject: group:platform
+      role: admin
+      global: true
+```
+
+The values schema checks names, permission and subject formats; the server checks the rest at start-up (unknown
+permissions, roles and spaces, `token:` bindings without a matching entry in the tokens Secret). A token that
+should only get space bindings has an empty role in the Secret: `ci-billing::<sha256>`.
 
 ## Upgrade notes
 

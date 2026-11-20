@@ -578,7 +578,10 @@ pub async fn import_document(
         for m in &kafka {
             store_mock(app, m).await?;
         }
-        app.stores.stubs.replace_tag(Some(&tag), &ws_stubs).await?;
+        app.stores
+            .stubs
+            .replace_tag(Some(&tag), &fastmock_core::SpaceFilter::Global, &ws_stubs)
+            .await?;
         app.engine.reload().await?;
         audit(
             app,

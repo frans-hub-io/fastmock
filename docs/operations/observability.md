@@ -105,7 +105,7 @@ avoid generating thousands of uniquely named stubs per run.
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `fastmock_admin_changes_total` | counter | `action` | Audited changes (`stub.create`, `stub.import`, `scenario.set`, `reset`, ...). |
-| `fastmock_admin_auth_failures_total` | counter | `reason` (`token`, `role`, `origin`) | Rejected admin calls. |
+| `fastmock_admin_auth_failures_total` | counter | `reason` (`token`, `role`, `permission`, `origin`) | Rejected admin calls. |
 | `fastmock_admin_errors_total` | counter | | Admin calls that failed with 500. |
 | `fastmock_admin_verifications_total` | counter | `kind` (`count`, `sequence`), `result` (`pass`, `fail`) | Verification requests. |
 | `fastmock_contract_tests_total` | counter | `result` (`passed`, `failed`, `error`) | Contract test runs. |

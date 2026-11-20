@@ -76,3 +76,11 @@ verify-full
 {{- join "," .Values.messaging.kafka.bootstrap -}}
 {{- end -}}
 {{- end }}
+
+{{- define "fastmock.accessEnabled" -}}
+{{- if or .Values.access.roles .Values.access.spaces .Values.access.bindings -}}true{{- end -}}
+{{- end -}}
+
+{{- define "fastmock.accessFile" -}}
+{{- toYaml (dict "roles" .Values.access.roles "spaces" .Values.access.spaces "bindings" .Values.access.bindings) -}}
+{{- end -}}

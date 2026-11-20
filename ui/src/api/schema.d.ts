@@ -91,7 +91,10 @@ export interface paths {
         get: operations["listCallbacks"];
         put?: never;
         post?: never;
-        /** Delete all callback jobs, including pending ones */
+        /**
+         * Delete all callback jobs, including pending ones
+         * @description Deletes the jobs of `space`, or of everything the caller may delete.
+         */
         delete: operations["clearCallbacks"];
         options?: never;
         head?: never;
@@ -127,7 +130,10 @@ export interface paths {
         /** List contract test runs */
         get: operations["listContractTests"];
         put?: never;
-        /** Start a contract test run */
+        /**
+         * Start a contract test run
+         * @description The run belongs to the target space (`space` parameter). `secretHeaders` need `contracts:secrets` there; `specRef` reads the global service catalog and needs global `stubs:read`.
+         */
         post: operations["startContractTest"];
         delete?: never;
         options?: never;
@@ -376,7 +382,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Generate stubs from an OpenAPI 3 document */
+        /**
+         * Generate stubs from an OpenAPI 3 document
+         * @description The stubs go to the target space (`space` parameter); only imports into the global area are recorded in the service catalog.
+         */
         post: operations["importOpenApi"];
         delete?: never;
         options?: never;
@@ -435,7 +444,7 @@ export interface paths {
         put?: never;
         /**
          * Convert WireMock mappings into stubs
-         * @description Unsupported parts come back as warnings.
+         * @description Unsupported parts come back as warnings. The stubs go to the target space (`space` parameter).
          */
         post: operations["importWireMock"];
         delete?: never;
@@ -602,7 +611,10 @@ export interface paths {
         get: operations["listRequests"];
         put?: never;
         post?: never;
-        /** Clear the request journal */
+        /**
+         * Clear the request journal
+         * @description Deletes the entries of `space`, or of everything the caller may delete.
+         */
         delete: operations["clearRequests"];
         options?: never;
         head?: never;
@@ -658,7 +670,7 @@ export interface paths {
         put?: never;
         /**
          * Explain why a request does not match
-         * @description Returns the five closest stubs with the matchers that failed.
+         * @description Returns the five closest stubs (of `space`, or of the spaces the caller may read) with the matchers that failed.
          */
         post: operations["nearMisses"];
         delete?: never;
@@ -752,7 +764,10 @@ export interface paths {
         get: operations["listScenarios"];
         put?: never;
         post?: never;
-        /** Reset every scenario to Started */
+        /**
+         * Reset every scenario to Started
+         * @description Resets the scenarios of `space`, or of everything the caller may change.
+         */
         delete: operations["resetScenarios"];
         options?: never;
         head?: never;
@@ -885,11 +900,14 @@ export interface paths {
          */
         get: operations["listStubs"];
         put?: never;
-        /** Create a stub */
+        /**
+         * Create a stub
+         * @description The stub goes to the space in its `space` field or the `space` parameter; without either, to the global area (or the caller's only space). Stubs in a space with ownership rules must stay inside them.
+         */
         post: operations["createStub"];
         /**
          * Delete stubs by tag, or all stubs
-         * @description Without `tag` every stub is deleted, which needs the admin role.
+         * @description Without `tag` every stub (of `space`, when given) is deleted, which needs `stubs:purge` (admin role). With `tag`, the tagged stubs of every space the caller may change, or of `space`, are deleted.
          */
         delete: operations["deleteStubs"];
         options?: never;
@@ -911,7 +929,10 @@ export interface paths {
         get: operations["listStubCounters"];
         put?: never;
         post?: never;
-        /** Reset `times` and response sequence counters */
+        /**
+         * Reset `times` and response sequence counters
+         * @description Resets the counters of the stubs of `space`, or of every stub the caller may change.
+         */
         delete: operations["resetStubCounters"];
         options?: never;
         head?: never;
@@ -946,7 +967,7 @@ export interface paths {
         put?: never;
         /**
          * Bulk import FastMock stubs
-         * @description With `replaceTag`, stubs carrying that tag are deleted first and the tag is added to every imported stub, in one transaction. At most 10000 stubs.
+         * @description With `replaceTag`, stubs carrying that tag (in the target space) are deleted first and the tag is added to every imported stub, in one transaction. At most 10000 stubs. Every stub goes to the target space (`space` parameter; without it the global area or the caller's only space).
          */
         post: operations["importStubs"];
         delete?: never;
@@ -1020,7 +1041,7 @@ export interface paths {
         get: operations["getStub"];
         /**
          * Create or replace a stub
-         * @description The id in the path wins over an id in the body. The audit log records the changed fields.
+         * @description The id in the path wins over an id in the body. The audit log records the changed fields. An existing stub keeps its space; a new one goes to the space given like for `POST /stubs`.
          */
         put: operations["putStub"];
         post?: never;
@@ -1251,6 +1272,8 @@ export interface components {
             /** Format: date-time */
             sentAt?: string | null;
             traceparent?: string | null;
+            /** @description Space of the stub that scheduled the callback. */
+            space?: string | null;
         };
         CallbackList: {
             callbacks: components["schemas"]["CallbackJob"][];
@@ -1315,6 +1338,8 @@ export interface components {
              *     the caller is a viewer.
              */
             detailsHidden?: boolean;
+            /** @description Space the run was started in; absent in the global area. */
+            space?: string | null;
         };
         ContractRunList: {
             runs: components["schemas"]["ContractRun"][];
@@ -1393,6 +1418,8 @@ export interface components {
             /** Format: int64 */
             size: number;
             updatedAt?: string | null;
+            /** @description Space of the file; absent in the global area. `name` is relative to the space. */
+            space?: string | null;
         };
         FileList: {
             total: number;
@@ -1533,6 +1560,8 @@ export interface components {
             /** Format: int64 */
             durationMs: number;
             traceId?: string | null;
+            /** @description Space of the stub that matched; absent for unmatched requests and global stubs. */
+            space?: string | null;
         };
         JournalFilter: {
             source?: string | null;
@@ -1889,6 +1918,8 @@ export interface components {
         ScenarioState: {
             name: string;
             state: string;
+            /** @description Space of the scenario; absent in the global area. */
+            space?: string | null;
         };
         SequenceResult: {
             verified: boolean;
@@ -2070,6 +2101,11 @@ export interface components {
             tags?: string[];
             metadata?: unknown;
             enabled?: boolean;
+            /**
+             * @description Space the stub belongs to (see access control); absent for the global area. Set on create and never
+             *     changed afterwards.
+             */
+            space?: string | null;
             /** Format: date-time */
             updatedAt?: string | null;
         };
@@ -2499,6 +2535,8 @@ export interface operations {
                 /** @description pending, sent or failed */
                 status?: string;
                 limit?: number;
+                /** @description Only jobs of this space. */
+                space?: string;
             };
             header?: never;
             path?: never;
@@ -2537,7 +2575,13 @@ export interface operations {
     };
     clearCallbacks: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2707,6 +2751,8 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: number;
+                /** @description Only runs of this space. */
+                space?: string;
             };
             header?: never;
             path?: never;
@@ -2736,7 +2782,13 @@ export interface operations {
     };
     startContractTest: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2896,6 +2948,8 @@ export interface operations {
         parameters: {
             query?: {
                 tag?: string;
+                /** @description Only stubs of this space. */
+                space?: string;
             };
             header?: never;
             path?: never;
@@ -2925,7 +2979,13 @@ export interface operations {
     };
     listFiles: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2954,7 +3014,13 @@ export interface operations {
     };
     getFile: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path: {
                 /** @description File name, may contain `/` */
@@ -3004,7 +3070,13 @@ export interface operations {
     };
     putFile: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path: {
                 /** @description File name: [A-Za-z0-9._-/], at most 512 bytes, no `..` */
@@ -3083,7 +3155,13 @@ export interface operations {
     };
     deleteFile: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path: {
                 /** @description File name */
@@ -3296,6 +3374,8 @@ export interface operations {
                 dryRun?: boolean;
                 /** @description Force a format instead of detecting it. */
                 format?: string;
+                /** @description Space the stubs go to (OpenAPI, WireMock, MockServer, Postman and HAR only). */
+                space?: string;
             };
             header?: never;
             path?: never;
@@ -3649,6 +3729,8 @@ export interface operations {
                 replace?: boolean;
                 /** @description Convert and validate only; nothing is stored. */
                 dryRun?: boolean;
+                /** @description Space the stubs go to. */
+                space?: string;
             };
             header?: never;
             path?: never;
@@ -3729,7 +3811,13 @@ export interface operations {
     };
     importOpenApi: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3950,7 +4038,13 @@ export interface operations {
     };
     importWireMock: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4115,7 +4209,13 @@ export interface operations {
     };
     getKv: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path: {
                 /** @description Key, 1..512 bytes */
@@ -4165,7 +4265,13 @@ export interface operations {
     };
     putKv: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path: {
                 /** @description Key, 1..512 bytes */
@@ -4217,7 +4323,13 @@ export interface operations {
     };
     deleteKv: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path: {
                 /** @description Key, 1..512 bytes */
@@ -4499,6 +4611,8 @@ export interface operations {
                 since?: string;
                 limit?: number;
                 offset?: number;
+                /** @description Only entries of this space (matched by its stubs). */
+                space?: string;
             };
             header?: never;
             path?: never;
@@ -4537,7 +4651,13 @@ export interface operations {
     };
     clearRequests: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4587,6 +4707,8 @@ export interface operations {
                 since?: string;
                 limit?: number;
                 offset?: number;
+                /** @description Only entries of this space (matched by its stubs). */
+                space?: string;
             };
             header?: never;
             path?: never;
@@ -4625,7 +4747,13 @@ export interface operations {
     };
     countRequestsByFilter: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4683,6 +4811,8 @@ export interface operations {
                 since?: string;
                 /** @description Maximum number of entries to return (default 100). */
                 limit?: number;
+                /** @description Only entries of this space. */
+                space?: string;
             };
             header?: never;
             path?: never;
@@ -4757,7 +4887,13 @@ export interface operations {
     };
     nearMisses: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4833,6 +4969,8 @@ export interface operations {
                 since?: string;
                 /** @description Maximum number of entries to return (default 100). */
                 limit?: number;
+                /** @description Only entries of this space. */
+                space?: string;
             };
             header?: never;
             path?: never;
@@ -5038,7 +5176,13 @@ export interface operations {
     };
     listScenarios: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5067,7 +5211,13 @@ export interface operations {
     };
     resetScenarios: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5105,7 +5255,13 @@ export interface operations {
     };
     setScenarioState: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path: {
                 /** @description Scenario name */
@@ -5448,6 +5604,8 @@ export interface operations {
         parameters: {
             query?: {
                 tag?: string;
+                /** @description Only stubs of this space. */
+                space?: string;
                 q?: string;
                 enabled?: boolean;
                 limit?: number;
@@ -5490,7 +5648,13 @@ export interface operations {
     };
     createStub: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5576,6 +5740,8 @@ export interface operations {
         parameters: {
             query?: {
                 tag?: string;
+                /** @description Only stubs of this space. */
+                space?: string;
             };
             header?: never;
             path?: never;
@@ -5614,7 +5780,13 @@ export interface operations {
     };
     listStubCounters: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5643,7 +5815,13 @@ export interface operations {
     };
     resetStubCounters: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5686,7 +5864,13 @@ export interface operations {
     };
     findStubsByMetadata: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5734,7 +5918,13 @@ export interface operations {
     };
     importStubs: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5794,7 +5984,13 @@ export interface operations {
     };
     removeStubsByMetadata: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5854,6 +6050,8 @@ export interface operations {
             query?: {
                 /** @description Only journal entries at or after this instant (RFC 3339) count as hits. */
                 since?: string;
+                /** @description Only stubs of this space. */
+                space?: string;
             };
             header?: never;
             path?: never;
@@ -5966,7 +6164,13 @@ export interface operations {
     };
     putStub: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path: {
                 /** @description Stub id */
@@ -6148,7 +6352,13 @@ export interface operations {
     };
     verify: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -6217,7 +6427,13 @@ export interface operations {
     };
     verifySequence: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;

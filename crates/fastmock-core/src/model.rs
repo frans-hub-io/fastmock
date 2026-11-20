@@ -67,6 +67,10 @@ pub struct Stub {
     pub metadata: Option<Value>,
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// Space the stub belongs to (see access control); absent for the global area. Set on create and never
+    /// changed afterwards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<DateTime<Utc>>,
 }
@@ -91,6 +95,7 @@ impl Default for Stub {
             tags: Vec::new(),
             metadata: None,
             enabled: true,
+            space: None,
             updated_at: None,
         }
     }
@@ -817,6 +822,39 @@ pub struct JournalEntry {
     pub duration_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    /// Space of the stub that matched; absent for unmatched requests and global stubs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
+}
+
+/// Which spaces a query or bulk change covers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SpaceFilter {
+    /// Everything: the global area and every space.
+    #[default]
+    Any,
+    /// Only the global area (no space).
+    Global,
+    /// Only these spaces.
+    In(Vec<String>),
+}
+
+impl SpaceFilter {
+    /// The global area for `None`, otherwise the one space.
+    pub fn area(space: Option<&str>) -> Self {
+        match space {
+            None => SpaceFilter::Global,
+            Some(s) => SpaceFilter::In(vec![s.to_string()]),
+        }
+    }
+
+    pub fn matches(&self, space: Option<&str>) -> bool {
+        match self {
+            SpaceFilter::Any => true,
+            SpaceFilter::Global => space.is_none(),
+            SpaceFilter::In(list) => space.is_some_and(|s| list.iter().any(|x| x == s)),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
@@ -840,6 +878,9 @@ pub struct JournalFilter {
     pub since: Option<DateTime<Utc>>,
     #[serde(default)]
     pub limit: Option<i64>,
+    /// Set by the server from the caller's permissions and the `space` parameter.
+    #[serde(skip)]
+    pub spaces: SpaceFilter,
 }
 
 impl JournalFilter {
@@ -864,6 +905,7 @@ impl JournalFilter {
             && self.matched.is_none_or(|m| m == e.matched)
             && self.stub_id.is_none_or(|id| e.stub_id == Some(id))
             && self.since.is_none_or(|s| e.at >= s)
+            && self.spaces.matches(e.space.as_deref())
     }
 }
 
@@ -918,6 +960,9 @@ pub struct CallbackJob {
     pub sent_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub traceparent: Option<String>,
+    /// Space of the stub that scheduled the callback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
 }
 
 impl CallbackJob {
@@ -948,6 +993,7 @@ impl CallbackJob {
             created_at: now,
             sent_at: None,
             traceparent: None,
+            space: None,
         }
     }
 
@@ -968,6 +1014,8 @@ pub struct CallbackFilter {
     pub status: Option<CallbackStatus>,
     #[serde(default)]
     pub limit: Option<i64>,
+    #[serde(skip)]
+    pub spaces: SpaceFilter,
 }
 
 impl CallbackFilter {
@@ -978,6 +1026,7 @@ impl CallbackFilter {
                 .as_ref()
                 .is_none_or(|c| j.correlation.as_deref() == Some(c.as_str()))
             && self.status.is_none_or(|s| s == j.status)
+            && self.spaces.matches(j.space.as_deref())
     }
 }
 

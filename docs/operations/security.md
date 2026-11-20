@@ -25,13 +25,13 @@ security model and how to harden a deployment. To report a vulnerability, see [S
 | Principle | How |
 |---|---|
 | The system under test cannot change its mocks | Mocks and the control plane are on different ports; no admin route exists on the data port. |
-| Every control-plane call is authenticated | Bearer tokens with roles, compared as SHA-256 hashes in constant time. There is no anonymous mode except an explicit local-development switch. |
+| Every control-plane call is authenticated | Bearer tokens bound to roles (sets of permissions), compared as SHA-256 hashes in constant time. There is no anonymous mode except an explicit local-development switch. |
 | Security settings are not runtime state | Tokens, origins, egress policy, secrets, storage and listeners come from the environment at start-up and cannot be changed through the API or the UI. |
 | Mock definitions are data, never code | Templates are a closed language without file, environment, secret or network access; imports never execute anything. |
 | Outgoing traffic follows one policy | Callbacks, proxy stubs and recording use one HTTP client with one egress policy. |
 | What is stored is masked | Secrets in headers, query strings and bodies are masked before they reach the journal, the callbacks API, the UI or logs. |
 | Every input is bounded | Sizes, counts, nesting depth, regex size, template output and time are limited. |
-| Every change is audited | Admin changes are recorded with principal, role, action and details. |
+| Every change is audited | Admin changes are recorded with principal, principal kind, role, space, action and details. |
 
 The data plane is intentionally unauthenticated: it imitates other services, and those services' credentials
 are part of what the mocks match on. Restrict who can reach it with network policies.
@@ -56,15 +56,20 @@ appears in the audit log, logs and `GET /__admin/info`, so give every client its
 | `editor` | Everything a viewer may, plus every change a test makes: stubs, imports, journal and callback cleanup, scenario states, key-value entries, chaos rules, recordings, gRPC descriptors, plugin admin calls. |
 | `admin` | Everything, plus deleting all stubs at once, `POST /__admin/reset`, reading the audit log and starting contract tests that send server-side secrets (`secretHeaders`). |
 
-`GET` and `HEAD` need `viewer`, other methods `editor`, unless an endpoint says otherwise (the
+The roles are sets of permissions; custom roles, spaces and space-limited bindings come from the access file
+([Access control](access-control.md)). Without it, `GET` and `HEAD` need `viewer`, other methods `editor`, unless an endpoint says otherwise (the
 [Admin API](../guide/admin-api.md) lists the role of each endpoint). Responses: `401 {"error":"unauthorized","details":[]}`
 with `WWW-Authenticate: Bearer` for a missing or wrong token, `403 {"error":"forbidden","details":["requires role editor"],"required":"editor"}`
-for a role that is too low. Tokens longer than 512 characters are rejected without hashing.
+for a role that is too low (principals with custom roles or space bindings get the missing permission in `required`
+instead, for example `"required":"files:read"`). Tokens longer than 512 characters are rejected without hashing.
 
 Editors can change everything that tests change, including which callbacks go where (within the egress policy).
 Give `editor` to automated test clients and the people who maintain mocks, `viewer` to dashboards and readers,
-`admin` to operators. Teams that must not affect each other should get separate FastMock instances (the
-[operator](operator.md) makes that cheap) rather than separate tokens on one instance.
+`admin` to operators. Teams that share one instance and must not affect each other get [spaces](access-control.md#spaces):
+tokens bound to a space see and change only that space's stubs, journal, state, files, callbacks and contract
+tests, and ownership rules keep their stubs inside their part of the data plane. Teams that need separate
+recordings, chaos rules, gRPC descriptors or Kafka settings still need separate FastMock instances (the
+[operator](operator.md) makes that cheap).
 
 `FASTMOCK_AUTH_DISABLED=true` turns authentication off for a laptop. The server logs a warning, and the operator
 refuses the variable.
@@ -256,15 +261,18 @@ Every change through the admin API is recorded:
 
 - in the store (PostgreSQL table `fm_audit`, kept 90 days), readable by admins with `GET /__admin/audit?limit=100`;
 - as a log line with target `audit` (`"message":"admin change"`), including rejected calls
-  (`admin request rejected: missing or invalid token`, `... role too low`), ready to be shipped to your log
+  (`admin request rejected: missing or invalid token`, `... permission missing`), ready to be shipped to your log
   system.
 
+Events carry `principalKind` (`token`, `anonymous`) and, for changes inside a space, `space`; `role` lists the role
+names of the principal's bindings.
+
 ```json
-{"events":[{"id":15,"at":"2026-11-19T05:49:27.026723055Z","principal":"me","role":"admin","action":"reset","detail":{"requests":19,"callbacks":7,"scenarios":0}}]}
+{"events":[{"id":15,"at":"2026-11-19T05:49:27.026723055Z","principal":"me","role":"admin","principalKind":"token","action":"reset","detail":{"requests":19,"callbacks":7,"scenarios":0}}]}
 ```
 
 ```json
-{"level":"WARN","message":"admin request rejected: role too low","principal":"ci","path":"/__admin/kv/x","target":"audit"}
+{"level":"WARN","message":"admin request rejected: permission missing","principal":"ci","kind":"token","path":"/__admin/kv/x","permission":"state:write","target":"audit"}
 ```
 
 `fastmock_admin_changes_total{action}` counts changes per action, `fastmock_admin_auth_failures_total{reason}`

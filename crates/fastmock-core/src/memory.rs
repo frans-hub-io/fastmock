@@ -10,7 +10,8 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::model::{
-    AuditEvent, CallbackFilter, CallbackJob, CallbackStatus, JournalEntry, JournalFilter, Stub,
+    AuditEvent, CallbackFilter, CallbackJob, CallbackStatus, JournalEntry, JournalFilter,
+    SpaceFilter, Stub,
 };
 use crate::storage::*;
 
@@ -65,10 +66,10 @@ impl StubStore for MemoryStubs {
         Ok(removed)
     }
 
-    async fn delete_by_tag(&self, tag: &str) -> StoreResult<u64> {
+    async fn delete_by_tag(&self, tag: &str, spaces: &SpaceFilter) -> StoreResult<u64> {
         let mut stubs = self.stubs.lock().await;
         let before = stubs.len();
-        stubs.retain(|x| !x.tags.iter().any(|t| t == tag));
+        stubs.retain(|x| !(x.tags.iter().any(|t| t == tag) && spaces.matches(x.space.as_deref())));
         let n = (before - stubs.len()) as u64;
         if n > 0 {
             self.revision.fetch_add(1, Ordering::SeqCst);
@@ -76,11 +77,17 @@ impl StubStore for MemoryStubs {
         Ok(n)
     }
 
-    async fn replace_tag(&self, tag: Option<&str>, new: &[Stub]) -> StoreResult<u64> {
+    async fn replace_tag(
+        &self,
+        tag: Option<&str>,
+        spaces: &SpaceFilter,
+        new: &[Stub],
+    ) -> StoreResult<u64> {
         let mut stubs = self.stubs.lock().await;
         let before = stubs.len();
         if let Some(t) = tag {
-            stubs.retain(|x| !x.tags.iter().any(|y| y == t));
+            stubs
+                .retain(|x| !(x.tags.iter().any(|y| y == t) && spaces.matches(x.space.as_deref())));
         }
         let removed = (before - stubs.len()) as u64;
         let now = Utc::now();
@@ -94,12 +101,12 @@ impl StubStore for MemoryStubs {
         Ok(removed)
     }
 
-    async fn clear(&self) -> StoreResult<u64> {
+    async fn clear(&self, spaces: &SpaceFilter) -> StoreResult<u64> {
         let mut stubs = self.stubs.lock().await;
-        let n = stubs.len() as u64;
-        stubs.clear();
+        let before = stubs.len();
+        stubs.retain(|x| !spaces.matches(x.space.as_deref()));
         self.revision.fetch_add(1, Ordering::SeqCst);
-        Ok(n)
+        Ok((before - stubs.len()) as u64)
     }
 
     async fn revision(&self) -> StoreResult<i64> {
@@ -159,11 +166,11 @@ impl JournalStore for MemoryJournal {
             .count() as i64)
     }
 
-    async fn clear(&self) -> StoreResult<u64> {
+    async fn clear(&self, spaces: &SpaceFilter) -> StoreResult<u64> {
         let mut entries = self.entries.lock().await;
-        let n = entries.len() as u64;
-        entries.clear();
-        Ok(n)
+        let before = entries.len();
+        entries.retain(|e| !spaces.matches(e.space.as_deref()));
+        Ok((before - entries.len()) as u64)
     }
 
     async fn purge_older_than(&self, at: DateTime<Utc>) -> StoreResult<u64> {
@@ -333,11 +340,11 @@ impl OutboxStore for MemoryOutbox {
             .count() as i64)
     }
 
-    async fn clear(&self) -> StoreResult<u64> {
+    async fn clear(&self, spaces: &SpaceFilter) -> StoreResult<u64> {
         let mut jobs = self.jobs.lock().await;
-        let n = jobs.len() as u64;
-        jobs.clear();
-        Ok(n)
+        let before = jobs.len();
+        jobs.retain(|(j, _)| !spaces.matches(j.space.as_deref()));
+        Ok((before - jobs.len()) as u64)
     }
 
     async fn purge_finished_older_than(&self, at: DateTime<Utc>) -> StoreResult<u64> {

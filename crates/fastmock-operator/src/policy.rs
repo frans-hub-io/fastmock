@@ -125,6 +125,19 @@ pub fn referenced_secrets(spec: &FastMockSpec) -> Vec<(String, String)> {
     out
 }
 
+/// Reads a boolean operator setting (`true`/`false`, default false).
+pub fn bool_env(name: &str) -> anyhow::Result<bool> {
+    parse_bool(name, std::env::var(name).ok().as_deref())
+}
+
+fn parse_bool(name: &str, v: Option<&str>) -> anyhow::Result<bool> {
+    match v.map(str::trim) {
+        None | Some("") | Some("false") => Ok(false),
+        Some("true") => Ok(true),
+        Some(other) => anyhow::bail!("{name} must be true or false, got {other}"),
+    }
+}
+
 pub fn secret_allowed(labels: Option<&BTreeMap<String, String>>) -> bool {
     labels
         .and_then(|l| l.get(ALLOW_MOUNT_LABEL))
@@ -245,6 +258,14 @@ mod tests {
             .map(|(_, n)| n)
             .collect();
         assert_eq!(names, vec!["payments-secrets", "db", "tokens", "pull"]);
+    }
+
+    #[test]
+    fn booleans() {
+        assert!(!parse_bool("X", None).unwrap());
+        assert!(!parse_bool("X", Some("false")).unwrap());
+        assert!(parse_bool("X", Some("true")).unwrap());
+        assert!(parse_bool("X", Some("yes")).is_err());
     }
 
     #[test]

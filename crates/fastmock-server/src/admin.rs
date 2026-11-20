@@ -6,13 +6,14 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Router, middleware};
-use fastmock_core::{CallbackFilter, CapturedRequest, JournalFilter, Stub};
+use fastmock_core::{CallbackFilter, CapturedRequest, JournalFilter, SpaceFilter, Stub};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::access::Permission;
 use crate::auth::{Principal, admin_auth};
+use crate::spaces::{self, SpaceQuery};
 use crate::state::AppState;
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -337,7 +338,7 @@ pub fn mask_stub_secrets(r: &crate::redact::Redactor, s: &mut Stub) {
 /// Masks credentials unless the principal may change the stub (`stubs:write` in its space).
 pub fn mask_for(app: &AppState, p: &Principal, stubs: &mut [Stub]) {
     for s in stubs {
-        if !p.allowed(Permission::StubsWrite, None) {
+        if !p.allowed(Permission::StubsWrite, s.space.as_deref()) {
             mask_stub_secrets(&app.redactor, s);
         }
     }
@@ -358,6 +359,8 @@ pub struct StubList {
 #[into_params(parameter_in = Query)]
 pub struct StubsQuery {
     tag: Option<String>,
+    /// Only stubs of this space.
+    space: Option<String>,
     q: Option<String>,
     enabled: Option<bool>,
     #[param(minimum = 1, maximum = 10000)]
@@ -409,9 +412,11 @@ pub async fn list_stubs(
     Extension(p): Extension<Principal>,
     Query(q): Query<StubsQuery>,
 ) -> ApiResult<Json<StubList>> {
+    let sel = spaces::select(&app, &p, Permission::StubsRead, q.space.as_deref())?;
     let mut stubs = app.stores.stubs.list().await?;
     stubs.retain(|s| {
-        q.tag.as_ref().is_none_or(|t| s.tags.contains(t))
+        sel.matches(s.space.as_deref())
+            && q.tag.as_ref().is_none_or(|t| s.tags.contains(t))
             && q.enabled.is_none_or(|e| s.enabled == e)
             && q.q.as_deref().is_none_or(|n| stub_search_hit(s, n))
     });
@@ -448,6 +453,13 @@ pub async fn get_stub(
         .get(id)
         .await?
         .ok_or_else(|| not_found("stub"))?;
+    spaces::item(
+        &p,
+        Permission::StubsRead,
+        Permission::StubsRead,
+        stub.space.as_deref(),
+        "stub",
+    )?;
     let mut one = [stub];
     mask_for(&app, &p, &mut one);
     let [stub] = one;
@@ -457,6 +469,8 @@ pub async fn get_stub(
 #[utoipa::path(
     post, path = "/__admin/stubs", tag = "stubs", operation_id = "createStub",
     summary = "Create a stub",
+    description = "The stub goes to the space in its `space` field or the `space` parameter; without either, to the global area (or the caller's only space). Stubs in a space with ownership rules must stay inside them.",
+    params(SpaceQuery),
     request_body(content = Stub, example = json!({"name": "get user", "request": {"method": "GET", "urlPathTemplate": "/users/{id}"}, "response": {"status": 200, "jsonBody": {"id": "{{request.pathParams.id}}"}}})),
     responses(
         (status = 201, description = "Created", body = Stub),
@@ -471,11 +485,14 @@ pub async fn get_stub(
 pub async fn create_stub(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
+    Query(q): Query<SpaceQuery>,
     Json(v): Json<Value>,
 ) -> ApiResult<Response> {
     let mut stub = parse_stub(v)?;
     stub.updated_at = None;
-    app.engine.validate(&stub).map_err(bad)?;
+    let requested = requested_space(stub.space.as_deref(), q.space.as_deref())?;
+    stub.space = spaces::target(&app, &p, Permission::StubsWrite, requested.as_deref())?;
+    spaces::check_stub(&app, &stub).map_err(bad)?;
     if !app.stores.stubs.insert(&stub).await? {
         return Err(ApiError(
             StatusCode::CONFLICT,
@@ -483,15 +500,28 @@ pub async fn create_stub(
         ));
     }
     refresh(&app).await?;
-    audit_event(
+    audit_event_in(
         &app,
         &p,
+        stub.space.as_deref(),
         "stub.create",
         json!({"id": stub.id, "name": stub.name}),
     )
     .await;
     let saved = app.stores.stubs.get(stub.id).await?;
     Ok((StatusCode::CREATED, Json(saved)).into_response())
+}
+
+const SPACE_FIXED: &str =
+    "the space of a stub cannot change; delete it and create it in the other space";
+
+fn requested_space(field: Option<&str>, param: Option<&str>) -> ApiResult<Option<String>> {
+    match (field, param) {
+        (Some(a), Some(b)) if a != b => Err(bad(
+            "the space field of the stub and the space parameter differ",
+        )),
+        (a, b) => Ok(a.or(b).map(String::from)),
+    }
 }
 
 const AUDIT_MAX_CHANGES: usize = 100;
@@ -558,12 +588,13 @@ async fn save_stub_update(
     before: Option<Stub>,
     stub: Stub,
 ) -> ApiResult<Json<Option<Stub>>> {
-    app.engine.validate(&stub).map_err(bad)?;
+    spaces::check_stub(app, &stub).map_err(bad)?;
     app.stores.stubs.upsert(&stub).await?;
     refresh(app).await?;
-    audit_event(
+    audit_event_in(
         app,
         p,
+        stub.space.as_deref(),
         "stub.update",
         stub_change_detail(app, id, before.as_ref(), &stub),
     )
@@ -574,8 +605,8 @@ async fn save_stub_update(
 #[utoipa::path(
     put, path = "/__admin/stubs/{id}", tag = "stubs", operation_id = "putStub",
     summary = "Create or replace a stub",
-    description = "The id in the path wins over an id in the body. The audit log records the changed fields.",
-    params(("id" = Uuid, Path, description = "Stub id")),
+    description = "The id in the path wins over an id in the body. The audit log records the changed fields. An existing stub keeps its space; a new one goes to the space given like for `POST /stubs`.",
+    params(("id" = Uuid, Path, description = "Stub id"), SpaceQuery),
     request_body = Stub,
     responses(
         (status = 200, description = "Saved stub", body = Stub),
@@ -590,12 +621,32 @@ pub async fn put_stub(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
     Path(id): Path<Uuid>,
+    Query(q): Query<SpaceQuery>,
     Json(v): Json<Value>,
 ) -> ApiResult<Json<Option<Stub>>> {
     let mut stub = parse_stub(v)?;
     stub.id = id;
     stub.updated_at = None;
+    let requested = requested_space(stub.space.as_deref(), q.space.as_deref())?;
     let before = app.stores.stubs.get(id).await?;
+    match &before {
+        Some(b) => {
+            spaces::item(
+                &p,
+                Permission::StubsRead,
+                Permission::StubsWrite,
+                b.space.as_deref(),
+                "stub",
+            )?;
+            if requested.is_some() && requested != b.space {
+                return Err(bad(SPACE_FIXED));
+            }
+            stub.space = b.space.clone();
+        }
+        None => {
+            stub.space = spaces::target(&app, &p, Permission::StubsWrite, requested.as_deref())?;
+        }
+    }
     save_stub_update(&app, &p, id, before, stub).await
 }
 
@@ -649,6 +700,13 @@ pub async fn patch_stub(
         .get(id)
         .await?
         .ok_or_else(|| not_found("stub"))?;
+    spaces::item(
+        &p,
+        Permission::StubsRead,
+        Permission::StubsWrite,
+        before.space.as_deref(),
+        "stub",
+    )?;
     let mut base = before.clone();
     base.updated_at = None;
     let mut v = serde_json::to_value(&base).map_err(|e| ApiError::from(anyhow::Error::from(e)))?;
@@ -656,6 +714,9 @@ pub async fn patch_stub(
     let mut stub = parse_stub(v)?;
     stub.id = id;
     stub.updated_at = None;
+    if stub.space != before.space {
+        return Err(bad(SPACE_FIXED));
+    }
     save_stub_update(&app, &p, id, Some(before), stub).await
 }
 
@@ -677,6 +738,15 @@ pub async fn delete_stub(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     let before = app.stores.stubs.get(id).await?;
+    if let Some(b) = &before {
+        spaces::item(
+            &p,
+            Permission::StubsRead,
+            Permission::StubsWrite,
+            b.space.as_deref(),
+            "stub",
+        )?;
+    }
     if !app.stores.stubs.delete(id).await? {
         return Err(not_found("stub"));
     }
@@ -685,7 +755,8 @@ pub async fn delete_stub(
         Some(b) => json!({"id": id, "name": b.name, "before": capped(&audit_view(&app, b))}),
         None => json!({"id": id}),
     };
-    audit_event(&app, &p, "stub.delete", detail).await;
+    let space = before.as_ref().and_then(|b| b.space.as_deref());
+    audit_event_in(&app, &p, space, "stub.delete", detail).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -693,6 +764,8 @@ pub async fn delete_stub(
 #[into_params(parameter_in = Query)]
 pub struct TagQuery {
     tag: Option<String>,
+    /// Only stubs of this space.
+    space: Option<String>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -703,7 +776,7 @@ pub struct DeletedCount {
 #[utoipa::path(
     delete, path = "/__admin/stubs", tag = "stubs", operation_id = "deleteStubs",
     summary = "Delete stubs by tag, or all stubs",
-    description = "Without `tag` every stub is deleted, which needs the admin role.",
+    description = "Without `tag` every stub (of `space`, when given) is deleted, which needs `stubs:purge` (admin role). With `tag`, the tagged stubs of every space the caller may change, or of `space`, are deleted.",
     params(TagQuery),
     responses(
         (status = 200, description = "Number of deleted stubs", body = DeletedCount),
@@ -718,16 +791,27 @@ pub async fn delete_stubs(
     Query(q): Query<TagQuery>,
 ) -> ApiResult<Json<DeletedCount>> {
     let n = match &q.tag {
-        Some(t) => app.stores.stubs.delete_by_tag(t).await?,
+        Some(t) => {
+            let sel = spaces::select(&app, &p, Permission::StubsWrite, q.space.as_deref())?;
+            app.stores.stubs.delete_by_tag(t, &sel).await?
+        }
         None => {
             require(&p, Permission::StubsPurge, None)?;
-            app.stores.stubs.clear().await?
+            let sel = match &q.space {
+                Some(s) => {
+                    spaces::known(&app, s)?;
+                    SpaceFilter::In(vec![s.clone()])
+                }
+                None => SpaceFilter::Any,
+            };
+            app.stores.stubs.clear(&sel).await?
         }
     };
     refresh(&app).await?;
-    audit_event(
+    audit_event_in(
         &app,
         &p,
+        q.space.as_deref(),
         "stub.delete_many",
         json!({"tag": q.tag, "deleted": n}),
     )
@@ -861,6 +945,7 @@ impl CompiledMetadata {
 #[utoipa::path(
     post, path = "/__admin/stubs/find-by-metadata", tag = "stubs", operation_id = "findStubsByMetadata",
     summary = "Find stubs by metadata (WireMock compatible)",
+    params(SpaceQuery),
     request_body(content = MetadataPattern, example = json!({"matchesJsonPath": "$.service", "equalTo": "billing"})),
     responses(
         (status = 200, description = "Matching stubs", body = StubList),
@@ -872,11 +957,13 @@ impl CompiledMetadata {
 pub async fn find_by_metadata(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
+    Query(q): Query<SpaceQuery>,
     Json(pattern): Json<MetadataPattern>,
 ) -> ApiResult<Json<StubList>> {
+    let sel = spaces::select(&app, &p, Permission::StubsRead, q.space.as_deref())?;
     let m = pattern.compile()?;
     let mut stubs = app.stores.stubs.list().await?;
-    stubs.retain(|s| m.matches(s.metadata.as_ref()));
+    stubs.retain(|s| sel.matches(s.space.as_deref()) && m.matches(s.metadata.as_ref()));
     mask_for(&app, &p, &mut stubs);
     Ok(Json(StubList {
         total: stubs.len(),
@@ -895,6 +982,7 @@ pub struct DeletedIds {
 #[utoipa::path(
     post, path = "/__admin/stubs/remove-by-metadata", tag = "stubs", operation_id = "removeStubsByMetadata",
     summary = "Delete stubs by metadata (WireMock compatible)",
+    params(SpaceQuery),
     request_body(content = MetadataPattern, example = json!({"matchesJsonPath": "$.service", "equalTo": "billing"})),
     responses(
         (status = 200, description = "Deleted stubs", body = DeletedIds),
@@ -907,12 +995,17 @@ pub struct DeletedIds {
 pub async fn remove_by_metadata(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
+    Query(q): Query<SpaceQuery>,
     Json(pattern): Json<MetadataPattern>,
 ) -> ApiResult<Json<DeletedIds>> {
+    let sel = spaces::select(&app, &p, Permission::StubsWrite, q.space.as_deref())?;
     let m = pattern.compile()?;
     let stubs = app.stores.stubs.list().await?;
     let mut ids = Vec::new();
-    for s in stubs.iter().filter(|s| m.matches(s.metadata.as_ref())) {
+    for s in stubs
+        .iter()
+        .filter(|s| sel.matches(s.space.as_deref()) && m.matches(s.metadata.as_ref()))
+    {
         if app.stores.stubs.delete(s.id).await? {
             ids.push(s.id);
         }
@@ -938,6 +1031,8 @@ pub async fn remove_by_metadata(
 pub struct SinceQuery {
     /// Only journal entries at or after this instant (RFC 3339) count as hits.
     since: Option<chrono::DateTime<chrono::Utc>>,
+    /// Only stubs of this space.
+    space: Option<String>,
 }
 
 #[utoipa::path(
@@ -963,8 +1058,9 @@ pub async fn unused_stubs(
         .await?
         .into_iter()
         .collect();
+    let sel = spaces::select(&app, &p, Permission::StubsRead, q.space.as_deref())?;
     let mut stubs = app.stores.stubs.list().await?;
-    stubs.retain(|s| !hits.contains(&s.id));
+    stubs.retain(|s| sel.matches(s.space.as_deref()) && !hits.contains(&s.id));
     mask_for(&app, &p, &mut stubs);
     Ok(Json(StubList {
         total: stubs.len(),
@@ -992,7 +1088,8 @@ pub struct BulkImportResult {
 #[utoipa::path(
     post, path = "/__admin/stubs/import", tag = "stubs", operation_id = "importStubs",
     summary = "Bulk import FastMock stubs",
-    description = "With `replaceTag`, stubs carrying that tag are deleted first and the tag is added to every imported stub, in one transaction. At most 10000 stubs.",
+    description = "With `replaceTag`, stubs carrying that tag (in the target space) are deleted first and the tag is added to every imported stub, in one transaction. At most 10000 stubs. Every stub goes to the target space (`space` parameter; without it the global area or the caller's only space).",
+    params(SpaceQuery),
     request_body = ImportBody,
     responses(
         (status = 200, description = "Imported", body = BulkImportResult),
@@ -1006,8 +1103,10 @@ pub struct BulkImportResult {
 pub async fn import_stubs(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
+    Query(q): Query<SpaceQuery>,
     Json(body): Json<ImportBody>,
 ) -> ApiResult<Json<BulkImportResult>> {
+    let target = spaces::target(&app, &p, Permission::ImportsRun, q.space.as_deref())?;
     if body.stubs.len() > 10_000 {
         return Err(bad("at most 10000 stubs per import"));
     }
@@ -1015,9 +1114,13 @@ pub async fn import_stubs(
     for (i, v) in body.stubs.into_iter().enumerate() {
         let mut s = parse_stub(v).map_err(|e| bad(format!("stubs[{i}]: {}", e.1)))?;
         s.updated_at = None;
-        app.engine
-            .validate(&s)
-            .map_err(|e| bad(format!("stubs[{i}]: {e}")))?;
+        if s.space.is_some() && s.space != target {
+            return Err(bad(format!(
+                "stubs[{i}]: the space of the stub differs from the target space of the import"
+            )));
+        }
+        s.space = target.clone();
+        spaces::check_stub(&app, &s).map_err(|e| bad(format!("stubs[{i}]: {e}")))?;
         if let Some(tag) = &body.replace_tag
             && !s.tags.contains(tag)
         {
@@ -1025,15 +1128,21 @@ pub async fn import_stubs(
         }
         parsed.push(s);
     }
+    spaces::check_ids(&app, &parsed, target.as_deref()).await?;
     let removed = app
         .stores
         .stubs
-        .replace_tag(body.replace_tag.as_deref(), &parsed)
+        .replace_tag(
+            body.replace_tag.as_deref(),
+            &SpaceFilter::area(target.as_deref()),
+            &parsed,
+        )
         .await?;
     refresh(&app).await?;
-    audit_event(
+    audit_event_in(
         &app,
         &p,
+        target.as_deref(),
         "stub.import",
         json!({"imported": parsed.len(), "replaced": removed, "tag": body.replace_tag}),
     )
@@ -1096,6 +1205,8 @@ pub struct RequestsQuery {
     limit: Option<i64>,
     #[param(minimum = 0)]
     offset: Option<i64>,
+    /// Only entries of this space (matched by its stubs).
+    space: Option<String>,
 }
 
 impl From<RequestsQuery> for JournalFilter {
@@ -1110,6 +1221,7 @@ impl From<RequestsQuery> for JournalFilter {
             stub_id: q.stub_id,
             since: q.since,
             limit: q.limit,
+            spaces: SpaceFilter::Any,
         }
     }
 }
@@ -1157,10 +1269,14 @@ pub async fn journal_page(
 )]
 pub async fn list_requests(
     State(app): State<AppState>,
-    Query(q): Query<RequestsQuery>,
+    Extension(p): Extension<Principal>,
+    Query(mut q): Query<RequestsQuery>,
 ) -> ApiResult<Json<RequestList>> {
     let offset = q.offset;
-    journal_page(&app, q.into(), offset).await
+    let sel = spaces::select(&app, &p, Permission::JournalRead, q.space.take().as_deref())?;
+    let mut f: JournalFilter = q.into();
+    f.spaces = sel;
+    journal_page(&app, f, offset).await
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -1181,9 +1297,13 @@ pub struct CountResult {
 )]
 pub async fn count_requests(
     State(app): State<AppState>,
-    Query(q): Query<RequestsQuery>,
+    Extension(p): Extension<Principal>,
+    Query(mut q): Query<RequestsQuery>,
 ) -> ApiResult<Json<CountResult>> {
-    count_bounded(&app, q.into()).await
+    let sel = spaces::select(&app, &p, Permission::JournalRead, q.space.take().as_deref())?;
+    let mut f: JournalFilter = q.into();
+    f.spaces = sel;
+    count_bounded(&app, f).await
 }
 
 async fn count_bounded(app: &AppState, f: JournalFilter) -> ApiResult<Json<CountResult>> {
@@ -1200,6 +1320,7 @@ async fn count_bounded(app: &AppState, f: JournalFilter) -> ApiResult<Json<Count
 #[utoipa::path(
     post, path = "/__admin/requests/count", tag = "requests", operation_id = "countRequestsByFilter",
     summary = "Count journal entries (filter in the body)",
+    params(SpaceQuery),
     request_body = JournalFilter,
     responses(
         (status = 200, description = "Count", body = CountResult),
@@ -1211,14 +1332,19 @@ async fn count_bounded(app: &AppState, f: JournalFilter) -> ApiResult<Json<Count
 )]
 pub async fn count_requests_post(
     State(app): State<AppState>,
-    Json(f): Json<JournalFilter>,
+    Extension(p): Extension<Principal>,
+    Query(q): Query<SpaceQuery>,
+    Json(mut f): Json<JournalFilter>,
 ) -> ApiResult<Json<CountResult>> {
+    f.spaces = spaces::select(&app, &p, Permission::JournalRead, q.space.as_deref())?;
     count_bounded(&app, f).await
 }
 
 #[utoipa::path(
     delete, path = "/__admin/requests", tag = "requests", operation_id = "clearRequests",
     summary = "Clear the request journal",
+    description = "Deletes the entries of `space`, or of everything the caller may delete.",
+    params(SpaceQuery),
     responses(
         (status = 200, description = "Number of deleted entries", body = DeletedCount),
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
@@ -1229,9 +1355,18 @@ pub async fn count_requests_post(
 pub async fn clear_requests(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
+    Query(q): Query<SpaceQuery>,
 ) -> ApiResult<Json<DeletedCount>> {
-    let n = app.stores.journal.clear().await?;
-    audit_event(&app, &p, "journal.clear", json!({"deleted": n})).await;
+    let sel = spaces::select(&app, &p, Permission::JournalDelete, q.space.as_deref())?;
+    let n = app.stores.journal.clear(&sel).await?;
+    audit_event_in(
+        &app,
+        &p,
+        q.space.as_deref(),
+        "journal.clear",
+        json!({"deleted": n}),
+    )
+    .await;
     Ok(Json(DeletedCount { deleted: n }))
 }
 
@@ -1268,7 +1403,8 @@ pub struct NearMissList {
 #[utoipa::path(
     post, path = "/__admin/requests/near-misses", tag = "requests", operation_id = "nearMisses",
     summary = "Explain why a request does not match",
-    description = "Returns the five closest stubs with the matchers that failed.",
+    description = "Returns the five closest stubs (of `space`, or of the spaces the caller may read) with the matchers that failed.",
+    params(SpaceQuery),
     request_body(content = NearMissBody, example = json!({"method": "GET", "path": "/users/7", "headers": {"accept": "application/json"}})),
     responses(
         (status = 200, description = "Closest stubs", body = NearMissList),
@@ -1281,8 +1417,11 @@ pub struct NearMissList {
 )]
 pub async fn near_misses(
     State(app): State<AppState>,
+    Extension(p): Extension<Principal>,
+    Query(q): Query<SpaceQuery>,
     Json(b): Json<NearMissBody>,
 ) -> ApiResult<Json<NearMissList>> {
+    let sel = spaces::select(&app, &p, Permission::JournalRead, q.space.as_deref())?;
     let size = b.body.as_ref().map_or(0, String::len)
         + b.query.as_ref().map_or(0, String::len)
         + b.headers
@@ -1305,7 +1444,7 @@ pub async fn near_misses(
             b.headers.into_iter().collect(),
             b.body.unwrap_or_default().into(),
         );
-        Ok(engine.near_misses(&req, 5))
+        Ok(engine.near_misses(&req, 5, &sel))
     })
     .await?;
     Ok(Json(NearMissList { near_misses }))
@@ -1322,6 +1461,8 @@ pub struct CallbacksQuery {
     status: Option<String>,
     #[param(minimum = 1, maximum = 10000)]
     limit: Option<i64>,
+    /// Only jobs of this space.
+    space: Option<String>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -1343,8 +1484,10 @@ pub struct CallbackList {
 )]
 pub async fn list_callbacks(
     State(app): State<AppState>,
+    Extension(p): Extension<Principal>,
     Query(q): Query<CallbacksQuery>,
 ) -> ApiResult<Json<CallbackList>> {
+    let sel = spaces::select(&app, &p, Permission::CallbacksRead, q.space.as_deref())?;
     let status = match q.status.as_deref() {
         None => None,
         Some(s) => Some(
@@ -1357,6 +1500,7 @@ pub async fn list_callbacks(
         correlation: q.correlation,
         status,
         limit: q.limit,
+        spaces: sel,
     };
     let mut jobs = app.stores.outbox.list(&f).await?;
     for j in &mut jobs {
@@ -1376,6 +1520,8 @@ pub async fn list_callbacks(
 #[utoipa::path(
     delete, path = "/__admin/callbacks", tag = "callbacks", operation_id = "clearCallbacks",
     summary = "Delete all callback jobs, including pending ones",
+    description = "Deletes the jobs of `space`, or of everything the caller may delete.",
+    params(SpaceQuery),
     responses(
         (status = 200, description = "Number of deleted jobs", body = DeletedCount),
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
@@ -1386,9 +1532,18 @@ pub async fn list_callbacks(
 pub async fn clear_callbacks(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
+    Query(q): Query<SpaceQuery>,
 ) -> ApiResult<Json<DeletedCount>> {
-    let n = app.stores.outbox.clear().await?;
-    audit_event(&app, &p, "callbacks.clear", json!({"deleted": n})).await;
+    let sel = spaces::select(&app, &p, Permission::CallbacksDelete, q.space.as_deref())?;
+    let n = app.stores.outbox.clear(&sel).await?;
+    audit_event_in(
+        &app,
+        &p,
+        q.space.as_deref(),
+        "callbacks.clear",
+        json!({"deleted": n}),
+    )
+    .await;
     Ok(Json(DeletedCount { deleted: n }))
 }
 
@@ -1396,6 +1551,9 @@ pub async fn clear_callbacks(
 pub struct ScenarioState {
     pub name: String,
     pub state: String,
+    /// Space of the scenario; absent in the global area.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -1406,18 +1564,31 @@ pub struct ScenarioList {
 #[utoipa::path(
     get, path = "/__admin/scenarios", tag = "scenarios", operation_id = "listScenarios",
     summary = "Current scenario states",
+    params(SpaceQuery),
     responses(
         (status = 200, description = "Scenarios", body = ScenarioList),
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
     ),
     security(("bearer" = []))
 )]
-pub async fn list_scenarios(State(app): State<AppState>) -> ApiResult<Json<ScenarioList>> {
+pub async fn list_scenarios(
+    State(app): State<AppState>,
+    Extension(p): Extension<Principal>,
+    Query(q): Query<SpaceQuery>,
+) -> ApiResult<Json<ScenarioList>> {
+    let sel = spaces::select(&app, &p, Permission::StateRead, q.space.as_deref())?;
     let states = app.engine.scenario_states().await?;
     Ok(Json(ScenarioList {
         scenarios: states
             .into_iter()
-            .map(|(name, state)| ScenarioState { name, state })
+            .filter_map(|(key, state)| {
+                let (space, name) = spaces::split_key(&app, &key);
+                sel.matches(space).then(|| ScenarioState {
+                    name: name.to_string(),
+                    state,
+                    space: space.map(String::from),
+                })
+            })
             .collect(),
     }))
 }
@@ -1431,7 +1602,7 @@ pub struct StateBody {
 #[utoipa::path(
     put, path = "/__admin/scenarios/{name}", tag = "scenarios", operation_id = "setScenarioState",
     summary = "Set a scenario state",
-    params(("name" = String, Path, description = "Scenario name")),
+    params(("name" = String, Path, description = "Scenario name"), SpaceQuery),
     request_body = StateBody,
     responses(
         (status = 204, description = "State set"),
@@ -1445,15 +1616,20 @@ pub async fn set_scenario(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
     Path(name): Path<String>,
+    Query(q): Query<SpaceQuery>,
     Json(b): Json<StateBody>,
 ) -> ApiResult<StatusCode> {
+    let space = spaces::target(&app, &p, Permission::StateWrite, q.space.as_deref())?;
     if name.len() > 512 || b.state.len() > 512 {
         return Err(bad("name and state are limited to 512 bytes"));
     }
-    app.engine.set_scenario_state(&name, &b.state).await?;
-    audit_event(
+    app.engine
+        .set_scenario_state(space.as_deref(), &name, &b.state)
+        .await?;
+    audit_event_in(
         &app,
         &p,
+        space.as_deref(),
         "scenario.set",
         json!({"name": name, "state": b.state}),
     )
@@ -1469,6 +1645,8 @@ pub struct ResetCount {
 #[utoipa::path(
     delete, path = "/__admin/scenarios", tag = "scenarios", operation_id = "resetScenarios",
     summary = "Reset every scenario to Started",
+    description = "Resets the scenarios of `space`, or of everything the caller may change.",
+    params(SpaceQuery),
     responses(
         (status = 200, description = "Number of reset scenarios", body = ResetCount),
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
@@ -1479,17 +1657,32 @@ pub struct ResetCount {
 pub async fn reset_scenarios(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
+    Query(q): Query<SpaceQuery>,
 ) -> ApiResult<Json<ResetCount>> {
-    let n = app.engine.reset_scenarios().await?;
-    audit_event(&app, &p, "scenario.reset", json!({"reset": n})).await;
+    let n = match spaces::select(&app, &p, Permission::StateWrite, q.space.as_deref())? {
+        SpaceFilter::In(list) => app.engine.reset_scenarios_in(&list).await?,
+        _ => app.engine.reset_scenarios().await?,
+    };
+    audit_event_in(
+        &app,
+        &p,
+        q.space.as_deref(),
+        "scenario.reset",
+        json!({"reset": n}),
+    )
+    .await;
     Ok(Json(ResetCount { reset: n }))
 }
 
-fn kv_key(key: &str) -> ApiResult<String> {
+/// Hot-store key of a key-value entry: `kv:{key}` globally, `kv:{space}/{key}` in a space.
+fn kv_key(space: Option<&str>, key: &str) -> ApiResult<String> {
     if key.is_empty() || key.len() > 512 {
         return Err(bad("key must be 1..512 bytes"));
     }
-    Ok(format!("kv:{key}"))
+    Ok(match space {
+        Some(s) => format!("kv:{s}/{key}"),
+        None => format!("kv:{key}"),
+    })
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -1511,7 +1704,7 @@ pub struct KvValue {
 #[utoipa::path(
     get, path = "/__admin/kv/{key}", tag = "kv", operation_id = "getKv",
     summary = "Read a key from the shared key-value store",
-    params(("key" = String, Path, description = "Key, 1..512 bytes")),
+    params(("key" = String, Path, description = "Key, 1..512 bytes"), SpaceQuery),
     responses(
         (status = 200, description = "Value", body = KvValue),
         (status = 400, description = "Invalid key", body = ErrorBody),
@@ -1522,9 +1715,12 @@ pub struct KvValue {
 )]
 pub async fn kv_get(
     State(app): State<AppState>,
+    Extension(p): Extension<Principal>,
     Path(key): Path<String>,
+    Query(q): Query<SpaceQuery>,
 ) -> ApiResult<Json<KvValue>> {
-    match app.stores.hot.get(&kv_key(&key)?).await? {
+    let space = spaces::target(&app, &p, Permission::StateRead, q.space.as_deref())?;
+    match app.stores.hot.get(&kv_key(space.as_deref(), &key)?).await? {
         Some(value) => Ok(Json(KvValue { key, value })),
         None => Err(not_found("key")),
     }
@@ -1533,7 +1729,7 @@ pub async fn kv_get(
 #[utoipa::path(
     put, path = "/__admin/kv/{key}", tag = "kv", operation_id = "putKv",
     summary = "Write a key",
-    params(("key" = String, Path, description = "Key, 1..512 bytes")),
+    params(("key" = String, Path, description = "Key, 1..512 bytes"), SpaceQuery),
     request_body = KvBody,
     responses(
         (status = 204, description = "Stored"),
@@ -1547,8 +1743,10 @@ pub async fn kv_put(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
     Path(key): Path<String>,
+    Query(q): Query<SpaceQuery>,
     Json(b): Json<KvBody>,
 ) -> ApiResult<StatusCode> {
+    let space = spaces::target(&app, &p, Permission::StateWrite, q.space.as_deref())?;
     if b.value.len() > 1024 * 1024 {
         return Err(bad("value is limited to 1 MiB"));
     }
@@ -1560,19 +1758,19 @@ pub async fn kv_put(
     app.stores
         .hot
         .set(
-            &kv_key(&key)?,
+            &kv_key(space.as_deref(), &key)?,
             &b.value,
             b.ttl_seconds.map(Duration::from_secs),
         )
         .await?;
-    audit_event(&app, &p, "kv.set", json!({"key": key})).await;
+    audit_event_in(&app, &p, space.as_deref(), "kv.set", json!({"key": key})).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(
     delete, path = "/__admin/kv/{key}", tag = "kv", operation_id = "deleteKv",
     summary = "Delete a key",
-    params(("key" = String, Path, description = "Key, 1..512 bytes")),
+    params(("key" = String, Path, description = "Key, 1..512 bytes"), SpaceQuery),
     responses(
         (status = 204, description = "Deleted"),
         (status = 400, description = "Invalid key", body = ErrorBody),
@@ -1586,9 +1784,15 @@ pub async fn kv_delete(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
     Path(key): Path<String>,
+    Query(q): Query<SpaceQuery>,
 ) -> ApiResult<StatusCode> {
-    let found = app.stores.hot.delete(&kv_key(&key)?).await?;
-    audit_event(&app, &p, "kv.delete", json!({"key": key})).await;
+    let space = spaces::target(&app, &p, Permission::StateWrite, q.space.as_deref())?;
+    let found = app
+        .stores
+        .hot
+        .delete(&kv_key(space.as_deref(), &key)?)
+        .await?;
+    audit_event_in(&app, &p, space.as_deref(), "kv.delete", json!({"key": key})).await;
     Ok(if found {
         StatusCode::NO_CONTENT
     } else {
@@ -1620,8 +1824,8 @@ pub async fn reset(
 ) -> ApiResult<Json<ResetResult>> {
     require(&p, Permission::SystemReset, None)?;
     let r = ResetResult {
-        requests: app.stores.journal.clear().await?,
-        callbacks: app.stores.outbox.clear().await?,
+        requests: app.stores.journal.clear(&SpaceFilter::Any).await?,
+        callbacks: app.stores.outbox.clear(&SpaceFilter::Any).await?,
         scenarios: app.engine.reset_scenarios().await?,
     };
     app.engine.reset_counters().await?;
@@ -1873,6 +2077,8 @@ pub struct ImportTarget<'a> {
     pub tag: &'a str,
     pub replace: bool,
     pub dry_run: bool,
+    /// Space the stubs go to; `None` for the global area.
+    pub space: Option<&'a str>,
 }
 
 pub async fn finish_import(
@@ -1887,6 +2093,7 @@ pub async fn finish_import(
         tag,
         replace,
         dry_run,
+        space,
     } = t;
     if stubs.len() > 10_000 {
         return Err(bad(format!(
@@ -1897,9 +2104,18 @@ pub async fn finish_import(
     metrics::counter!("fastmock_imports_total", "format" => format.to_string(), "dry_run" => dry_run.to_string()).increment(1);
     let mut warnings = warnings;
     let mut valid = Vec::with_capacity(stubs.len());
-    for s in stubs {
+    for mut s in stubs {
+        s.space = space.map(String::from);
         match app.engine.validate(&s) {
-            Ok(()) => valid.push(s),
+            Ok(()) => {
+                if let Err(e) = spaces::check_stub(app, &s) {
+                    return Err(bad(format!(
+                        "{}: {e}",
+                        s.name.clone().unwrap_or_else(|| s.id.to_string())
+                    )));
+                }
+                valid.push(s)
+            }
             Err(e) => warnings.push(format!(
                 "{}: the generated stub is invalid ({e}); it was skipped",
                 s.name.clone().unwrap_or_else(|| s.id.to_string())
@@ -1937,10 +2153,11 @@ pub async fn finish_import(
             stubs: Some(stubs),
         }));
     }
-    let (n, removed) = store_imported(app, stubs, tag, replace).await?;
-    audit_event(
+    let (n, removed) = store_imported(app, stubs, tag, replace, space).await?;
+    audit_event_in(
         app,
         p,
+        space,
         &format!("import.{format}"),
         json!({"tag": tag, "imported": n, "removed": removed}),
     )
@@ -1981,6 +2198,7 @@ pub async fn store_imported(
     stubs: Vec<Stub>,
     tag: &str,
     replace: bool,
+    space: Option<&str>,
 ) -> ApiResult<(usize, u64)> {
     for (i, s) in stubs.iter().enumerate() {
         app.engine.validate(s).map_err(|e| {
@@ -1990,10 +2208,11 @@ pub async fn store_imported(
             ))
         })?;
     }
+    spaces::check_ids(app, &stubs, space).await?;
     let removed = app
         .stores
         .stubs
-        .replace_tag(replace.then_some(tag), &stubs)
+        .replace_tag(replace.then_some(tag), &SpaceFilter::area(space), &stubs)
         .await?;
     refresh(app).await?;
     Ok((stubs.len(), removed))
@@ -2014,6 +2233,8 @@ pub fn valid_tag(tag: &str) -> ApiResult<()> {
 #[utoipa::path(
     post, path = "/__admin/import/openapi", tag = "imports", operation_id = "importOpenApi",
     summary = "Generate stubs from an OpenAPI 3 document",
+    description = "The stubs go to the target space (`space` parameter); only imports into the global area are recorded in the service catalog.",
+    params(SpaceQuery),
     request_body(content = OpenApiImport, example = json!({"spec": "openapi: 3.0.3\ninfo: {title: Pets, version: '1'}\npaths: {}", "tag": "petstore"})),
     responses(
         (status = 200, description = "Import result", body = ImportResult),
@@ -2027,8 +2248,10 @@ pub fn valid_tag(tag: &str) -> ApiResult<()> {
 pub async fn import_openapi(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
+    Query(q): Query<SpaceQuery>,
     Json(b): Json<OpenApiImport>,
 ) -> ApiResult<Json<ImportResult>> {
+    let space = spaces::target(&app, &p, Permission::ImportsRun, q.space.as_deref())?;
     valid_tag(&b.tag)?;
     let doc = match &b.spec {
         Value::String(text) => fastmock_core::openapi::parse_document(text)
@@ -2049,12 +2272,13 @@ pub async fn import_openapi(
             tag: &b.tag,
             replace: b.replace,
             dry_run: b.dry_run,
+            space: space.as_deref(),
         },
         r.stubs,
         r.warnings,
     )
     .await?;
-    if !b.dry_run {
+    if !b.dry_run && space.is_none() {
         crate::services::record_service(
             &app,
             &p.name,
@@ -2086,7 +2310,8 @@ fn wiremock_tag() -> String {
 #[utoipa::path(
     post, path = "/__admin/import/wiremock", tag = "imports", operation_id = "importWireMock",
     summary = "Convert WireMock mappings into stubs",
-    description = "Unsupported parts come back as warnings.",
+    description = "Unsupported parts come back as warnings. The stubs go to the target space (`space` parameter).",
+    params(SpaceQuery),
     request_body(content = WireMockImport, example = json!({"mappings": {"mappings": [{"request": {"method": "GET", "url": "/ping"}, "response": {"status": 200, "body": "pong"}}]}, "tag": "legacy"})),
     responses(
         (status = 200, description = "Import result", body = ImportResult),
@@ -2100,8 +2325,10 @@ fn wiremock_tag() -> String {
 pub async fn import_wiremock(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
+    Query(q): Query<SpaceQuery>,
     Json(b): Json<WireMockImport>,
 ) -> ApiResult<Json<ImportResult>> {
+    let space = spaces::target(&app, &p, Permission::ImportsRun, q.space.as_deref())?;
     valid_tag(&b.tag)?;
     let mut c = fastmock_core::wiremock::convert(&b.mappings);
     for s in &mut c.stubs {
@@ -2115,12 +2342,13 @@ pub async fn import_wiremock(
             tag: &b.tag,
             replace: b.replace,
             dry_run: b.dry_run,
+            space: space.as_deref(),
         },
         c.stubs,
         c.warnings,
     )
     .await?;
-    if !b.dry_run {
+    if !b.dry_run && space.is_none() {
         crate::services::record_service(
             &app,
             &p.name,
@@ -2151,7 +2379,9 @@ pub async fn export_stubs(
     Extension(p): Extension<Principal>,
     Query(q): Query<TagQuery>,
 ) -> ApiResult<Json<ExportResult>> {
+    let sel = spaces::select(&app, &p, Permission::StubsRead, q.space.as_deref())?;
     let mut stubs = app.stores.stubs.list().await?;
+    stubs.retain(|s| sel.matches(s.space.as_deref()));
     mask_for(&app, &p, &mut stubs);
     if let Some(t) = &q.tag {
         stubs.retain(|s| s.tags.contains(t));

@@ -6,10 +6,12 @@ use fastmock_core::engine::{COUNTER_PREFIX, SETTINGS_KEY, SETTINGS_NAMESPACE};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::access::Permission;
 use crate::admin::{
-    ApiResult, ErrorBody, ImportResult, ImportTarget, audit_event, bad, finish_import, valid_tag,
+    ApiResult, ErrorBody, ImportResult, ImportTarget, audit_event_in, bad, finish_import, valid_tag,
 };
 use crate::auth::Principal;
+use crate::spaces::{self, SpaceQuery};
 use crate::state::AppState;
 
 const MAX_COUNTERS: usize = 10_000;
@@ -71,8 +73,28 @@ pub async fn put_settings(
         .put(SETTINGS_NAMESPACE, SETTINGS_KEY, &stored)
         .await?;
     app.engine.cache_settings(settings.clone());
-    audit_event(&app, &p, "settings.update", stored).await;
+    audit_event_in(&app, &p, None, "settings.update", stored).await;
     Ok(Json(settings))
+}
+
+/// Ids of the stubs a selection covers; `None` when it covers every stub.
+async fn stub_ids(
+    app: &AppState,
+    sel: &fastmock_core::SpaceFilter,
+) -> ApiResult<Option<std::collections::HashSet<String>>> {
+    if *sel == fastmock_core::SpaceFilter::Any {
+        return Ok(None);
+    }
+    Ok(Some(
+        app.stores
+            .stubs
+            .list()
+            .await?
+            .into_iter()
+            .filter(|s| sel.matches(s.space.as_deref()))
+            .map(|s| s.id.to_string())
+            .collect(),
+    ))
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -95,13 +117,20 @@ pub struct StubCounterList {
     get, path = "/__admin/stubs/counters", tag = "stubs", operation_id = "listStubCounters",
     summary = "List the shared stub counters",
     description = "Counters behind `times` and response sequences, shared by all replicas.",
+    params(SpaceQuery),
     responses(
         (status = 200, description = "Counters", body = StubCounterList),
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
     ),
     security(("bearer" = []))
 )]
-pub async fn list_counters(State(app): State<AppState>) -> ApiResult<Json<StubCounterList>> {
+pub async fn list_counters(
+    State(app): State<AppState>,
+    Extension(p): Extension<Principal>,
+    Query(q): Query<SpaceQuery>,
+) -> ApiResult<Json<StubCounterList>> {
+    let sel = spaces::select(&app, &p, Permission::StateRead, q.space.as_deref())?;
+    let ids = stub_ids(&app, &sel).await?;
     let raw = app.stores.hot.scan(COUNTER_PREFIX, MAX_COUNTERS).await?;
     let counters: Vec<StubCounter> = raw
         .into_iter()
@@ -110,6 +139,9 @@ pub async fn list_counters(State(app): State<AppState>) -> ApiResult<Json<StubCo
             let mut it = rest.splitn(3, ':');
             let kind = it.next()?.to_string();
             let stub_id = it.next()?.to_string();
+            if ids.as_ref().is_some_and(|set| !set.contains(&stub_id)) {
+                return None;
+            }
             Some(StubCounter {
                 kind,
                 stub_id,
@@ -126,6 +158,8 @@ pub async fn list_counters(State(app): State<AppState>) -> ApiResult<Json<StubCo
 #[utoipa::path(
     delete, path = "/__admin/stubs/counters", tag = "stubs", operation_id = "resetStubCounters",
     summary = "Reset `times` and response sequence counters",
+    description = "Resets the counters of the stubs of `space`, or of every stub the caller may change.",
+    params(SpaceQuery),
     responses(
         (status = 200, description = "Number of counters removed", body = Object, example = json!({"reset": 3})),
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
@@ -136,9 +170,33 @@ pub async fn list_counters(State(app): State<AppState>) -> ApiResult<Json<StubCo
 pub async fn reset_counters(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
+    Query(q): Query<SpaceQuery>,
 ) -> ApiResult<Json<Value>> {
-    let n = app.engine.reset_counters().await?;
-    audit_event(&app, &p, "stub.counters.reset", json!({"reset": n})).await;
+    let sel = spaces::select(&app, &p, Permission::StateWrite, q.space.as_deref())?;
+    let n = match stub_ids(&app, &sel).await? {
+        None => app.engine.reset_counters().await?,
+        Some(ids) => {
+            let mut n = 0;
+            for id in ids {
+                for kind in ["times", "seq"] {
+                    n += app
+                        .stores
+                        .hot
+                        .delete_prefix(&format!("{COUNTER_PREFIX}{kind}:{id}:"))
+                        .await?;
+                }
+            }
+            n
+        }
+    };
+    audit_event_in(
+        &app,
+        &p,
+        q.space.as_deref(),
+        "stub.counters.reset",
+        json!({"reset": n}),
+    )
+    .await;
     Ok(Json(json!({"reset": n})))
 }
 
@@ -152,6 +210,8 @@ pub struct MockServerImportQuery {
     pub replace: Option<bool>,
     /// Convert and validate only; nothing is stored.
     pub dry_run: Option<bool>,
+    /// Space the stubs go to.
+    pub space: Option<String>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -199,6 +259,7 @@ pub async fn import_mockserver(
     Query(q): Query<MockServerImportQuery>,
     Json(body): Json<Value>,
 ) -> ApiResult<Json<ImportResult>> {
+    let space = spaces::target(&app, &p, Permission::ImportsRun, q.space.as_deref())?;
     let (doc, w_tag, w_replace, w_dry) = match body {
         Value::Object(mut o)
             if o.contains_key("expectations") && !o.contains_key("httpRequest") =>
@@ -245,6 +306,7 @@ pub async fn import_mockserver(
             tag: &tag,
             replace,
             dry_run,
+            space: space.as_deref(),
         },
         stubs,
         warnings,

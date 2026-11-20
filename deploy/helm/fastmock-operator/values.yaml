@@ -13,6 +13,9 @@ server:
 
 watchNamespace: ""
 
+policy:
+  spaceFromNamespace: false
+
 logLevel: info
 
 resources:

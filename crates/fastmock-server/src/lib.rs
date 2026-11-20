@@ -18,6 +18,7 @@ pub mod proxy;
 pub mod redact;
 pub mod services;
 pub mod snapshot;
+pub mod spaces;
 pub mod state;
 pub mod telemetry;
 pub mod tls;

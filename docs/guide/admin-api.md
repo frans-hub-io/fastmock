@@ -71,13 +71,17 @@ admin listener's own origin.
 |---|---|
 | `401 {"error":"unauthorized","details":[]}` + `WWW-Authenticate: Bearer` | token missing or unknown |
 | `403 {"error":"forbidden","details":["requires role editor"],"required":"editor"}` | token valid, role too low |
+| `403 {"error":"forbidden","details":["requires permission files:read"],"required":"files:read"}` | a token with a custom role or space bindings lacks the permission ([Access control](../operations/access-control.md#errors)) |
 | `403 {"error":"origin not allowed","details":[]}` | browser request from another origin |
 
 ## Roles per endpoint
 
-There are three roles, each including the one before: **viewer** reads, **editor** changes test state,
-**admin** can additionally wipe everything and read the audit log. The rule is: `GET`/`HEAD` and read-only `POST`s
-need viewer, every other method needs editor; the routes marked *admin* need admin.
+Every route needs a permission (`stubs:read`, `journal:delete`, ...). The three built-in roles are sets of
+permissions, each including the one before: **viewer** reads, **editor** changes test state, **admin** can
+additionally wipe everything and read the audit log. With the built-in roles the rule is: `GET`/`HEAD` and
+read-only `POST`s need viewer, every other method needs editor; the routes marked *admin* need admin. Custom roles,
+spaces and space bindings come from the access file; the permission of every route and how the `space` parameter
+selects data are listed in [Access control](../operations/access-control.md#permissions).
 
 | Endpoint | Role |
 |---|---|
@@ -94,7 +98,8 @@ need viewer, every other method needs editor; the routes marked *admin* need adm
 | `GET /recordings`; `POST /recordings/start`, `/recordings/stop`, `/recordings/snapshot` | viewer; editor |
 | `GET /callbacks`, `/scenarios`, `/kv/{key}`, `/chaos`, `/grpc/descriptors` | viewer |
 | `DELETE /callbacks`, `DELETE /scenarios`, `PUT /scenarios/{name}`, `PUT/DELETE /kv/{key}`, `PUT/DELETE /chaos`, `PUT/DELETE /grpc/descriptors/{name}` | editor |
-| `GET /info`, `/version`, `/plugins` | viewer |
+| `GET /info`, `/version`, `/plugins`, `/spaces` | viewer (any token) |
+| `GET /settings`, `/stubs/counters`; `PUT /settings`, `DELETE /stubs/counters` | viewer; editor |
 | `GET /contract-tests`, `/contract-tests/{id}` | viewer (verdicts only; details need editor) |
 | `POST /contract-tests`, `DELETE /contract-tests/{id}` | editor; `POST` with `secretHeaders` needs admin |
 | `POST /reset`, `GET /audit` | admin |
@@ -145,6 +150,9 @@ curl -s -H "Authorization: Bearer $FASTMOCK_TOKEN" \
 | `GET /audit` | `action` (exact, or prefix with a trailing `*`), `principal`, `since` | 100 events |
 
 `GET /requests` answers `{"requests": [...], "total": n, "offset": o, "limit": l}`.
+
+Collection endpoints also take `space` to limit them to one [space](../operations/access-control.md#spaces); for a
+token bound to spaces they cover its spaces by default, and `total` and the pages count only those entries.
 
 ## Stubs
 
@@ -281,7 +289,9 @@ curl -s -H "Authorization: Bearer $FASTMOCK_TOKEN" http://localhost:9090/__admin
 ```
 
 `gitSha` is set when the binary was built with the `FASTMOCK_GIT_SHA` environment variable, otherwise `null`.
-`GET /info` returns the version, storage kind, uptime, number of loaded stubs, plugins and the caller's identity.
+`GET /info` returns the version, storage kind, uptime, number of loaded stubs, plugins and the caller's identity:
+`principal` with `name`, `kind`, `role` and `permissions` (`global` and per-space lists). `GET /spaces` lists the
+spaces the caller can see with its permissions in each ([Access control](../operations/access-control.md#inspecting-your-permissions)).
 
 ## Limits
 
@@ -299,7 +309,7 @@ curl -s -H "Authorization: Bearer $FASTMOCK_TOKEN" http://localhost:9090/__admin
 | Metric | Labels | Meaning |
 |---|---|---|
 | `fastmock_admin_changes_total` | `action` | audited admin changes |
-| `fastmock_admin_auth_failures_total` | `reason` (`token`, `role`, `origin`) | rejected admin requests |
+| `fastmock_admin_auth_failures_total` | `reason` (`token`, `role`, `permission`, `origin`) | rejected admin requests (`role` for tokens holding only global built-in roles, `permission` otherwise) |
 | `fastmock_admin_errors_total` | | internal errors in admin handlers |
 | `fastmock_files_written_total` | | body file uploads |
 | `fastmock_file_size_bytes` | | histogram of uploaded file sizes |

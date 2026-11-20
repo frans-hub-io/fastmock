@@ -238,6 +238,11 @@ spec:
                 required:
                 - name
                 type: object
+              space:
+                description: Space of the FastMock server the stubs go to; it must be defined in the server's access file. With the operator policy `spaceFromNamespace` the space is the MockApi namespace.
+                nullable: true
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                type: string
               stubs:
                 default: []
                 items:
@@ -307,6 +312,10 @@ spec:
                 default: 0
                 format: int64
                 type: integer
+              space:
+                description: Space the stubs were applied to; absent for the global area.
+                nullable: true
+                type: string
               warnings:
                 default: []
                 items:

@@ -22,6 +22,11 @@ admin:
   allowedOrigins: []
   uiDataPlaneUrls: []
 
+access:
+  roles: []
+  spaces: []
+  bindings: []
+
 callbacks:
   allowedHosts: []
   deniedCidrs: ""

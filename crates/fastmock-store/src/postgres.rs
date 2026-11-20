@@ -8,7 +8,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fastmock_core::{
     AuditEvent, AuditFilter, AuditStore, CallbackFilter, CallbackJob, CallbackStatus, DataStore,
-    JournalEntry, JournalFilter, JournalStore, OutboxStore, StoreResult, Stub, StubStore,
+    JournalEntry, JournalFilter, JournalStore, OutboxStore, SpaceFilter, StoreResult, Stub,
+    StubStore,
 };
 use serde_json::Value;
 use sqlx::migrate::Migrator;
@@ -329,6 +330,18 @@ impl PgStore {
     }
 }
 
+fn push_spaces<'a>(qb: &mut QueryBuilder<'a, Postgres>, f: &'a SpaceFilter) {
+    match f {
+        SpaceFilter::Any => {}
+        SpaceFilter::Global => {
+            qb.push(" and space is null");
+        }
+        SpaceFilter::In(list) => {
+            qb.push(" and space = any(").push_bind(list).push(")");
+        }
+    }
+}
+
 fn row_to_stub(r: &PgRow) -> StoreResult<Stub> {
     let def: Value = r.try_get("definition")?;
     let mut s: Stub = serde_json::from_value(def)?;
@@ -359,13 +372,14 @@ impl StubStore for PgStore {
         s.updated_at = None;
         let mut tx = self.pool.begin().await?;
         sqlx::query(
-            "insert into fm_stubs (id, definition, priority, tags, updated_at) values ($1, $2, $3, $4, clock_timestamp())
-             on conflict (id) do update set definition = excluded.definition, priority = excluded.priority, tags = excluded.tags, updated_at = clock_timestamp()",
+            "insert into fm_stubs (id, definition, priority, tags, space, updated_at) values ($1, $2, $3, $4, $5, clock_timestamp())
+             on conflict (id) do update set definition = excluded.definition, priority = excluded.priority, tags = excluded.tags, space = excluded.space, updated_at = clock_timestamp()",
         )
         .bind(s.id)
         .bind(serde_json::to_value(&s)?)
         .bind(s.priority)
         .bind(&s.tags)
+        .bind(&s.space)
         .execute(&mut *tx)
         .await?;
         Self::bump(&mut tx).await?;
@@ -378,12 +392,13 @@ impl StubStore for PgStore {
         s.updated_at = None;
         let mut tx = self.pool.begin().await?;
         let n = sqlx::query(
-            "insert into fm_stubs (id, definition, priority, tags, updated_at) values ($1, $2, $3, $4, clock_timestamp()) on conflict (id) do nothing",
+            "insert into fm_stubs (id, definition, priority, tags, space, updated_at) values ($1, $2, $3, $4, $5, clock_timestamp()) on conflict (id) do nothing",
         )
         .bind(s.id)
         .bind(serde_json::to_value(&s)?)
         .bind(s.priority)
         .bind(&s.tags)
+        .bind(&s.space)
         .execute(&mut *tx)
         .await?
         .rows_affected();
@@ -408,13 +423,12 @@ impl StubStore for PgStore {
         Ok(n > 0)
     }
 
-    async fn delete_by_tag(&self, tag: &str) -> StoreResult<u64> {
+    async fn delete_by_tag(&self, tag: &str, spaces: &SpaceFilter) -> StoreResult<u64> {
         let mut tx = self.pool.begin().await?;
-        let n = sqlx::query("delete from fm_stubs where $1 = any(tags)")
-            .bind(tag)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+        let mut qb = QueryBuilder::<Postgres>::new("delete from fm_stubs where ");
+        qb.push_bind(tag).push(" = any(tags)");
+        push_spaces(&mut qb, spaces);
+        let n = qb.build().execute(&mut *tx).await?.rows_affected();
         if n > 0 {
             Self::bump(&mut tx).await?;
         }
@@ -422,34 +436,47 @@ impl StubStore for PgStore {
         Ok(n)
     }
 
-    async fn replace_tag(&self, tag: Option<&str>, stubs: &[Stub]) -> StoreResult<u64> {
+    async fn replace_tag(
+        &self,
+        tag: Option<&str>,
+        spaces: &SpaceFilter,
+        stubs: &[Stub],
+    ) -> StoreResult<u64> {
         let mut tx = self.pool.begin().await?;
         let removed = match tag {
-            Some(t) => sqlx::query("delete from fm_stubs where $1 = any(tags)")
-                .bind(t)
-                .execute(&mut *tx)
-                .await?
-                .rows_affected(),
+            Some(t) => {
+                let mut qb = QueryBuilder::<Postgres>::new("delete from fm_stubs where ");
+                qb.push_bind(t).push(" = any(tags)");
+                push_spaces(&mut qb, spaces);
+                qb.build().execute(&mut *tx).await?.rows_affected()
+            }
             None => 0,
         };
         for chunk in stubs.chunks(500) {
             let mut qb = QueryBuilder::<Postgres>::new(
-                "insert into fm_stubs (id, definition, priority, tags, updated_at) ",
+                "insert into fm_stubs (id, definition, priority, tags, space, updated_at) ",
             );
             let mut rows = Vec::with_capacity(chunk.len());
             for s in chunk {
                 let mut s = s.clone();
                 s.updated_at = None;
-                rows.push((s.id, serde_json::to_value(&s)?, s.priority, s.tags.clone()));
+                rows.push((
+                    s.id,
+                    serde_json::to_value(&s)?,
+                    s.priority,
+                    s.tags.clone(),
+                    s.space.clone(),
+                ));
             }
-            qb.push_values(rows, |mut b, (id, def, prio, tags)| {
+            qb.push_values(rows, |mut b, (id, def, prio, tags, space)| {
                 b.push_bind(id)
                     .push_bind(def)
                     .push_bind(prio)
                     .push_bind(tags)
+                    .push_bind(space)
                     .push("clock_timestamp()");
             });
-            qb.push(" on conflict (id) do update set definition = excluded.definition, priority = excluded.priority, tags = excluded.tags, updated_at = clock_timestamp()");
+            qb.push(" on conflict (id) do update set definition = excluded.definition, priority = excluded.priority, tags = excluded.tags, space = excluded.space, updated_at = clock_timestamp()");
             qb.build().execute(&mut *tx).await?;
         }
         Self::bump(&mut tx).await?;
@@ -457,12 +484,11 @@ impl StubStore for PgStore {
         Ok(removed)
     }
 
-    async fn clear(&self) -> StoreResult<u64> {
+    async fn clear(&self, spaces: &SpaceFilter) -> StoreResult<u64> {
         let mut tx = self.pool.begin().await?;
-        let n = sqlx::query("delete from fm_stubs")
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+        let mut qb = QueryBuilder::<Postgres>::new("delete from fm_stubs where true");
+        push_spaces(&mut qb, spaces);
+        let n = qb.build().execute(&mut *tx).await?.rows_affected();
         Self::bump(&mut tx).await?;
         tx.commit().await?;
         Ok(n)
@@ -505,6 +531,7 @@ fn journal_where<'a>(qb: &mut QueryBuilder<'a, Postgres>, f: &'a JournalFilter) 
     if let Some(v) = f.since {
         qb.push(" and at >= ").push_bind(v);
     }
+    push_spaces(qb, &f.spaces);
 }
 
 fn row_to_entry(r: &PgRow) -> StoreResult<JournalEntry> {
@@ -525,6 +552,7 @@ fn row_to_entry(r: &PgRow) -> StoreResult<JournalEntry> {
         matched: r.try_get("matched")?,
         duration_ms: r.try_get::<i64, _>("duration_ms")? as u64,
         trace_id: r.try_get("trace_id")?,
+        space: r.try_get("space")?,
     })
 }
 
@@ -533,7 +561,7 @@ impl JournalStore for PgStore {
     async fn append_many(&self, entries: &[JournalEntry]) -> StoreResult<()> {
         for chunk in entries.chunks(500) {
             let mut qb = QueryBuilder::<Postgres>::new(
-                "insert into fm_journal (at, source, method, path, query, headers, body, status, response_body, stub_id, correlation, matched, duration_ms, trace_id) ",
+                "insert into fm_journal (at, source, method, path, query, headers, body, status, response_body, stub_id, correlation, matched, duration_ms, trace_id, space) ",
             );
             let mut rows = Vec::with_capacity(chunk.len());
             for e in chunk {
@@ -553,7 +581,8 @@ impl JournalStore for PgStore {
                     .push_bind(e.correlation.as_deref().map(no_nul))
                     .push_bind(e.matched)
                     .push_bind(e.duration_ms as i64)
-                    .push_bind(e.trace_id.clone());
+                    .push_bind(e.trace_id.clone())
+                    .push_bind(e.space.clone());
             });
             qb.build().execute(&self.pool).await?;
         }
@@ -562,8 +591,8 @@ impl JournalStore for PgStore {
 
     async fn append(&self, e: &JournalEntry) -> StoreResult<i64> {
         let id: i64 = sqlx::query_scalar(
-            "insert into fm_journal (at, source, method, path, query, headers, body, status, response_body, stub_id, correlation, matched, duration_ms, trace_id)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) returning id",
+            "insert into fm_journal (at, source, method, path, query, headers, body, status, response_body, stub_id, correlation, matched, duration_ms, trace_id, space)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) returning id",
         )
         .bind(e.at)
         .bind(&e.source)
@@ -579,6 +608,7 @@ impl JournalStore for PgStore {
         .bind(e.matched)
         .bind(e.duration_ms as i64)
         .bind(&e.trace_id)
+        .bind(&e.space)
         .fetch_one(&self.pool)
         .await?;
         Ok(id)
@@ -599,11 +629,10 @@ impl JournalStore for PgStore {
         Ok(qb.build_query_scalar().fetch_one(&self.pool).await?)
     }
 
-    async fn clear(&self) -> StoreResult<u64> {
-        Ok(sqlx::query("delete from fm_journal")
-            .execute(&self.pool)
-            .await?
-            .rows_affected())
+    async fn clear(&self, spaces: &SpaceFilter) -> StoreResult<u64> {
+        let mut qb = QueryBuilder::<Postgres>::new("delete from fm_journal where true");
+        push_spaces(&mut qb, spaces);
+        Ok(qb.build().execute(&self.pool).await?.rows_affected())
     }
 
     async fn purge_older_than(&self, at: DateTime<Utc>) -> StoreResult<u64> {
@@ -677,6 +706,7 @@ fn row_to_job(r: &PgRow) -> StoreResult<CallbackJob> {
         created_at: r.try_get("created_at")?,
         sent_at: r.try_get("sent_at")?,
         traceparent: r.try_get("traceparent")?,
+        space: r.try_get("space")?,
     })
 }
 
@@ -684,8 +714,8 @@ fn row_to_job(r: &PgRow) -> StoreResult<CallbackJob> {
 impl OutboxStore for PgStore {
     async fn enqueue(&self, j: &CallbackJob) -> StoreResult<()> {
         sqlx::query(
-            "insert into fm_outbox (id, source, correlation, url, method, headers, body, due_at, attempts, max_attempts, status, last_error, last_status, created_at, sent_at, traceparent)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+            "insert into fm_outbox (id, source, correlation, url, method, headers, body, due_at, attempts, max_attempts, status, last_error, last_status, created_at, sent_at, traceparent, space)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
         )
         .bind(j.id)
         .bind(&j.source)
@@ -703,6 +733,7 @@ impl OutboxStore for PgStore {
         .bind(j.created_at)
         .bind(j.sent_at)
         .bind(&j.traceparent)
+        .bind(&j.space)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -805,6 +836,7 @@ impl OutboxStore for PgStore {
         if let Some(v) = f.status {
             qb.push(" and status = ").push_bind(v.as_str());
         }
+        push_spaces(&mut qb, &f.spaces);
         qb.push(" order by created_at desc, id desc limit ")
             .push_bind(f.limit.unwrap_or(100).clamp(1, 10_000));
         let rows = qb.build().fetch_all(&self.pool).await?;
@@ -819,11 +851,10 @@ impl OutboxStore for PgStore {
         )
     }
 
-    async fn clear(&self) -> StoreResult<u64> {
-        Ok(sqlx::query("delete from fm_outbox")
-            .execute(&self.pool)
-            .await?
-            .rows_affected())
+    async fn clear(&self, spaces: &SpaceFilter) -> StoreResult<u64> {
+        let mut qb = QueryBuilder::<Postgres>::new("delete from fm_outbox where true");
+        push_spaces(&mut qb, spaces);
+        Ok(qb.build().execute(&self.pool).await?.rows_affected())
     }
 
     async fn purge_finished_older_than(&self, at: DateTime<Utc>) -> StoreResult<u64> {

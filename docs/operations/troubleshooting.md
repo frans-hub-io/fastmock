@@ -32,7 +32,7 @@ Contents:
 | `403 {"error":"origin not allowed","details":[]}` | The request has an `Origin` header (a browser, or a tool that adds it) that is neither in `FASTMOCK_ADMIN_ALLOWED_ORIGINS` nor the admin server's own origin. | Add the exact origin (`https://fastmock-admin.example.com`, scheme and port included) to `FASTMOCK_ADMIN_ALLOWED_ORIGINS`. Behind a Gateway, make sure it forwards the original `Host`. Scripts should not send `Origin`. |
 | `403 {"error":"forbidden","details":["requires role editor"],"required":"editor"}` | The token's role is too low for the call. | Use a token with the role named in `required` ([roles](security.md#admin-tokens-and-roles)). |
 
-`fastmock_admin_auth_failures_total{reason}` (`token`, `role`, `origin`) and log lines with `"target":"audit"`
+`fastmock_admin_auth_failures_total{reason}` (`token`, `role`, `permission`, `origin`) and log lines with `"target":"audit"`
 show who is rejected and why.
 
 ## The server does not start

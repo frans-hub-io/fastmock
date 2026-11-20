@@ -1,0 +1,11 @@
+{{- if include "fastmock.accessEnabled" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fastmock.fullname" . }}-access
+  labels:
+    {{- include "fastmock.labels" . | nindent 4 }}
+data:
+  access.yaml: |
+    {{- include "fastmock.accessFile" . | nindent 4 }}
+{{- end }}

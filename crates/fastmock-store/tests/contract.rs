@@ -5,8 +5,8 @@ use std::time::Duration;
 use chrono::Utc;
 use fastmock_core::memory::memory_stores;
 use fastmock_core::{
-    AuditEvent, CallbackFilter, CallbackJob, CallbackStatus, JournalEntry, JournalFilter, Stores,
-    Stub,
+    AuditEvent, CallbackFilter, CallbackJob, CallbackStatus, JournalEntry, JournalFilter,
+    SpaceFilter, Stores, Stub,
 };
 use fastmock_store::{PgStore, ValkeyStore};
 use serde_json::json;
@@ -78,13 +78,16 @@ async fn stub_store_contract() {
             .map(|i| stub(&format!("/r{i}"), 5, &["batch"]))
             .collect();
         assert_eq!(
-            s.stubs.replace_tag(Some("batch"), &batch).await.unwrap(),
+            s.stubs
+                .replace_tag(Some("batch"), &SpaceFilter::Any, &batch)
+                .await
+                .unwrap(),
             0,
             "{name}"
         );
         assert_eq!(
             s.stubs
-                .replace_tag(Some("batch"), &batch[..1])
+                .replace_tag(Some("batch"), &SpaceFilter::Any, &batch[..1])
                 .await
                 .unwrap(),
             3,
@@ -95,8 +98,22 @@ async fn stub_store_contract() {
             r0 + 2,
             "{name}: one revision per replace"
         );
-        assert_eq!(s.stubs.delete_by_tag("batch").await.unwrap(), 1, "{name}");
-        assert_eq!(s.stubs.delete_by_tag("t2").await.unwrap(), 1, "{name}");
+        assert_eq!(
+            s.stubs
+                .delete_by_tag("batch", &SpaceFilter::Any)
+                .await
+                .unwrap(),
+            1,
+            "{name}"
+        );
+        assert_eq!(
+            s.stubs
+                .delete_by_tag("t2", &SpaceFilter::Any)
+                .await
+                .unwrap(),
+            1,
+            "{name}"
+        );
         assert!(s.stubs.delete(a.id).await.unwrap(), "{name}");
         assert!(!s.stubs.delete(a.id).await.unwrap(), "{name}");
         assert!(s.stubs.list().await.unwrap().is_empty(), "{name}");
@@ -120,6 +137,7 @@ fn entry(source: &str, path: &str, corr: Option<&str>, matched: bool) -> Journal
         matched,
         duration_ms: 3,
         trace_id: Some("0af7651916cd43dd8448eb211c80319c".into()),
+        space: None,
     }
 }
 
@@ -179,7 +197,11 @@ async fn journal_contract() {
             0,
             "{name}"
         );
-        assert_eq!(s.journal.clear().await.unwrap(), 2, "{name}");
+        assert_eq!(
+            s.journal.clear(&SpaceFilter::Any).await.unwrap(),
+            2,
+            "{name}"
+        );
     }
 }
 
@@ -524,6 +546,157 @@ async fn outbox_lease_expiry_respects_max_attempts() {
         assert!(
             !s.outbox.mark_sent(j.id, 1, 204).await.unwrap(),
             "{name}: the late worker cannot flip it back"
+        );
+    }
+}
+
+fn in_space(mut s: Stub, space: Option<&str>) -> Stub {
+    s.space = space.map(String::from);
+    s
+}
+
+#[tokio::test]
+async fn space_scoped_contract() {
+    for (name, s) in all_backends().await {
+        let a = in_space(stub("/a", 5, &["t"]), Some("pay"));
+        let b = in_space(stub("/b", 5, &["t"]), Some("bill"));
+        let g = in_space(stub("/g", 5, &["t"]), None);
+        for x in [&a, &b, &g] {
+            s.stubs.upsert(x).await.unwrap();
+        }
+        assert_eq!(
+            s.stubs.get(a.id).await.unwrap().unwrap().space.as_deref(),
+            Some("pay"),
+            "{name}"
+        );
+        let fresh = in_space(stub("/a2", 5, &["t"]), Some("pay"));
+        assert_eq!(
+            s.stubs
+                .replace_tag(
+                    Some("t"),
+                    &SpaceFilter::area(Some("pay")),
+                    std::slice::from_ref(&fresh)
+                )
+                .await
+                .unwrap(),
+            1,
+            "{name}: only the space's tagged stubs are replaced"
+        );
+        assert!(s.stubs.get(b.id).await.unwrap().is_some(), "{name}");
+        assert!(s.stubs.get(g.id).await.unwrap().is_some(), "{name}");
+        assert_eq!(
+            s.stubs
+                .delete_by_tag("t", &SpaceFilter::Global)
+                .await
+                .unwrap(),
+            1,
+            "{name}"
+        );
+        assert_eq!(
+            s.stubs
+                .clear(&SpaceFilter::In(vec!["bill".into()]))
+                .await
+                .unwrap(),
+            1,
+            "{name}"
+        );
+        let left: Vec<_> = s
+            .stubs
+            .list()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|x| x.id)
+            .collect();
+        assert_eq!(left, vec![fresh.id], "{name}");
+        assert_eq!(s.stubs.clear(&SpaceFilter::Any).await.unwrap(), 1, "{name}");
+
+        for i in 0..30 {
+            let mut e = entry("stubs", &format!("/p{i}"), None, true);
+            e.space = match i % 3 {
+                0 => Some("pay".into()),
+                1 => Some("bill".into()),
+                _ => None,
+            };
+            s.journal.append(&e).await.unwrap();
+        }
+        let pay = JournalFilter {
+            spaces: SpaceFilter::In(vec!["pay".into()]),
+            limit: Some(4),
+            ..Default::default()
+        };
+        assert_eq!(s.journal.count(&pay).await.unwrap(), 10, "{name}");
+        let p1 = s.journal.query_page(&pay, 0).await.unwrap();
+        let p3 = s.journal.query_page(&pay, 8).await.unwrap();
+        assert_eq!(p1.len(), 4, "{name}");
+        assert_eq!(p3.len(), 2, "{name}: last page of the space");
+        assert!(
+            p1.iter()
+                .chain(p3.iter())
+                .all(|e| e.space.as_deref() == Some("pay")),
+            "{name}"
+        );
+        assert_eq!(p1[0].path, "/p27", "{name}: newest first");
+        let both = JournalFilter {
+            spaces: SpaceFilter::In(vec!["pay".into(), "bill".into()]),
+            ..Default::default()
+        };
+        assert_eq!(s.journal.count(&both).await.unwrap(), 20, "{name}");
+        assert_eq!(
+            s.journal
+                .clear(&SpaceFilter::In(vec!["bill".into()]))
+                .await
+                .unwrap(),
+            10,
+            "{name}"
+        );
+        assert_eq!(
+            s.journal.count(&JournalFilter::default()).await.unwrap(),
+            20,
+            "{name}"
+        );
+
+        let mut j1 = CallbackJob::new(
+            "stubs",
+            "http://127.0.0.1:9/x".into(),
+            "POST".into(),
+            BTreeMap::new(),
+            String::new(),
+            Utc::now(),
+            1,
+        );
+        j1.space = Some("pay".into());
+        let j2 = CallbackJob::new(
+            "stubs",
+            "http://127.0.0.1:9/y".into(),
+            "POST".into(),
+            BTreeMap::new(),
+            String::new(),
+            Utc::now(),
+            1,
+        );
+        s.outbox.enqueue(&j1).await.unwrap();
+        s.outbox.enqueue(&j2).await.unwrap();
+        let only_pay = CallbackFilter {
+            spaces: SpaceFilter::In(vec!["pay".into()]),
+            ..Default::default()
+        };
+        let l = s.outbox.list(&only_pay).await.unwrap();
+        assert_eq!(l.len(), 1, "{name}");
+        assert_eq!(l[0].space.as_deref(), Some("pay"), "{name}");
+        assert_eq!(
+            s.outbox.clear(&SpaceFilter::Global).await.unwrap(),
+            1,
+            "{name}"
+        );
+        assert_eq!(
+            s.outbox
+                .list(&CallbackFilter::default())
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "{name}"
         );
     }
 }

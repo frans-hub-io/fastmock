@@ -8,10 +8,13 @@ use fastmock_core::{StringMatcher, Stub};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::access::Permission;
+use crate::admin::require;
 use crate::admin::{
     ApiError, ApiResult, ErrorBody, ImportResult, ImportTarget, bad, finish_import, valid_tag, yes,
 };
 use crate::auth::Principal;
+use crate::spaces::{self, SpaceQuery};
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
@@ -91,10 +94,9 @@ async fn run_postman(
     app: &AppState,
     p: &Principal,
     doc: &Value,
-    tag: &str,
-    replace: bool,
-    dry_run: bool,
+    t: ImportTarget<'_>,
 ) -> ApiResult<Json<ImportResult>> {
+    let (tag, dry_run, space) = (t.tag, t.dry_run, t.space);
     valid_tag(tag)?;
     let mut c = fastmock_core::postman::convert(
         doc,
@@ -107,20 +109,8 @@ async fn run_postman(
             "{n} stubs had secrets (sensitive query parameters, body fields or headers) removed from matchers"
         ));
     }
-    let out = finish_import(
-        app,
-        p,
-        ImportTarget {
-            format: "postman",
-            tag,
-            replace,
-            dry_run,
-        },
-        c.stubs,
-        c.warnings,
-    )
-    .await?;
-    if !dry_run {
+    let out = finish_import(app, p, t, c.stubs, c.warnings).await?;
+    if !dry_run && space.is_none() {
         crate::services::record_service(
             app,
             &p.name,
@@ -148,10 +138,24 @@ async fn run_postman(
 pub async fn import_postman(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
+    Query(q): Query<SpaceQuery>,
     Json(b): Json<PostmanImport>,
 ) -> ApiResult<Json<ImportResult>> {
+    let space = spaces::target(&app, &p, Permission::ImportsRun, q.space.as_deref())?;
     let doc = document(b.collection, "collection")?;
-    run_postman(&app, &p, &doc, &b.tag, b.replace, b.dry_run).await
+    run_postman(
+        &app,
+        &p,
+        &doc,
+        ImportTarget {
+            format: "postman",
+            tag: &b.tag,
+            replace: b.replace,
+            dry_run: b.dry_run,
+            space: space.as_deref(),
+        },
+    )
+    .await
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -212,9 +216,9 @@ async fn run_har(
             "{n} stubs had secrets (sensitive query parameters, body fields or headers) removed from matchers"
         ));
     }
-    let (tag, dry_run) = (t.tag.to_string(), t.dry_run);
+    let (tag, dry_run, space) = (t.tag.to_string(), t.dry_run, t.space);
     let out = finish_import(app, p, t, c.stubs, c.warnings).await?;
-    if !dry_run {
+    if !dry_run && space.is_none() {
         crate::services::record_service(
             app,
             &p.name,
@@ -242,8 +246,10 @@ async fn run_har(
 pub async fn import_har(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
+    Query(q): Query<SpaceQuery>,
     Json(b): Json<HarImport>,
 ) -> ApiResult<Json<ImportResult>> {
+    let space = spaces::target(&app, &p, Permission::ImportsRun, q.space.as_deref())?;
     let doc = document(b.har, "har")?;
     run_har(
         &app,
@@ -254,6 +260,7 @@ pub async fn import_har(
             tag: &b.tag,
             replace: b.replace,
             dry_run: b.dry_run,
+            space: space.as_deref(),
         },
         HarFilters {
             mime_types: b.mime_types,
@@ -432,6 +439,8 @@ pub struct AutoImportQuery {
     dry_run: Option<bool>,
     /// Force a format instead of detecting it.
     format: Option<String>,
+    /// Space the stubs go to (OpenAPI, WireMock, MockServer, Postman and HAR only).
+    space: Option<String>,
 }
 
 fn unsupported(format: Format, hint: &str) -> ApiError {
@@ -505,6 +514,22 @@ pub async fn import_auto(
     if let Some(t) = &q.tag {
         valid_tag(t)?;
     }
+    let global_only = matches!(
+        format,
+        Format::GraphQl | Format::Wsdl | Format::SoapUi | Format::Microcks | Format::AsyncApi
+    );
+    let space = if global_only {
+        if q.space.is_some() {
+            return Err(bad(format!(
+                "{} documents import into the global area only; remove space",
+                format.name()
+            )));
+        }
+        require(&p, Permission::ImportsRun, None)?;
+        None
+    } else {
+        spaces::target(&app, &p, Permission::ImportsRun, q.space.as_deref())?
+    };
     if matches!(
         format,
         Format::GraphQl | Format::Wsdl | Format::SoapUi | Format::Microcks
@@ -529,6 +554,7 @@ pub async fn import_auto(
         tag: &tag,
         replace,
         dry_run,
+        space: space.as_deref(),
     };
     let doc = match &parsed {
         Parsed::Doc(v) => Some(v),
@@ -536,8 +562,9 @@ pub async fn import_auto(
     };
     let need_doc =
         || doc.ok_or_else(|| bad(format!("a {} document must be JSON or YAML", format.name())));
+    let record = space.is_none();
     let generic = |app: AppState, p: Principal, tag: String, format: &'static str| async move {
-        if !dry_run {
+        if !dry_run && record {
             crate::services::record_service(
                 &app,
                 &p.name,
@@ -556,7 +583,7 @@ pub async fn import_auto(
             };
             let r = fastmock_core::openapi::import(doc, &opts).map_err(|e| bad(e.to_string()))?;
             let out = finish_import(&app, &p, target, r.stubs, r.warnings).await?;
-            if !dry_run {
+            if !dry_run && record {
                 crate::services::record_service(
                     &app,
                     &p.name,
@@ -594,7 +621,7 @@ pub async fn import_auto(
             generic(app.clone(), p.clone(), tag.clone(), format.name()).await;
             out
         }
-        Format::Postman => run_postman(&app, &p, need_doc()?, &tag, replace, dry_run).await?,
+        Format::Postman => run_postman(&app, &p, need_doc()?, target).await?,
         Format::Har => run_har(&app, &p, need_doc()?, target, HarFilters::default()).await?,
         Format::AsyncApi => {
             let doc = need_doc()?.clone();

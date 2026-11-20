@@ -743,7 +743,13 @@ pub fn route_rule(method: &Method, full_path: &str) -> (Permission, ScopeKind) {
         ("GET", ["audit"]) => natural(AuditRead),
         ("GET", ["settings"]) => global(ChaosRead),
         ("PUT", ["settings"]) => global(ChaosWrite),
-        ("POST", ["import", "asyncapi"]) => global(ImportsRun),
+        (
+            "POST",
+            [
+                "import",
+                "asyncapi" | "graphql" | "soapui" | "wsdl" | "microcks",
+            ],
+        ) => global(ImportsRun),
         ("POST", ["import"] | ["import", _]) => natural(ImportsRun),
         ("GET", ["recordings"]) => natural(RecordingsRead),
         ("POST", ["recordings", "start" | "stop" | "snapshot"]) => natural(RecordingsWrite),
@@ -871,6 +877,17 @@ bindings:
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn wildcards_parse_in_flow_sequences() {
+        let c = AccessConfig::parse(
+            "roles:\n  - name: ci\n    permissions: [stubs:*, imports:run, journal:*, state:*, callbacks:*, files:*]\n",
+        )
+        .unwrap();
+        let p = c.role("ci").unwrap();
+        assert!(p.contains(StubsPurge) && p.contains(CallbacksDelete) && p.contains(FilesWrite));
+        assert!(!p.contains(ContractsRead));
     }
 
     #[test]

@@ -339,10 +339,6 @@ fn full_path(req: &Request) -> String {
         .unwrap_or_else(|| req.uri().path().to_string())
 }
 
-/// Whether the route's handler checks the space it acts on. Until it does, space-scoped
-/// permissions must be held globally.
-const SPACE_AWARE_HANDLERS: bool = false;
-
 pub async fn admin_auth(State(app): State<AppState>, mut req: Request, next: Next) -> Response {
     if !app.auth.origin_allowed(req.headers()) {
         metrics::counter!("fastmock_admin_auth_failures_total", "reason" => "origin").increment(1);
@@ -365,8 +361,8 @@ pub async fn admin_auth(State(app): State<AppState>, mut req: Request, next: Nex
     let path = full_path(&req);
     let (perm, scope) = route_rule(req.method(), &path);
     let ok = match scope {
-        ScopeKind::Space if SPACE_AWARE_HANDLERS => principal.permissions.anywhere(perm),
-        _ => principal.permissions.global_has(perm),
+        ScopeKind::Space => principal.permissions.anywhere(perm),
+        ScopeKind::Global => principal.permissions.global_has(perm),
     };
     if !ok {
         principal.count_denial();

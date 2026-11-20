@@ -51,6 +51,7 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| concat!("fastmock:", env!("CARGO_PKG_VERSION")).into()),
             &std::env::var("FASTMOCK_OPERATOR_ALLOWED_IMAGE_PREFIXES").unwrap_or_default(),
         ),
+        space_from_namespace: policy::bool_env("FASTMOCK_OPERATOR_SPACE_FROM_NAMESPACE")?,
         failures: std::sync::Mutex::new(std::collections::HashMap::new()),
     });
     let namespace = std::env::var("FASTMOCK_OPERATOR_NAMESPACE")
@@ -78,6 +79,7 @@ async fn main() -> anyhow::Result<()> {
         %listen,
         default_image = %ctx.images.default_image,
         allowed_image_prefixes = ?ctx.images.allowed_prefixes,
+        space_from_namespace = ctx.space_from_namespace,
         "fastmock-operator started"
     );
     controller::run(ctx, namespace).await;

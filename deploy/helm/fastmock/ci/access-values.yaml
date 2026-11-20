@@ -1,0 +1,32 @@
+replicaCount: 1
+
+admin:
+  tokensSecret:
+    name: fastmock-admin-tokens
+
+storage:
+  mode: memory
+
+access:
+  roles:
+    - name: stub-author
+      description: Writes stubs and reads the journal
+      permissions: [stubs:read, stubs:write, imports:run, journal:read, state:read]
+    - name: ci
+      permissions: ["stubs:*", "journal:*", "state:*", "files:*", imports:run]
+  spaces:
+    - name: payments
+      description: Payment provider mocks
+      pathPrefixes: [/payments/, /psp/]
+      hosts: [psp.example.com]
+    - name: billing
+  bindings:
+    - subject: group:payments-dev
+      role: editor
+      spaces: [payments]
+    - subject: group:platform
+      role: admin
+      global: true
+    - subject: token:ci-billing
+      role: stub-author
+      spaces: [billing]

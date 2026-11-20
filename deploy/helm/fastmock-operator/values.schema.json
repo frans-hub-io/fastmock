@@ -64,6 +64,15 @@
     "watchNamespace": {
       "type": "string"
     },
+    "policy": {
+      "type": "object",
+      "properties": {
+        "spaceFromNamespace": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "logLevel": {
       "type": "string",
       "enum": [

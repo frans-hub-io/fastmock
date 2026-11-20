@@ -1,5 +1,5 @@
 use axum::body::Bytes;
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -8,8 +8,10 @@ use base64::Engine as _;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::admin::{ApiError, ApiResult, ErrorBody, audit_event, bad, not_found};
+use crate::access::Permission;
+use crate::admin::{ApiError, ApiResult, ErrorBody, audit_event_in, bad, not_found};
 use crate::auth::Principal;
+use crate::spaces::{self, SpaceQuery};
 use crate::state::AppState;
 
 pub const NAMESPACE: &str = "files";
@@ -59,10 +61,14 @@ pub struct FileInfo {
     pub content_type: String,
     pub size: u64,
     pub updated_at: Option<String>,
+    /// Space of the file; absent in the global area. `name` is relative to the space.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
 }
 
 fn info_of(name: String, v: &Value) -> FileInfo {
     FileInfo {
+        space: None,
         name,
         content_type: v
             .get("contentType")
@@ -83,19 +89,36 @@ pub struct FileList {
 #[utoipa::path(
     get, path = "/__admin/files", tag = "files", operation_id = "listFiles",
     summary = "List stored body files",
+    params(SpaceQuery),
     responses(
         (status = 200, description = "Files, sorted by name", body = FileList),
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
     ),
     security(("bearer" = []))
 )]
-pub async fn list_files(State(app): State<AppState>) -> ApiResult<Json<FileList>> {
+pub async fn list_files(
+    State(app): State<AppState>,
+    Extension(p): Extension<Principal>,
+    Query(q): Query<SpaceQuery>,
+) -> ApiResult<Json<FileList>> {
+    let sel = spaces::select(&app, &p, Permission::FilesRead, q.space.as_deref())?;
     let items = app
         .stores
         .data
         .list_without(NAMESPACE, MAX_FILES as i64, "base64")
         .await?;
-    let files: Vec<FileInfo> = items.into_iter().map(|(k, v)| info_of(k, &v)).collect();
+    let files: Vec<FileInfo> = items
+        .into_iter()
+        .filter_map(|(k, v)| {
+            let (space, name) = spaces::split_key(&app, &k);
+            if !sel.matches(space) {
+                return None;
+            }
+            let mut info = info_of(name.to_string(), &v);
+            info.space = space.map(String::from);
+            Some(info)
+        })
+        .collect();
     Ok(Json(FileList {
         total: files.len(),
         files,
@@ -106,7 +129,7 @@ pub async fn list_files(State(app): State<AppState>) -> ApiResult<Json<FileList>
     get, path = "/__admin/files/{name}", tag = "files", operation_id = "getFile",
     summary = "Download a body file",
     description = "Returns the raw content with the stored content type, as an attachment.",
-    params(("name" = String, Path, description = "File name, may contain `/`")),
+    params(("name" = String, Path, description = "File name, may contain `/`"), SpaceQuery),
     responses(
         (status = 200, description = "Raw file content", content_type = "application/octet-stream", body = Vec<u8>),
         (status = 400, description = "Invalid name", body = ErrorBody),
@@ -117,13 +140,16 @@ pub async fn list_files(State(app): State<AppState>) -> ApiResult<Json<FileList>
 )]
 pub async fn get_file(
     State(app): State<AppState>,
+    Extension(p): Extension<Principal>,
     Path(name): Path<String>,
+    Query(q): Query<SpaceQuery>,
 ) -> ApiResult<Response> {
+    let space = spaces::target(&app, &p, Permission::FilesRead, q.space.as_deref())?;
     checked(&name)?;
     let v = app
         .stores
         .data
-        .get(NAMESPACE, &name)
+        .get(NAMESPACE, &spaces::join_key(space.as_deref(), &name))
         .await?
         .ok_or_else(|| not_found("file"))?;
     let bytes = v
@@ -167,7 +193,7 @@ fn content_type(headers: &HeaderMap) -> ApiResult<String> {
     put, path = "/__admin/files/{name}", tag = "files", operation_id = "putFile",
     summary = "Upload or replace a body file",
     description = "The raw request body is the file content (at most 10 MiB); `Content-Type` is stored with it and becomes the default response content type for stubs using `response.bodyFileName`.",
-    params(("name" = String, Path, description = "File name: [A-Za-z0-9._-/], at most 512 bytes, no `..`")),
+    params(("name" = String, Path, description = "File name: [A-Za-z0-9._-/], at most 512 bytes, no `..`"), SpaceQuery),
     request_body(content = Vec<u8>, content_type = "application/octet-stream"),
     responses(
         (status = 200, description = "Replaced", body = FileInfo),
@@ -184,10 +210,13 @@ pub async fn put_file(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
     Path(name): Path<String>,
+    Query(q): Query<SpaceQuery>,
     headers: HeaderMap,
     body: Bytes,
 ) -> ApiResult<Response> {
+    let space = spaces::target(&app, &p, Permission::FilesWrite, q.space.as_deref())?;
     checked(&name)?;
+    let key = spaces::join_key(space.as_deref(), &name);
     if body.len() > MAX_FILE_BYTES {
         return Err(ApiError(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -195,7 +224,7 @@ pub async fn put_file(
         ));
     }
     let ct = content_type(&headers)?;
-    let existed = app.stores.data.get(NAMESPACE, &name).await?.is_some();
+    let existed = app.stores.data.get(NAMESPACE, &key).await?.is_some();
     if !existed {
         let n = app
             .stores
@@ -217,18 +246,20 @@ pub async fn put_file(
         "size": body.len(),
         "updatedAt": now,
     });
-    app.stores.data.put(NAMESPACE, &name, &v).await?;
+    app.stores.data.put(NAMESPACE, &key, &v).await?;
     app.engine.invalidate_files();
     metrics::counter!("fastmock_files_written_total").increment(1);
     metrics::histogram!("fastmock_file_size_bytes").record(body.len() as f64);
-    audit_event(
+    audit_event_in(
         &app,
         &p,
+        space.as_deref(),
         "file.put",
         json!({"name": name, "contentType": ct, "size": body.len(), "replaced": existed}),
     )
     .await;
-    let info = info_of(name, &v);
+    let mut info = info_of(name, &v);
+    info.space = space;
     Ok((
         if existed {
             StatusCode::OK
@@ -243,7 +274,7 @@ pub async fn put_file(
 #[utoipa::path(
     delete, path = "/__admin/files/{name}", tag = "files", operation_id = "deleteFile",
     summary = "Delete a body file",
-    params(("name" = String, Path, description = "File name")),
+    params(("name" = String, Path, description = "File name"), SpaceQuery),
     responses(
         (status = 204, description = "Deleted"),
         (status = 400, description = "Invalid name", body = ErrorBody),
@@ -257,13 +288,27 @@ pub async fn delete_file(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
     Path(name): Path<String>,
+    Query(q): Query<SpaceQuery>,
 ) -> ApiResult<StatusCode> {
+    let space = spaces::target(&app, &p, Permission::FilesWrite, q.space.as_deref())?;
     checked(&name)?;
-    if !app.stores.data.delete(NAMESPACE, &name).await? {
+    if !app
+        .stores
+        .data
+        .delete(NAMESPACE, &spaces::join_key(space.as_deref(), &name))
+        .await?
+    {
         return Err(not_found("file"));
     }
     app.engine.invalidate_files();
-    audit_event(&app, &p, "file.delete", json!({"name": name})).await;
+    audit_event_in(
+        &app,
+        &p,
+        space.as_deref(),
+        "file.delete",
+        json!({"name": name}),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -28,7 +28,6 @@ fn legacy_tokens() -> Vec<String> {
     ]
 }
 
-#[allow(dead_code)]
 async fn pg_storage() -> Option<StorageKind> {
     let admin_url = std::env::var("FASTMOCK_TEST_DATABASE_URL").ok()?;
     let valkey_url = std::env::var("FASTMOCK_TEST_VALKEY_URL").ok()?;
@@ -47,7 +46,6 @@ async fn pg_storage() -> Option<StorageKind> {
     })
 }
 
-#[allow(dead_code)]
 async fn storages() -> Vec<(&'static str, StorageKind)> {
     let mut v = vec![("memory", StorageKind::Memory)];
     match pg_storage().await {
@@ -134,6 +132,39 @@ impl H {
             .await
             .unwrap();
         (r.status().as_u16(), r.text().await.unwrap())
+    }
+
+    async fn hit_host(&self, path: &str, host: &str) -> (u16, String) {
+        let r = self
+            .http
+            .get(format!("{}{path}", self.data))
+            .header("host", host)
+            .send()
+            .await
+            .unwrap();
+        (r.status().as_u16(), r.text().await.unwrap())
+    }
+
+    async fn journal_total(&self, token: &str, query: &str) -> i64 {
+        let v = self
+            .ok(
+                Method::GET,
+                &format!("/requests?limit=1{query}"),
+                token,
+                None,
+            )
+            .await;
+        v["total"].as_i64().unwrap()
+    }
+
+    async fn wait_journal(&self, want: i64) {
+        for _ in 0..100 {
+            if self.journal_total(ADMIN, "").await >= want {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("journal did not reach {want} entries");
     }
 }
 
@@ -505,4 +536,708 @@ fn serve_refuses_a_bad_access_file() {
         text.contains("bindings[0] (user:a): unknown role `nobody`"),
         "{text}"
     );
+}
+
+const SPACES: &str = r#"
+spaces:
+  - name: pay
+    pathPrefixes: [/pay/]
+  - name: bill
+    pathPrefixes: [/bill/]
+    hosts: [bill.example.com]
+bindings:
+  - subject: token:pay
+    role: editor
+    spaces: [pay]
+  - subject: token:bill
+    role: editor
+    spaces: [bill]
+  - subject: token:multi
+    role: viewer
+    spaces: [pay, bill]
+"#;
+
+const PAY_T: &str = "fm_pay_space_token_0123456789abcdef";
+const BILL_T: &str = "fm_bill_space_token_0123456789abcdef";
+const MULTI_T: &str = "fm_multi_space_token_0123456789abcdef";
+
+fn space_tokens() -> Vec<String> {
+    let mut t = legacy_tokens();
+    t.push(format!("pay::{}", hash_token(PAY_T)));
+    t.push(format!("bill::{}", hash_token(BILL_T)));
+    t.push(format!("multi::{}", hash_token(MULTI_T)));
+    t
+}
+
+fn ids(v: &Value) -> Vec<String> {
+    let mut out: Vec<String> = v["stubs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap().to_string())
+        .collect();
+    out.sort();
+    out
+}
+
+#[tokio::test]
+async fn ownership_rules_apply_on_create_update_and_import() {
+    for (name, storage) in storages().await {
+        let h = H::start(storage, space_tokens(), Some(SPACES)).await;
+        let (st, v) = h
+            .call(
+                Method::POST,
+                "/stubs",
+                PAY_T,
+                Some(json!({"request": {"urlPath": "/bill/x"}, "response": {"status": 200}})),
+            )
+            .await;
+        assert_eq!(st, 400, "{name}: {v}");
+        assert!(
+            v["error"]
+                .as_str()
+                .unwrap()
+                .contains("space pay owns /pay/"),
+            "{name}: {v}"
+        );
+        let (st, v) = h
+            .call(
+                Method::POST,
+                "/stubs",
+                PAY_T,
+                Some(
+                    json!({"request": {"urlPathPattern": "/pay/.*"}, "response": {"status": 200}}),
+                ),
+            )
+            .await;
+        assert_eq!(st, 400, "{name}: {v}");
+        let created = h
+            .ok(
+                Method::POST,
+                "/stubs",
+                PAY_T,
+                Some(json!({"request": {"urlPath": "/pay/x"}, "response": {"status": 200}})),
+            )
+            .await;
+        assert_eq!(
+            created["space"], "pay",
+            "{name}: the only space is the default"
+        );
+        let id = created["id"].as_str().unwrap().to_string();
+        let (st, v) = h
+            .call(
+                Method::PUT,
+                &format!("/stubs/{id}"),
+                PAY_T,
+                Some(json!({"request": {"urlPath": "/bill/x"}, "response": {"status": 200}})),
+            )
+            .await;
+        assert_eq!(st, 400, "{name}: update outside the prefixes: {v}");
+        let (st, v) = h
+            .call(
+                Method::PATCH,
+                &format!("/stubs/{id}"),
+                PAY_T,
+                Some(json!({"request": {"urlPath": "/other"}})),
+            )
+            .await;
+        assert_eq!(st, 400, "{name}: patch outside the prefixes: {v}");
+        let (st, v) = h
+            .call(
+                Method::PATCH,
+                &format!("/stubs/{id}"),
+                ADMIN,
+                Some(json!({"space": "bill"})),
+            )
+            .await;
+        assert_eq!(st, 400, "{name}: the space cannot change: {v}");
+        assert!(
+            v["error"].as_str().unwrap().contains("cannot change"),
+            "{name}"
+        );
+        let (st, v) = h
+            .call(
+                Method::POST,
+                "/stubs/import",
+                PAY_T,
+                Some(json!({"stubs": [
+                    {"request": {"urlPath": "/pay/a"}, "response": {"status": 200}},
+                    {"request": {"urlPath": "/bill/a"}, "response": {"status": 200}}
+                ]})),
+            )
+            .await;
+        assert_eq!(st, 400, "{name}: {v}");
+        assert!(
+            v["error"].as_str().unwrap().starts_with("stubs[1]"),
+            "{name}: {v}"
+        );
+        let (st, v) = h
+            .call(
+                Method::POST,
+                "/import/wiremock",
+                PAY_T,
+                Some(json!({"mappings": {"mappings": [{"request": {"method": "GET", "url": "/bill/w"}, "response": {"status": 200}}]}, "tag": "wm"})),
+            )
+            .await;
+        assert_eq!(st, 400, "{name}: {v}");
+        assert!(
+            v["error"].as_str().unwrap().contains("space pay owns"),
+            "{name}: {v}"
+        );
+        let v = h
+            .ok(
+                Method::POST,
+                "/import/wiremock",
+                PAY_T,
+                Some(json!({"mappings": {"mappings": [{"request": {"method": "GET", "url": "/pay/w"}, "response": {"status": 200}}]}, "tag": "wm"})),
+            )
+            .await;
+        assert_eq!(v["imported"], 1, "{name}");
+        let (st, v) = h
+            .call(
+                Method::POST,
+                "/stubs",
+                BILL_T,
+                Some(json!({"request": {"urlPath": "/bill/x"}, "response": {"status": 200}})),
+            )
+            .await;
+        assert_eq!(st, 400, "{name}: bill needs a host matcher: {v}");
+        let v = h
+            .ok(
+                Method::POST,
+                "/stubs",
+                BILL_T,
+                Some(json!({"request": {"urlPath": "/bill/x", "host": {"equalTo": "bill.example.com"}}, "response": {"status": 200}})),
+            )
+            .await;
+        assert_eq!(v["space"], "bill", "{name}");
+        let foreign = v["id"].as_str().unwrap().to_string();
+        let (st, v) = h
+            .call(
+                Method::POST,
+                "/stubs/import",
+                PAY_T,
+                Some(json!({"stubs": [{"id": foreign, "request": {"urlPath": "/pay/steal"}, "response": {"status": 200}}]})),
+            )
+            .await;
+        assert_eq!(
+            st, 409,
+            "{name}: an import cannot take over another space's stub: {v}"
+        );
+        let (st, _) = h
+            .call(
+                Method::PUT,
+                &format!("/stubs/{foreign}"),
+                PAY_T,
+                Some(json!({"request": {"urlPath": "/pay/steal"}, "response": {"status": 200}})),
+            )
+            .await;
+        assert_eq!(st, 404, "{name}: PUT cannot take over another space's stub");
+        let (st, _) = h
+            .call(
+                Method::POST,
+                "/stubs?space=bill",
+                PAY_T,
+                Some(json!({"request": {"urlPath": "/bill/y"}, "response": {"status": 200}})),
+            )
+            .await;
+        assert_eq!(st, 403, "{name}");
+        let (st, _) = h
+            .call(
+                Method::POST,
+                "/stubs?space=nope",
+                ADMIN,
+                Some(json!({"request": {"urlPath": "/x"}, "response": {"status": 200}})),
+            )
+            .await;
+        assert_eq!(st, 404, "{name}: unknown space");
+        let v = h
+            .ok(
+                Method::POST,
+                "/stubs",
+                ADMIN,
+                Some(json!({"request": {"urlPath": "/anything"}, "response": {"status": 200}})),
+            )
+            .await;
+        assert!(
+            v.get("space").is_none(),
+            "{name}: global principals write globally"
+        );
+    }
+}
+
+#[tokio::test]
+async fn space_principals_see_only_their_spaces() {
+    for (name, storage) in storages().await {
+        let h = H::start(storage, space_tokens(), Some(SPACES)).await;
+        assert_eq!(
+            h.ok(Method::GET, "/info", PAY_T, None).await["storage"],
+            name
+        );
+        let pay = h
+            .ok(
+                Method::POST,
+                "/stubs",
+                PAY_T,
+                Some(
+                    json!({"request": {"method": "GET", "urlPath": "/pay/order"},
+                    "response": {"status": 200, "body": "pay"},
+                    "callbacks": [{"url": "http://127.0.0.1:9/hook", "body": "x"}]}),
+                ),
+            )
+            .await;
+        let bill = h
+            .ok(
+                Method::POST,
+                "/stubs",
+                BILL_T,
+                Some(json!({"request": {"method": "GET", "urlPath": "/bill/order", "host": {"equalTo": "bill.example.com"}},
+                    "response": {"status": 200, "body": "bill"}})),
+            )
+            .await;
+        let global = h
+            .ok(
+                Method::POST,
+                "/stubs",
+                ADMIN,
+                Some(json!({"request": {"method": "GET", "urlPath": "/global"}, "response": {"status": 200}})),
+            )
+            .await;
+        let (pay_id, bill_id) = (pay["id"].as_str().unwrap(), bill["id"].as_str().unwrap());
+        let v = h.ok(Method::GET, "/stubs", PAY_T, None).await;
+        assert_eq!(ids(&v), vec![pay_id.to_string()], "{name}");
+        let v = h.ok(Method::GET, "/stubs", MULTI_T, None).await;
+        let mut both = vec![pay_id.to_string(), bill_id.to_string()];
+        both.sort();
+        assert_eq!(ids(&v), both, "{name}: union of the bound spaces");
+        assert_eq!(
+            v["stubs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|s| s["id"] == pay_id)
+                .unwrap()["callbacks"][0]["body"],
+            "x",
+            "{name}"
+        );
+        let v = h.ok(Method::GET, "/stubs", ADMIN, None).await;
+        assert_eq!(ids(&v).len(), 3, "{name}");
+        let v = h.ok(Method::GET, "/stubs?space=bill", ADMIN, None).await;
+        assert_eq!(ids(&v), vec![bill_id.to_string()], "{name}");
+        let (st, _) = h.call(Method::GET, "/stubs?space=bill", PAY_T, None).await;
+        assert_eq!(st, 403, "{name}");
+        let (st, _) = h.call(Method::GET, "/stubs?space=nope", ADMIN, None).await;
+        assert_eq!(st, 404, "{name}");
+        for m in [Method::GET, Method::DELETE] {
+            let (st, _) = h
+                .call(m.clone(), &format!("/stubs/{bill_id}"), PAY_T, None)
+                .await;
+            assert_eq!(st, 404, "{name}: {m} of another space's stub");
+            let (st, _) = h
+                .call(
+                    m.clone(),
+                    &format!("/stubs/{}", global["id"].as_str().unwrap()),
+                    PAY_T,
+                    None,
+                )
+                .await;
+            assert_eq!(st, 404, "{name}: {m} of a global stub");
+        }
+        let (st, _) = h
+            .call(Method::DELETE, &format!("/stubs/{pay_id}"), MULTI_T, None)
+            .await;
+        assert_eq!(st, 403, "{name}: readable but not writable");
+        let (st, _) = h.call(Method::DELETE, "/stubs", PAY_T, None).await;
+        assert_eq!(st, 403, "{name}: purging needs a global permission");
+        let (st, _) = h
+            .call(
+                Method::POST,
+                "/stubs",
+                MULTI_T,
+                Some(json!({"request": {"urlPath": "/pay/z"}})),
+            )
+            .await;
+        assert_eq!(st, 403, "{name}");
+
+        assert_eq!(h.hit(Method::GET, "/pay/order").await.0, 200, "{name}");
+        assert_eq!(
+            h.hit_host("/bill/order", "bill.example.com").await.0,
+            200,
+            "{name}"
+        );
+        assert_eq!(h.hit(Method::GET, "/global").await.0, 200, "{name}");
+        assert_eq!(h.hit(Method::GET, "/nothing").await.0, 404, "{name}");
+        h.wait_journal(4).await;
+        assert_eq!(h.journal_total(PAY_T, "").await, 1, "{name}");
+        assert_eq!(h.journal_total(BILL_T, "").await, 1, "{name}");
+        assert_eq!(h.journal_total(MULTI_T, "").await, 2, "{name}");
+        assert_eq!(h.journal_total(ADMIN, "&space=pay").await, 1, "{name}");
+        let v = h.ok(Method::GET, "/requests", PAY_T, None).await;
+        assert_eq!(v["requests"][0]["space"], "pay", "{name}");
+        assert_eq!(v["requests"][0]["path"], "/pay/order", "{name}");
+        let (st, _) = h
+            .call(Method::GET, "/requests/unmatched", PAY_T, None)
+            .await;
+        assert_eq!(
+            st, 403,
+            "{name}: unmatched requests need global journal:read"
+        );
+        let all = h.ok(Method::GET, "/requests", ADMIN, None).await;
+        for e in all["requests"].as_array().unwrap() {
+            let (st, _) = h
+                .call(Method::GET, &format!("/requests/{}", e["id"]), PAY_T, None)
+                .await;
+            let mine = e["space"] == "pay";
+            assert_eq!(st == 200, mine, "{name}: {e}");
+            if !mine {
+                assert_eq!(st, 404, "{name}");
+            }
+        }
+        let v = h
+            .ok(
+                Method::POST,
+                "/requests/find",
+                PAY_T,
+                Some(json!({"method": "GET"})),
+            )
+            .await;
+        assert_eq!(v["total"], 1, "{name}");
+        let (st, v) = h
+            .call(
+                Method::POST,
+                "/verify",
+                PAY_T,
+                Some(json!({"request": {"urlPath": "/bill/order"}, "count": 0})),
+            )
+            .await;
+        assert_eq!(st, 200, "{name}: another space's traffic is invisible: {v}");
+        let v = h
+            .ok(Method::POST, "/requests/count", MULTI_T, Some(json!({})))
+            .await;
+        assert_eq!(v["count"], 2, "{name}");
+        let v = h
+            .ok(
+                Method::POST,
+                "/requests/near-misses",
+                PAY_T,
+                Some(json!({"method": "GET", "path": "/bill/order"})),
+            )
+            .await;
+        assert!(
+            v["nearMisses"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|n| n["stubId"] == pay_id),
+            "{name}: {v}"
+        );
+
+        let v = h.ok(Method::GET, "/callbacks", PAY_T, None).await;
+        assert_eq!(v["callbacks"].as_array().unwrap().len(), 1, "{name}");
+        assert_eq!(v["callbacks"][0]["space"], "pay", "{name}");
+        let v = h.ok(Method::GET, "/callbacks", BILL_T, None).await;
+        assert!(v["callbacks"].as_array().unwrap().is_empty(), "{name}");
+        let v = h.ok(Method::DELETE, "/callbacks", BILL_T, None).await;
+        assert_eq!(v["deleted"], 0, "{name}");
+
+        let spec = json!({"openapi": "3.0.3", "info": {"title": "t", "version": "1"},
+            "paths": {"/pay/a": {"get": {"responses": {"200": {"description": "ok"}}}}}});
+        let (st, run) = h
+            .call(
+                Method::POST,
+                "/contract-tests",
+                PAY_T,
+                Some(json!({"spec": spec, "targetUrl": "http://127.0.0.1:9/"})),
+            )
+            .await;
+        assert_eq!(st, 202, "{name}: {run}");
+        let run_id = run["id"].as_str().unwrap();
+        let v = h.ok(Method::GET, "/contract-tests", PAY_T, None).await;
+        assert_eq!(v["runs"][0]["space"], "pay", "{name}");
+        let v = h.ok(Method::GET, "/contract-tests", BILL_T, None).await;
+        assert!(v["runs"].as_array().unwrap().is_empty(), "{name}");
+        let (st, _) = h
+            .call(
+                Method::GET,
+                &format!("/contract-tests/{run_id}"),
+                BILL_T,
+                None,
+            )
+            .await;
+        assert_eq!(st, 404, "{name}");
+        let (st, _) = h
+            .call(
+                Method::DELETE,
+                &format!("/contract-tests/{run_id}"),
+                MULTI_T,
+                None,
+            )
+            .await;
+        assert_eq!(st, 403, "{name}");
+
+        let v = h.ok(Method::DELETE, "/requests", PAY_T, None).await;
+        assert_eq!(v["deleted"], 1, "{name}: only the space's entries");
+        assert_eq!(h.journal_total(ADMIN, "").await, 3, "{name}");
+        let v = h.ok(Method::DELETE, "/stubs?tag=none", PAY_T, None).await;
+        assert_eq!(v["deleted"], 0, "{name}");
+        let v = h
+            .ok(Method::GET, "/audit?action=stub.create", ADMIN, None)
+            .await;
+        let ev = v["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["principal"] == "bill")
+            .unwrap();
+        assert_eq!(ev["space"], "bill", "{name}");
+        assert_eq!(ev["principalKind"], "token", "{name}");
+    }
+}
+
+#[tokio::test]
+async fn state_and_files_are_namespaced_per_space() {
+    for (name, storage) in storages().await {
+        let h = H::start(storage, space_tokens(), Some(SPACES)).await;
+        let flow = |path: &str, label: &str| {
+            json!({"request": {"method": "GET", "urlPath": path},
+                "response": {"status": 200, "body": format!("{label} {{{{state.current}}}}"), "templated": true},
+                "scenario": {"name": "flow", "newState": "Paid"}})
+        };
+        h.ok(
+            Method::POST,
+            "/stubs",
+            PAY_T,
+            Some(flow("/pay/order", "pay")),
+        )
+        .await;
+        let mut bill = flow("/bill/order", "bill");
+        bill["request"]["host"] = json!({"equalTo": "bill.example.com"});
+        h.ok(Method::POST, "/stubs", BILL_T, Some(bill)).await;
+        h.ok(
+            Method::POST,
+            "/stubs",
+            ADMIN,
+            Some(flow("/global/order", "global")),
+        )
+        .await;
+        assert_eq!(
+            h.hit(Method::GET, "/pay/order").await.1,
+            "pay Started",
+            "{name}"
+        );
+        assert_eq!(
+            h.hit(Method::GET, "/pay/order").await.1,
+            "pay Paid",
+            "{name}"
+        );
+        assert_eq!(
+            h.hit_host("/bill/order", "bill.example.com").await.1,
+            "bill Started",
+            "{name}: the same scenario name is independent per space"
+        );
+        assert_eq!(
+            h.hit(Method::GET, "/global/order").await.1,
+            "global Started",
+            "{name}"
+        );
+        let v = h.ok(Method::GET, "/scenarios", PAY_T, None).await;
+        assert_eq!(
+            v["scenarios"],
+            json!([{"name": "flow", "state": "Paid", "space": "pay"}]),
+            "{name}"
+        );
+        let v = h.ok(Method::GET, "/scenarios", ADMIN, None).await;
+        assert_eq!(v["scenarios"].as_array().unwrap().len(), 3, "{name}");
+        h.ok(
+            Method::PUT,
+            "/scenarios/flow",
+            BILL_T,
+            Some(json!({"state": "Refunded"})),
+        )
+        .await;
+        assert_eq!(
+            h.hit_host("/bill/order", "bill.example.com").await.1,
+            "bill Refunded",
+            "{name}"
+        );
+        assert_eq!(
+            h.hit(Method::GET, "/pay/order").await.1,
+            "pay Paid",
+            "{name}"
+        );
+        let v = h.ok(Method::DELETE, "/scenarios", PAY_T, None).await;
+        assert_eq!(v["reset"], 1, "{name}: only the space's scenarios");
+        let v = h.ok(Method::GET, "/scenarios", ADMIN, None).await;
+        assert_eq!(v["scenarios"].as_array().unwrap().len(), 2, "{name}");
+
+        for (t, value) in [(PAY_T, "p"), (BILL_T, "b")] {
+            let (st, v) = h
+                .call(Method::PUT, "/kv/k", t, Some(json!({"value": value})))
+                .await;
+            assert_eq!(st, 204, "{name}: {v}");
+        }
+        h.call(Method::PUT, "/kv/k", ADMIN, Some(json!({"value": "g"})))
+            .await;
+        assert_eq!(
+            h.ok(Method::GET, "/kv/k", PAY_T, None).await["value"],
+            "p",
+            "{name}"
+        );
+        assert_eq!(
+            h.ok(Method::GET, "/kv/k", BILL_T, None).await["value"],
+            "b",
+            "{name}"
+        );
+        assert_eq!(
+            h.ok(Method::GET, "/kv/k", ADMIN, None).await["value"],
+            "g",
+            "{name}"
+        );
+        assert_eq!(
+            h.ok(Method::GET, "/kv/k?space=bill", ADMIN, None).await["value"],
+            "b",
+            "{name}"
+        );
+        let (st, v) = h.call(Method::GET, "/kv/k", MULTI_T, None).await;
+        assert_eq!(
+            st, 400,
+            "{name}: several spaces need an explicit space: {v}"
+        );
+        assert_eq!(
+            h.ok(Method::GET, "/kv/k?space=pay", MULTI_T, None).await["value"],
+            "p",
+            "{name}"
+        );
+        let (st, _) = h.call(Method::DELETE, "/kv/k", PAY_T, None).await;
+        assert_eq!(st, 204, "{name}");
+        assert_eq!(
+            h.ok(Method::GET, "/kv/k", BILL_T, None).await["value"],
+            "b",
+            "{name}"
+        );
+
+        let put = |token: &'static str, path: &'static str, body: &'static str| {
+            h.http
+                .put(format!("{}/__admin{path}", h.admin))
+                .bearer_auth(token)
+                .header("content-type", "application/json")
+                .body(body)
+                .send()
+        };
+        assert_eq!(
+            put(PAY_T, "/files/a.json", "{\"who\":\"pay\"}")
+                .await
+                .unwrap()
+                .status(),
+            201
+        );
+        assert_eq!(
+            put(ADMIN, "/files/a.json", "{\"who\":\"global\"}")
+                .await
+                .unwrap()
+                .status(),
+            201
+        );
+        assert_eq!(
+            put(ADMIN, "/files/g.json", "{\"who\":\"g\"}")
+                .await
+                .unwrap()
+                .status(),
+            201
+        );
+        let (st, _) = h.call(Method::GET, "/files/a.json", BILL_T, None).await;
+        assert_eq!(st, 404, "{name}");
+        let v = h.ok(Method::GET, "/files", PAY_T, None).await;
+        assert_eq!(v["files"].as_array().unwrap().len(), 1, "{name}");
+        assert_eq!(v["files"][0]["name"], "a.json", "{name}");
+        assert_eq!(v["files"][0]["space"], "pay", "{name}");
+        let v = h.ok(Method::GET, "/files", ADMIN, None).await;
+        assert_eq!(v["total"], 3, "{name}");
+        h.ok(
+            Method::POST,
+            "/stubs",
+            PAY_T,
+            Some(json!({"request": {"urlPath": "/pay/file"}, "response": {"bodyFileName": "a.json"}})),
+        )
+        .await;
+        h.ok(
+            Method::POST,
+            "/stubs",
+            PAY_T,
+            Some(json!({"request": {"urlPath": "/pay/global-file"}, "response": {"bodyFileName": "g.json"}})),
+        )
+        .await;
+        assert_eq!(
+            h.hit(Method::GET, "/pay/file").await.1,
+            "{\"who\":\"pay\"}",
+            "{name}"
+        );
+        assert_eq!(
+            h.hit(Method::GET, "/pay/global-file").await.1,
+            "{\"who\":\"g\"}",
+            "{name}: global files are the fallback"
+        );
+    }
+}
+
+#[tokio::test]
+async fn journal_pagination_for_a_scoped_principal() {
+    for (name, storage) in storages().await {
+        let h = H::start(storage, space_tokens(), Some(SPACES)).await;
+        h.ok(
+            Method::POST,
+            "/stubs",
+            PAY_T,
+            Some(json!({"request": {"urlPathTemplate": "/pay/{n}"}, "response": {"status": 200}})),
+        )
+        .await;
+        h.ok(
+            Method::POST,
+            "/stubs",
+            BILL_T,
+            Some(json!({"request": {"urlPathTemplate": "/bill/{n}", "host": {"equalTo": "bill.example.com"}}, "response": {"status": 200}})),
+        )
+        .await;
+        for i in 0..12 {
+            h.hit(Method::GET, &format!("/pay/{i}")).await;
+            h.hit_host(&format!("/bill/{i}"), "bill.example.com").await;
+            h.hit(Method::GET, &format!("/none/{i}")).await;
+            if i % 4 == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
+        h.wait_journal(36).await;
+        let mut seen = Vec::new();
+        for offset in [0, 5, 10] {
+            let v = h
+                .ok(
+                    Method::GET,
+                    &format!("/requests?limit=5&offset={offset}"),
+                    PAY_T,
+                    None,
+                )
+                .await;
+            assert_eq!(v["total"], 12, "{name}");
+            let page = v["requests"].as_array().unwrap();
+            assert_eq!(
+                page.len(),
+                if offset == 10 { 2 } else { 5 },
+                "{name}: offset {offset}"
+            );
+            for e in page {
+                assert_eq!(e["space"], "pay", "{name}");
+                seen.push(e["path"].as_str().unwrap().to_string());
+            }
+        }
+        let want: Vec<String> = (0..12).rev().map(|i| format!("/pay/{i}")).collect();
+        assert_eq!(seen, want, "{name}: pages are contiguous and newest first");
+        let v = h
+            .ok(Method::GET, "/requests/count?space=pay", MULTI_T, None)
+            .await;
+        assert_eq!(v["count"], 12, "{name}");
+        let v = h.ok(Method::GET, "/requests?limit=5", MULTI_T, None).await;
+        assert_eq!(v["total"], 24, "{name}");
+        let v = h.ok(Method::GET, "/requests?limit=1", ADMIN, None).await;
+        assert_eq!(v["total"], 36, "{name}");
+    }
 }

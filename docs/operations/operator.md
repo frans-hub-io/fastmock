@@ -35,6 +35,7 @@ Helm installs the CRDs (`fastmocks.fastmock.franshub.io`, `mockapis.fastmock.fra
 | `imagePullSecrets` | `[]` | For the operator pod. |
 | `server.image.repository`, `server.image.tag` | `fastmock`, chart `appVersion` | Default FastMock image for `FastMock`s without `spec.image` (`FASTMOCK_OPERATOR_SERVER_IMAGE`). |
 | `server.allowedImagePrefixes` | `[]` (the repository of the default image) | Image prefixes a `FastMock` may use (`FASTMOCK_OPERATOR_ALLOWED_IMAGE_PREFIXES`). |
+| `policy.spaceFromNamespace` | `false` | `FASTMOCK_OPERATOR_SPACE_FROM_NAMESPACE`: put the stubs of every `MockApi` into the space named like its namespace; a `MockApi` with another `spec.space` fails with `SyncFailed`. |
 | `watchNamespace` | `""` (all namespaces) | Watch only one namespace; the operator then gets a Role instead of a ClusterRole. |
 | `logLevel` | `info` | Operator log level. |
 | `resources` | requests `50m`/`64Mi`, limits `500m`/`256Mi` | |
@@ -168,6 +169,7 @@ spec:
 | `openapi.pathPrefix` | `""` | Prefix added to every generated path. |
 | `openapi.validateRequests` | `true` | Generated stubs reject requests that violate the document. |
 | `wiremock.inline` or `wiremock.configMapRef` | none | WireMock mappings, JSON or YAML. |
+| `space` | none | [Space](access-control.md#spaces) of the server that the stubs go to; the server's access file must define it. With the operator policy `spaceFromNamespace` the space is always the namespace of the `MockApi`. |
 
 How it is applied:
 
@@ -179,6 +181,9 @@ How it is applied:
   ConfigMaps, or the server (a re-created `FastMock` gets a new UID). Every 5 minutes it re-reads the
   ConfigMaps and checks that the server still has the expected number of stubs (for example after a memory-mode
   server restarted); missing stubs are re-imported.
+- With a space, every import goes to that space (`?space=` on the import calls) and replaces only that space's
+  stubs of the tag; the space's [ownership rules](access-control.md#ownership-of-the-data-plane) apply. Changing
+  the space removes the stubs from the previous one first. `status.space` records where the stubs were applied.
 - Deleting a `MockApi` deletes its stubs. The finalizer `fastmock.franshub.io/stubs` keeps the resource until the removal
   succeeded, as long as the `FastMock` exists; if the server is gone, the finalizer is released without
   cleanup.
@@ -233,7 +238,8 @@ Ready=False SecretNotAllowed: referenced Secrets must carry the label fastmock.f
 | `status.importedStubs` | Stubs imported in the last successful sync. |
 | `status.warnings` | Conversion warnings of the OpenAPI/WireMock importers. |
 | `status.lastSyncTime` | Time of the last successful import. |
-| `status.appliedHash` | Hash of the applied input (spec, ConfigMap contents, server UID). |
+| `status.appliedHash` | Hash of the applied input (spec, ConfigMap contents, server UID, space). |
+| `status.space` | Space the stubs were applied to; absent for the global area. |
 | `status.observedGeneration` | |
 
 | Condition | Status | Reason | Meaning |

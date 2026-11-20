@@ -1,0 +1,272 @@
+use axum::http::StatusCode;
+use fastmock_core::{SpaceFilter, Stub};
+use serde::Deserialize;
+
+use crate::access::{Permission, SpaceDef};
+use crate::admin::{ApiError, ApiResult, bad, not_found, require};
+use crate::auth::Principal;
+use crate::state::AppState;
+
+#[derive(Deserialize, Default, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct SpaceQuery {
+    /// Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+    /// area, or to the caller's only space when it is bound to spaces.
+    pub space: Option<String>,
+}
+
+pub fn known(app: &AppState, space: &str) -> ApiResult<()> {
+    if app.auth.access().space(space).is_none() {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            format!("space {space} not found"),
+        ));
+    }
+    Ok(())
+}
+
+/// What a read (or a deletion that selects existing items) covers: the requested space, everything for a
+/// principal holding the permission globally, otherwise the spaces where it holds the permission.
+pub fn select(
+    app: &AppState,
+    p: &Principal,
+    perm: Permission,
+    requested: Option<&str>,
+) -> ApiResult<SpaceFilter> {
+    if let Some(s) = requested {
+        known(app, s)?;
+        require(p, perm, Some(s))?;
+        return Ok(SpaceFilter::In(vec![s.to_string()]));
+    }
+    if p.permissions.global_has(perm) {
+        return Ok(SpaceFilter::Any);
+    }
+    let list = p.permissions.spaces_with(perm);
+    if list.is_empty() {
+        require(p, perm, None)?;
+    }
+    Ok(SpaceFilter::In(list))
+}
+
+/// The one area a write or a single-entry operation acts on: the requested space, the global area for a
+/// principal holding the permission globally, or the only space of a principal bound to spaces.
+pub fn target(
+    app: &AppState,
+    p: &Principal,
+    perm: Permission,
+    requested: Option<&str>,
+) -> ApiResult<Option<String>> {
+    if let Some(s) = requested {
+        known(app, s)?;
+        require(p, perm, Some(s))?;
+        return Ok(Some(s.to_string()));
+    }
+    if p.permissions.global_has(perm) {
+        return Ok(None);
+    }
+    let mut list = p.permissions.spaces_with(perm);
+    match list.len() {
+        0 => {
+            require(p, perm, None)?;
+            Ok(None)
+        }
+        1 => Ok(list.pop()),
+        _ => Err(bad(format!(
+            "several spaces are bound ({}); set space",
+            list.join(", ")
+        ))),
+    }
+}
+
+/// Access to one existing item that lives in `space`: 404 when the caller cannot even read there, 403
+/// when it can read but lacks `perm`.
+pub fn item(
+    p: &Principal,
+    read: Permission,
+    perm: Permission,
+    space: Option<&str>,
+    what: &str,
+) -> ApiResult<()> {
+    if p.allowed(perm, space) {
+        return Ok(());
+    }
+    if !p.allowed(read, space) {
+        return Err(not_found(what));
+    }
+    require(p, perm, space)
+}
+
+/// Area of a stored key: `(Some(space), rest)` when the key starts with `<space>/` of a configured
+/// space, otherwise `(None, key)`.
+pub fn split_key<'a>(app: &AppState, key: &'a str) -> (Option<&'a str>, &'a str) {
+    if let Some((first, rest)) = key.split_once('/')
+        && app.auth.access().space(first).is_some()
+    {
+        return (Some(first), rest);
+    }
+    (None, key)
+}
+
+pub fn join_key(space: Option<&str>, key: &str) -> String {
+    match space {
+        Some(s) => format!("{s}/{key}"),
+        None => key.to_string(),
+    }
+}
+
+fn under(path: &str, prefix: &str) -> bool {
+    let p = prefix.trim_end_matches('/');
+    p.is_empty() || path == p || path.starts_with(&format!("{p}/"))
+}
+
+/// Ownership rules of a space: with `pathPrefixes`, the URL matcher must be an exact path or a path
+/// template under one of them; with `hosts`, the `Host` matcher must equal one of them.
+pub fn ownership(def: &SpaceDef, stub: &Stub) -> Result<(), String> {
+    let r = &stub.request;
+    let name = &def.name;
+    if !def.path_prefixes.is_empty() {
+        let owned = def.path_prefixes.join(", ");
+        if r.url_pattern.is_some() || r.url_path_pattern.is_some() {
+            return Err(format!(
+                "space {name} owns {owned}: regular expression URL matchers (urlPattern, urlPathPattern) are not allowed there"
+            ));
+        }
+        let paths: Vec<&str> = [
+            r.url
+                .as_deref()
+                .map(|u| u.split(['?', '#']).next().unwrap_or(u)),
+            r.url_path.as_deref(),
+            r.url_path_template.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if paths.is_empty() {
+            return Err(format!(
+                "space {name} owns {owned}: the stub needs a url, urlPath or urlPathTemplate under one of them"
+            ));
+        }
+        for path in paths {
+            if !def.path_prefixes.iter().any(|pre| under(path, pre)) {
+                return Err(format!(
+                    "space {name} owns {owned}: {path} lies outside these prefixes"
+                ));
+            }
+        }
+    }
+    if !def.hosts.is_empty() {
+        let owned = def.hosts.join(", ");
+        let ok = r.host.as_ref().is_some_and(|m| {
+            m.equal_to.as_ref().is_some_and(|h| {
+                let h = h.trim_end_matches('.').to_ascii_lowercase();
+                def.hosts.contains(&h)
+                    && *m
+                        == fastmock_core::model::StringMatcher {
+                            equal_to: m.equal_to.clone(),
+                            case_insensitive: m.case_insensitive,
+                            ..Default::default()
+                        }
+            })
+        });
+        if !ok {
+            return Err(format!(
+                "space {name} owns hosts {owned}: the stub needs request.host with equalTo one of them"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validation of a stub before it is stored: the engine rules and the ownership rules of its space.
+pub fn check_stub(app: &AppState, stub: &Stub) -> Result<(), String> {
+    app.engine.validate(stub)?;
+    if let Some(space) = &stub.space {
+        let def = app
+            .auth
+            .access()
+            .space(space)
+            .ok_or_else(|| format!("space {space} not found"))?;
+        ownership(def, stub)?;
+    }
+    Ok(())
+}
+
+/// Rejects stubs whose id already belongs to a stub in another area, so that an import cannot move or
+/// overwrite stubs of other spaces.
+pub async fn check_ids(app: &AppState, stubs: &[Stub], space: Option<&str>) -> ApiResult<()> {
+    let existing = app.stores.stubs.list().await?;
+    let areas: std::collections::HashMap<uuid::Uuid, Option<&str>> = existing
+        .iter()
+        .map(|s| (s.id, s.space.as_deref()))
+        .collect();
+    for (i, s) in stubs.iter().enumerate() {
+        if let Some(other) = areas.get(&s.id)
+            && *other != space
+        {
+            return Err(ApiError(
+                StatusCode::CONFLICT,
+                format!(
+                    "stubs[{i}]: id {} belongs to a stub in {}",
+                    s.id,
+                    other.map_or("the global area".to_string(), |o| format!("space {o}"))
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn def(prefixes: &[&str], hosts: &[&str]) -> SpaceDef {
+        SpaceDef {
+            name: "payments".into(),
+            description: None,
+            path_prefixes: prefixes.iter().map(|s| s.to_string()).collect(),
+            hosts: hosts.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn stub(request: serde_json::Value) -> Stub {
+        serde_json::from_value(json!({"request": request})).unwrap()
+    }
+
+    #[test]
+    fn ownership_rules() {
+        let d = def(&["/payments/", "/psp"], &[]);
+        for ok in [
+            json!({"urlPath": "/payments/x"}),
+            json!({"url": "/psp/a?b=1"}),
+            json!({"urlPathTemplate": "/payments/{id}"}),
+            json!({"urlPath": "/psp"}),
+        ] {
+            assert!(ownership(&d, &stub(ok.clone())).is_ok(), "{ok}");
+        }
+        for bad in [
+            json!({"urlPath": "/paymentsx"}),
+            json!({"urlPath": "/billing/x"}),
+            json!({"urlPathPattern": "/payments/.*"}),
+            json!({"urlPattern": "/payments/.*"}),
+            json!({"method": "GET"}),
+            json!({"urlPathTemplate": "/{tenant}/payments"}),
+        ] {
+            assert!(ownership(&d, &stub(bad.clone())).is_err(), "{bad}");
+        }
+        assert!(ownership(&def(&[], &[]), &stub(json!({}))).is_ok());
+        let h = def(&[], &["psp.example.com"]);
+        assert!(ownership(&h, &stub(json!({"host": {"equalTo": "PSP.example.com"}}))).is_ok());
+        assert!(ownership(&h, &stub(json!({"host": {"equalTo": "other.example.com"}}))).is_err());
+        assert!(ownership(&h, &stub(json!({"host": {"matches": ".*"}}))).is_err());
+        assert!(
+            ownership(
+                &h,
+                &stub(json!({"host": {"equalTo": "psp.example.com", "contains": "x"}}))
+            )
+            .is_err()
+        );
+        assert!(ownership(&h, &stub(json!({"urlPath": "/x"}))).is_err());
+    }
+}

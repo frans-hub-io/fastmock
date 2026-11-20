@@ -60,6 +60,9 @@ spec:
         {{- end }}
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if include "fastmock.accessEnabled" . }}
+        checksum/access: {{ include (print $.Template.BasePath "/access.yaml") . | sha256sum }}
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -180,6 +183,11 @@ spec:
             - name: admin-tokens
               mountPath: /etc/fastmock/admin
               readOnly: true
+            {{- if include "fastmock.accessEnabled" . }}
+            - name: access
+              mountPath: /etc/fastmock/access
+              readOnly: true
+            {{- end }}
             {{- if .Values.secrets.existingSecret }}
             - name: secrets
               mountPath: /etc/fastmock/secrets
@@ -228,6 +236,14 @@ spec:
               - key: {{ .Values.admin.tokensSecret.key }}
                 path: tokens
             defaultMode: 0440
+        {{- if include "fastmock.accessEnabled" . }}
+        - name: access
+          configMap:
+            name: {{ include "fastmock.fullname" . }}-access
+            items:
+              - key: access.yaml
+                path: access.yaml
+        {{- end }}
         {{- if .Values.secrets.existingSecret }}
         - name: secrets
           secret:

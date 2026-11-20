@@ -76,6 +76,7 @@ pub async fn upgrade(
     let hit = crate::dataplane::StubHit {
         id: r.stub_id,
         name: r.stub_name.clone(),
+        space: r.space.clone(),
     };
     let Some(found) = lookup(app, r.stub_id, Some(cr)) else {
         return error(

@@ -477,6 +477,15 @@
               "maximum": 10000,
               "minimum": 1
             }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Only jobs of this space.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -522,7 +531,19 @@
           "callbacks"
         ],
         "summary": "Delete all callback jobs, including pending ones",
+        "description": "Deletes the jobs of `space`, or of everything the caller may delete.",
         "operationId": "clearCallbacks",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Number of deleted jobs",
@@ -727,6 +748,15 @@
               "type": "integer",
               "minimum": 0
             }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Only runs of this space.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -762,7 +792,19 @@
           "contract-tests"
         ],
         "summary": "Start a contract test run",
+        "description": "The run belongs to the target space (`space` parameter). `secretHeaders` need `contracts:secrets` there; `specRef` reads the global service catalog and needs global `stubs:read`.",
         "operationId": "startContractTest",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -974,6 +1016,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Only stubs of this space.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -1012,6 +1063,17 @@
         ],
         "summary": "List stored body files",
         "operationId": "listFiles",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Files, sorted by name",
@@ -1055,6 +1117,15 @@
             "in": "path",
             "description": "File name, may contain `/`",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -1126,6 +1197,15 @@
             "in": "path",
             "description": "File name: [A-Za-z0-9._-/], at most 512 bytes, no `..`",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -1229,6 +1309,15 @@
             "in": "path",
             "description": "File name",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -1516,6 +1605,15 @@
             "name": "format",
             "in": "query",
             "description": "Force a format instead of detecting it.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space the stubs go to (OpenAPI, WireMock, MockServer, Postman and HAR only).",
             "required": false,
             "schema": {
               "type": "string"
@@ -1993,6 +2091,15 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space the stubs go to.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -2088,7 +2195,19 @@
           "imports"
         ],
         "summary": "Generate stubs from an OpenAPI 3 document",
+        "description": "The stubs go to the target space (`space` parameter); only imports into the global area are recorded in the service catalog.",
         "operationId": "importOpenApi",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2352,8 +2471,19 @@
           "imports"
         ],
         "summary": "Convert WireMock mappings into stubs",
-        "description": "Unsupported parts come back as warnings.",
+        "description": "Unsupported parts come back as warnings. The stubs go to the target space (`space` parameter).",
         "operationId": "importWireMock",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2563,6 +2693,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -2625,6 +2764,15 @@
             "in": "path",
             "description": "Key, 1..512 bytes",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -2693,6 +2841,15 @@
             "in": "path",
             "description": "Key, 1..512 bytes",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -3105,6 +3262,15 @@
               "format": "int64",
               "minimum": 0
             }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Only entries of this space (matched by its stubs).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3150,7 +3316,19 @@
           "requests"
         ],
         "summary": "Clear the request journal",
+        "description": "Deletes the entries of `space`, or of everything the caller may delete.",
         "operationId": "clearRequests",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Number of deleted entries",
@@ -3285,6 +3463,15 @@
               "format": "int64",
               "minimum": 0
             }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Only entries of this space (matched by its stubs).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3331,6 +3518,17 @@
         ],
         "summary": "Count journal entries (filter in the body)",
         "operationId": "countRequestsByFilter",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3429,6 +3627,15 @@
               "maximum": 10000,
               "minimum": 1
             }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Only entries of this space.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -3518,8 +3725,19 @@
           "requests"
         ],
         "summary": "Explain why a request does not match",
-        "description": "Returns the five closest stubs with the matchers that failed.",
+        "description": "Returns the five closest stubs (of `space`, or of the spaces the caller may read) with the matchers that failed.",
         "operationId": "nearMisses",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3633,6 +3851,15 @@
               "format": "int64",
               "maximum": 10000,
               "minimum": 1
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Only entries of this space.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -3927,6 +4154,17 @@
         ],
         "summary": "Current scenario states",
         "operationId": "listScenarios",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Scenarios",
@@ -3960,7 +4198,19 @@
           "scenarios"
         ],
         "summary": "Reset every scenario to Started",
+        "description": "Resets the scenarios of `space`, or of everything the caller may change.",
         "operationId": "resetScenarios",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Number of reset scenarios",
@@ -4013,6 +4263,15 @@
             "in": "path",
             "description": "Scenario name",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -4481,6 +4740,15 @@
             }
           },
           {
+            "name": "space",
+            "in": "query",
+            "description": "Only stubs of this space.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "q",
             "in": "query",
             "required": false,
@@ -4559,7 +4827,19 @@
           "stubs"
         ],
         "summary": "Create a stub",
+        "description": "The stub goes to the space in its `space` field or the `space` parameter; without either, to the global area (or the caller's only space). Stubs in a space with ownership rules must stay inside them.",
         "operationId": "createStub",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4656,12 +4936,21 @@
           "stubs"
         ],
         "summary": "Delete stubs by tag, or all stubs",
-        "description": "Without `tag` every stub is deleted, which needs the admin role.",
+        "description": "Without `tag` every stub (of `space`, when given) is deleted, which needs `stubs:purge` (admin role). With `tag`, the tagged stubs of every space the caller may change, or of `space`, are deleted.",
         "operationId": "deleteStubs",
         "parameters": [
           {
             "name": "tag",
             "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Only stubs of this space.",
             "required": false,
             "schema": {
               "type": "string"
@@ -4715,6 +5004,17 @@
         "summary": "List the shared stub counters",
         "description": "Counters behind `times` and response sequences, shared by all replicas.",
         "operationId": "listStubCounters",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Counters",
@@ -4748,7 +5048,19 @@
           "stubs"
         ],
         "summary": "Reset `times` and response sequence counters",
+        "description": "Resets the counters of the stubs of `space`, or of every stub the caller may change.",
         "operationId": "resetStubCounters",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Number of counters removed",
@@ -4798,6 +5110,17 @@
         ],
         "summary": "Find stubs by metadata (WireMock compatible)",
         "operationId": "findStubsByMetadata",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4857,8 +5180,19 @@
           "stubs"
         ],
         "summary": "Bulk import FastMock stubs",
-        "description": "With `replaceTag`, stubs carrying that tag are deleted first and the tag is added to every imported stub, in one transaction. At most 10000 stubs.",
+        "description": "With `replaceTag`, stubs carrying that tag (in the target space) are deleted first and the tag is added to every imported stub, in one transaction. At most 10000 stubs. Every stub goes to the target space (`space` parameter; without it the global area or the caller's only space).",
         "operationId": "importStubs",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4935,6 +5269,17 @@
         ],
         "summary": "Delete stubs by metadata (WireMock compatible)",
         "operationId": "removeStubsByMetadata",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -5015,6 +5360,15 @@
             "schema": {
               "type": "string",
               "format": "date-time"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Only stubs of this space.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -5165,7 +5519,7 @@
           "stubs"
         ],
         "summary": "Create or replace a stub",
-        "description": "The id in the path wins over an id in the body. The audit log records the changed fields.",
+        "description": "The id in the path wins over an id in the body. The audit log records the changed fields. An existing stub keeps its space; a new one goes to the space given like for `POST /stubs`.",
         "operationId": "putStub",
         "parameters": [
           {
@@ -5176,6 +5530,15 @@
             "schema": {
               "type": "string",
               "format": "uuid"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -5408,6 +5771,17 @@
         "summary": "Verify how often a request was received",
         "description": "Counts journal entries matching `request` (a stub request pattern). Without `count`/`exactly`/`atLeast`/`atMost` the expectation is `atLeast: 1`. Answers 200 when the expectation holds and 422 with the actual count and the closest non-matching requests when it does not.",
         "operationId": "verify",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -5492,6 +5866,17 @@
         "summary": "Verify that requests arrived in a given order",
         "description": "MockServer-style sequence verification over the newest 10000 journal entries passing `source` and `since`. Answers 200 when every pattern was matched by a later request than the previous one, otherwise 422.",
         "operationId": "verifySequence",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -6172,6 +6557,13 @@
               "string",
               "null"
             ]
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Space of the stub that scheduled the callback."
           }
         }
       },
@@ -6420,6 +6812,13 @@
           "detailsHidden": {
             "type": "boolean",
             "description": "True when request/response excerpts, message excerpts and error texts were removed because\nthe caller is a viewer."
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Space the run was started in; absent in the global area."
           }
         }
       },
@@ -6729,6 +7128,13 @@
               "string",
               "null"
             ]
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Space of the file; absent in the global area. `name` is relative to the space."
           }
         }
       },
@@ -7281,6 +7687,13 @@
               "string",
               "null"
             ]
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Space of the stub that matched; absent for unmatched requests and global stubs."
           }
         }
       },
@@ -8660,6 +9073,13 @@
           },
           "state": {
             "type": "string"
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Space of the scenario; absent in the global area."
           }
         }
       },
@@ -9388,6 +9808,13 @@
           "metadata": {},
           "enabled": {
             "type": "boolean"
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Space the stub belongs to (see access control); absent for the global area. Set on create and never\nchanged afterwards."
           },
           "updatedAt": {
             "type": [

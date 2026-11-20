@@ -10,6 +10,9 @@ data:
   FASTMOCK_STORAGE: {{ .Values.storage.mode | quote }}
   FASTMOCK_LOG_FORMAT: {{ .Values.logFormat | quote }}
   FASTMOCK_ADMIN_TOKENS_FILE: /etc/fastmock/admin/tokens
+  {{- if include "fastmock.accessEnabled" . }}
+  FASTMOCK_ACCESS_FILE: /etc/fastmock/access/access.yaml
+  {{- end }}
   {{- if .Values.secrets.existingSecret }}
   FASTMOCK_SECRETS_DIR: /etc/fastmock/secrets
   {{- end }}
