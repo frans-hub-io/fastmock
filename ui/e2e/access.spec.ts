@@ -154,7 +154,7 @@ test('access page: a space viewer sees only its own access', async ({ page }) =>
   const errors = watchConsole(page);
   await login(page, SPACE_VIEWER_TOKEN);
   await page.getByRole('link', { name: 'Access' }).click();
-  await expect(page.getByRole('heading', { name: 'Access' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Access', exact: true })).toBeVisible();
   await expect(page.getByTestId('your-access')).toContainText('pay-viewer');
   await expect(page.getByTestId('your-space-row')).toHaveCount(1);
   await expect(page.getByTestId('your-space-row')).toContainText('payments');
