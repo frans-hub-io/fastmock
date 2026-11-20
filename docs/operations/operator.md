@@ -266,11 +266,17 @@ How it is applied:
   ConfigMaps, or the server (a re-created `FastMock` gets a new UID). Every 5 minutes it re-reads the
   ConfigMaps and checks that the server still has the expected number of stubs; missing stubs are re-imported.
 - With `storage.mode: memory` the stubs live only in the pod, so a new pod (an access ConfigMap edit, a rotated
-  Secret, an image change, a crash) starts empty. The operator follows the server's Deployment: while a rollout
-  is in progress `Synced` is `False` with reason `ServerRestarting`; once only the new, ready pod is left, it
-  imports the stubs again, usually within seconds, and checks the import again 5 seconds later. It recognises a
-  restart by the `instanceId` that the server reports in `GET /__admin/info` and records it in
-  `status.serverInstance`. With `postgres` storage the stubs survive restarts and nothing is re-imported.
+  Secret, an image change, a crash) starts empty. The operator follows the server's Deployment and recognises a
+  server process by the `instanceId` it reports in `GET /__admin/info`. From the start of a rollout or restart
+  until the stubs are confirmed on the new process, `Synced` is `False` with reason `ServerRestarting`. While the
+  Deployment rolls out, the operator waits and records the instance being replaced in `status.replacedInstance`.
+  Once only the new, ready pod is left, it keeps waiting, checking every 5 seconds, as long as the replaced pod
+  still answers the admin Service while it shuts down. When a new instance answers, the operator imports the
+  stubs into it, records it in `status.serverInstance` and checks again 5 seconds later. `Synced` becomes `True`
+  (and `status.replacedInstance` is cleared) only when the answering instance is the one in
+  `status.serverInstance` and it has the expected number of stubs; otherwise the operator imports again. This
+  usually takes a few seconds after the new pod is ready. With `postgres` storage the stubs survive restarts and
+  nothing is re-imported.
 - With a space, every import goes to that space (`?space=` on the import calls) and replaces only that space's
   stubs of the tag; the space's [ownership rules](access-control.md#ownership-of-the-data-plane) apply. Changing
   the space moves the stubs to the new space. `status.space` records where the stubs were applied.
@@ -338,13 +344,14 @@ Ready=False SecretNotAllowed: referenced Secrets must carry the label fastmock.f
 | `status.appliedHash` | Hash of the applied input (spec, ConfigMap contents, server UID, space). |
 | `status.space` | Space the stubs were applied to; absent for the global area. |
 | `status.serverInstance` | Memory storage only: instance id of the server process the stubs were imported into. |
+| `status.replacedInstance` | Memory storage only, during a restart: instance id of the server process being replaced. |
 | `status.observedGeneration` | |
 
 | Condition | Status | Reason | Meaning |
 |---|---|---|---|
 | `Synced` | True | `Synced` | `14 stubs applied with tag team-payments.billing` |
 | `Synced` | False | `ServerNotReady` | The `FastMock` is missing, being deleted or has no ready replica; retried every 15 s. |
-| `Synced` | False | `ServerRestarting` | Memory storage: the server's Deployment is rolling out, so the new pod may not have the stubs yet; they are imported when the rollout finishes. |
+| `Synced` | False | `ServerRestarting` | Memory storage: the server is rolling out or restarted, so the new process may not have the stubs yet. It stays until the stubs are imported into the new process and confirmed there. |
 | `Synced` | False | `SyncFailed` | The import failed: invalid stub, unparsable document, missing ConfigMap or key, admin API error. The message tells which. |
 | `Synced` | False | `SpaceNotFound` | `spec.space` (or the namespace with `spaceFromNamespace`) is not defined in the server's access file; the stubs applied before are left unchanged. |
 

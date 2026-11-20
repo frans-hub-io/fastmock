@@ -202,6 +202,12 @@ curl -s localhost:9090/__admin/kv/feature-flags -H "Authorization: Bearer $FASTM
 
 Values are strings; store JSON as a string as above. Keys are 1 to 512 bytes and values up to 1 MiB.
 
+With [spaces](../operations/access-control.md#spaces), scenario states and key-value entries belong to a space.
+`/kv/{key}` and `PUT /scenarios/{name}` address one entry and pick the space like writes, also for reads: a
+principal bound to one space uses that space, a principal with the permission globally uses the global area, and
+a principal bound to several spaces must pass `?space=` (otherwise `400`), for example
+`GET /__admin/kv/feature-flags?space=billing`.
+
 ## Where state lives
 
 | Data | Memory mode | PostgreSQL + Valkey mode |

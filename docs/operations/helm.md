@@ -44,6 +44,7 @@ connection settings.
 
 ```sh
 fastmock hash-token --generate          # or: docker run --rm fastmock:0.1.0 hash-token --generate
+CI_HASH=$(fastmock hash-token "$CI_TOKEN")   # an existing token: prints only the hex hash
 kubectl -n mocks create secret generic fastmock-admin-tokens \
   --from-literal=tokens="$(printf 'ci:editor:%s\nops:admin:%s\ngrafana:viewer:%s\n' "$CI_HASH" "$OPS_HASH" "$VIEW_HASH")"
 ```

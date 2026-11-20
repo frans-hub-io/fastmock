@@ -54,7 +54,7 @@ everywhere.
 | `contracts:read` | `GET /contract-tests`, `/contract-tests/{id}` (verdicts) | space |
 | `contracts:details` | request and response excerpts and error texts of contract test results | space |
 | `contracts:write` | `POST /contract-tests`, `DELETE /contract-tests/{id}` | space |
-| `contracts:secrets` | `secretHeaders` in `POST /contract-tests` | space |
+| `contracts:secrets` | `secretHeaders` in `POST /contract-tests` | global (the secrets of `FASTMOCK_CONTRACT_SECRETS` are server-wide); the access file refuses it in space bindings |
 | `info:read` | `GET /info`, `/version`, `/plugins`, `/spaces` | global, implied by any binding |
 | `audit:read` | `GET /audit` | global |
 | `system:reset` | `POST /reset` | global |
@@ -87,8 +87,9 @@ The built-in roles cannot be redefined.
 
 `FASTMOCK_ACCESS_FILE` names a YAML file with custom roles, spaces and bindings. It is read once at start-up,
 like the token file; change it and restart (with Helm, `helm upgrade` rolls the pods). A file with an error stops
-the server, and the message names the entry, for example
-``access file /etc/fastmock/access/access.yaml: roles[0] (stub-author): unknown permission `stubs:wrte` ``.
+the server with a one-line message that names the file and the entry, for example
+``access file /etc/fastmock/access/access.yaml: roles[0] (stub-author): unknown permission `stubs:wrte` `` or
+`access file /etc/fastmock/access/access.yaml: bindings[3] (token:nosuch): ...` for a binding of an unknown token.
 
 ```yaml
 roles:
@@ -141,23 +142,25 @@ leave its role empty: `ci-billing::<sha256>`. Such an entry needs at least one `
 
 A principal is allowed a permission in a space when one of its bindings grants it globally, or grants it in that
 space and the permission is a space permission. A binding of `admin` in a space therefore grants every space
-permission there but none of the global ones (`stubs:purge`, `system:reset`, `audit:read` and so on).
+permission there but none of the global ones (`stubs:purge`, `system:reset`, `audit:read`, `contracts:secrets`
+and so on).
 `info:read` comes with any binding.
 
 ## Managed tokens
 
 Besides the static entries of `FASTMOCK_ADMIN_TOKENS`, tokens can be created and revoked through the admin API
 without a restart. A managed token has a name, one role (built-in or custom) and a scope: global or a list of
-spaces. Its expiry is mandatory.
+spaces. Its expiry is mandatory. Managed tokens need authentication: while `FASTMOCK_AUTH_DISABLED=true`, they
+cannot be created or revoked.
 
 ```sh
 curl -s -X POST localhost:9090/__admin/tokens -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H 'content-type: application/json' \
-  -d '{"name": "ci-billing", "role": "editor", "spaces": ["billing"], "expiresInDays": 30, "description": "CI of the billing team"}'
+  -d '{"name": "ci-billing-nightly", "role": "editor", "spaces": ["billing"], "expiresInDays": 30, "description": "CI of the billing team"}'
 ```
 
 ```json
-{"token": "fm_3f9c...", "id": "019a8f1e-...", "name": "ci-billing", "role": "editor", "spaces": ["billing"],
+{"token": "fm_3f9c...", "id": "019a8f1e-...", "name": "ci-billing-nightly", "role": "editor", "spaces": ["billing"],
  "global": false, "description": "CI of the billing team", "createdBy": "ops", "createdAt": "2026-11-20T09:00:00Z",
  "expiresAt": "2026-12-20T09:00:00Z", "lastUsedAt": null, "revokedAt": null, "status": "active"}
 ```
@@ -186,7 +189,7 @@ response; FastMock stores its SHA-256 hash. Store it in your secret manager righ
 every permission the role grants there: for a global token, globally; for a token in space `s`, the space
 permissions of the role in `s`. A token therefore never holds more than its creator, and a caller bound only to
 spaces cannot create a global token. A denial names the first missing permission:
-`403 {"error":"requires permission contracts:secrets in space billing to grant role admin there",...,"required":"contracts:secrets"}`.
+`403 {"error":"forbidden","details":["requires permission files:write in space billing to grant role editor there"],"required":"files:write"}`.
 The built-in `editor` role lacks `tokens:write`; to let a team manage its own tokens, bind a custom role with
 `tokens:read` and `tokens:write` in its space:
 
@@ -310,8 +313,9 @@ asking the user to confirm:
 ```
 
 The ID token is kept only in the session record in the hot store and leaves the server only in this URL, which
-goes to the browser that signed in. It is never put in a cookie or logged. Tokens larger than 16 KiB are not kept;
-the logout then goes without the hint and the provider may ask for confirmation. Sessions created by an earlier
+goes to the browser that signed in. It is never put in a cookie or logged. ID tokens up to 64 KiB are accepted at
+sign-in, so users with many groups can sign in; ID tokens larger than 16 KiB are not kept in the session, and the
+logout then goes without the hint and the provider may ask for confirmation. Sessions created by an earlier
 version have no ID token either.
 
 `GET /__admin/auth/config` (no authentication) tells the login page what is available:
@@ -336,14 +340,16 @@ With `FASTMOCK_OIDC_API_AUDIENCE` set, a bearer value that looks like a JWT (thr
 like the ID token, but against that audience, without `nonce` and without `azp` (the token may have been issued to
 another client, for example a CI pipeline using client credentials or a CLI using the device flow). `iat` is
 optional. The username claim falls back to `sub` when absent; the groups claim is read from the token (userinfo is
-not called). Tokens that carry a `nonce` claim (ID tokens) are rejected. The audience must differ from the client
-id: an empty `FASTMOCK_OIDC_API_AUDIENCE`, or one equal to `FASTMOCK_OIDC_CLIENT_ID`, stops the start.
+not called). Tokens that carry a `nonce` claim (ID tokens) are rejected, and so are tokens larger than 64 KiB. The
+audience must differ from the client id: `FASTMOCK_OIDC_API_AUDIENCE` set to an empty value, or to the value of
+`FASTMOCK_OIDC_CLIENT_ID`, stops the start. When the variable is not set at all, bearer JWTs are off.
 
 Precedence: a request with an `Authorization` header is decided by that header alone, in this order: static
 tokens, managed `fm_` tokens, JWTs. The session cookie is used only when there is no `Authorization` header. A
 JWT for a user without bindings answers `403` with
 `"details":["user alice has no access: the access file binds neither user:alice nor any of the user's groups"]`.
-An invalid JWT answers `401` with `WWW-Authenticate: Bearer error="invalid_token"`.
+An invalid JWT answers `401 {"error":"unauthorized","details":["invalid bearer token"]}` with
+`WWW-Authenticate: Bearer error="invalid_token"`.
 
 ### Configuration
 
@@ -356,7 +362,7 @@ An invalid JWT answers `401` with `WWW-Authenticate: Bearer error="invalid_token
 | `FASTMOCK_OIDC_SCOPES` | `openid profile email` | Space- or comma-separated; must include `openid`. |
 | `FASTMOCK_OIDC_USERNAME_CLAIM` | `preferred_username` | Claim (or dotted path) with the user name for `user:` bindings; `sub` (or `oid` with Entra ID) is recommended ([choosing the username claim](#choosing-the-username-claim)). With `email`, sign-in requires `email_verified: true`. |
 | `FASTMOCK_OIDC_GROUPS_CLAIM` | `groups` | Claim (or dotted path such as `realm_access.roles`) with the groups for `group:` bindings: an array of strings or one string. |
-| `FASTMOCK_OIDC_API_AUDIENCE` | none | Enables bearer JWTs on the admin API for this audience. Must not be empty and must differ from the client id. |
+| `FASTMOCK_OIDC_API_AUDIENCE` | none | Enables bearer JWTs on the admin API for this audience; unset, bearer JWTs are off. Set but empty, or equal to the client id, stops the start. |
 | `FASTMOCK_OIDC_CA_FILE` | none | PEM bundle added to the trusted roots for the provider connections. |
 | `FASTMOCK_OIDC_SESSION_TTL` | `8h` | Absolute session lifetime. |
 | `FASTMOCK_OIDC_SESSION_IDLE` | `1h` | Idle timeout. |
@@ -499,7 +505,7 @@ A space is a named partition, named like a Kubernetes namespace (`[a-z0-9]([a-z0
 |---|---|
 | `name` | The space name. |
 | `description` | Optional text, shown by `GET /__admin/spaces`. |
-| `pathPrefixes` | Optional data-plane path prefixes that the space's stubs must stay under ([ownership](#ownership-of-the-data-plane)). |
+| `pathPrefixes` | Optional data-plane path prefixes that the space's stubs must stay under ([ownership](#ownership-of-the-data-plane)). Each must be a plain path starting with `/`: no query, fragment, `.` or `..` segment, encoded slash or backslash (`%2F`, `%5C`) or backslash. |
 | `hosts` | Optional `Host` values the space's stubs must match. |
 
 What belongs to a space:
@@ -518,15 +524,17 @@ What belongs to a space:
   existing state and files need no migration.
 - **Data used by a stub** comes from the stub's space: its scenario states and key-value entries are those of its
   space, and `bodyFileName` is resolved among the files of its space first, then among the global files. A stub
-  never resolves a file, scenario or key of another space, also when the name is built by a template.
+  never resolves a file, scenario or key of another space, also when the name is built by a template. Global
+  body files are therefore shared with every space: keep files that belong to one team in that team's space, and
+  keep only files meant for everyone in the global area.
 - **Contract test runs** carry the space they were started in.
 
 Messages published to Kafka, gRPC descriptors, chaos rules, global settings, recordings, async mocks and the
 service catalog are not scoped. On the data plane every enabled stub competes for a request, except inside the
 paths and hosts that a space owns ([ownership](#ownership-of-the-data-plane)).
 
-A request naming a space that the access file does not define, or a space the caller cannot see (it has no
-global permission and no binding there), answers 404.
+A request naming a space that the access file does not define, or a space the caller cannot see (it holds no
+space permission globally, `info:read` aside, and has no binding there), answers 404.
 
 ## Selecting a space in the API
 
@@ -549,7 +557,7 @@ the global area answers `409` with a generic conflict message.
 | Endpoint | How the space is given |
 |---|---|
 | `POST /stubs` | `space` field of the stub or `space` query parameter (they must agree) |
-| `POST /stubs/import`, `POST /import`, `/import/openapi`, `/import/wiremock`, `/import/postman`, `/import/har`, `/import/mockserver` | `space` query parameter; every imported stub goes to that space, and `replaceTag`/`replace` removes only that space's stubs with the tag |
+| `POST /stubs/import`, `POST /import`, `/import/openapi`, `/import/wiremock`, `/import/postman`, `/import/har`, `/import/mockserver` | `space` query parameter; every imported stub goes to that space, and `replaceTag`/`replace` removes only that space's stubs with the tag. For a space that owns `hosts`, the `host` query parameter sets `request.host` on every imported stub; it defaults to the space's only host and is required when the space owns several |
 | other collection endpoints | `space` query parameter |
 
 Imports into a space are not recorded in the [service catalog](../guide/service-catalog.md), which is global.
@@ -564,8 +572,14 @@ checked on create, update and import (`400` with the reason):
 - with `pathPrefixes`, the stub's URL matcher must be `url`, `urlPath` or `urlPathTemplate` lying under one of
   the prefixes (`/payments/` and `/payments` both allow `/payments/x`, neither allows `/paymentsx`). Regular
   expression matchers (`urlPattern`, `urlPathPattern`) and stubs without a URL matcher are rejected, and so are
-  paths with a `.` or `..` segment, plain or percent-encoded (`/payments/../billing/x`, `/payments/%2E%2E/x`);
+  paths with a `.` or `..` segment, plain or percent-encoded (`/payments/../billing/x`, `/payments/%2E%2E/x`),
+  and paths with an encoded slash or backslash in any case or a raw backslash (`/payments/..%2Fbilling/x`,
+  `/payments/a%5Cb`, `/payments\x`), which a proxy or server that decodes them would read as other segments;
 - with `hosts`, the stub must have a `request.host` matcher with `equalTo` one of the hosts and nothing else.
+
+A space with both `pathPrefixes` and `hosts` needs both: the stub's path must lie under one of the prefixes **and**
+its `request.host` must be one of the hosts. Importers set `request.host` from the `host` query parameter
+([selecting a space](#selecting-a-space-in-the-api)).
 
 The rules apply when a stub is written. Stubs stored before the access file gave the space prefixes or hosts, or
 before it dropped the space, stay stored and keep their space. Each replica logs a warning at start-up for every
@@ -617,8 +631,8 @@ authentication is disabled). Users also get `groups`, the group names from the p
 the principal holds everywhere, `viewer` when it holds less. `stubsLoaded` in the same response counts only the
 stubs the caller can see.
 
-`GET /__admin/spaces` lists the spaces the caller can see (every space for a principal with a global permission,
-otherwise its bound spaces) with the caller's permissions in each:
+`GET /__admin/spaces` lists the spaces the caller can see (every space for a principal that holds a space
+permission globally; `info:read`, which every principal has, does not count; otherwise its bound spaces) with the caller's permissions in each:
 
 ```json
 {"spaces": [{"name": "billing", "pathPrefixes": [], "hosts": [],
@@ -650,16 +664,20 @@ of its own and the server checks every call.
 
 ## Errors
 
+With an access file or OIDC configured, every `403` of the admin API has the same shape,
+`{"error":"forbidden","details":[...],"required":...}`: `details` says what is missing and `required` names the
+missing role or permission where there is one. With static tokens only, `403` bodies are those of earlier versions.
+
 | Response | Meaning |
 |---|---|
 | `403 {"error":"forbidden","details":["requires role editor"],"required":"editor"}` | a principal holding only global built-in roles lacks the permission (as before) |
 | `403 {"error":"forbidden","details":["requires permission files:read"],"required":"files:read"}` | any other principal lacks the permission |
-| `403 {"error":"requires permission stubs:write in space billing","details":[],"required":"stubs:write"}` | the permission is missing in the selected space |
+| `403 {"error":"forbidden","details":["requires permission stubs:write in space billing"],"required":"stubs:write"}` | the permission is missing in the selected space |
 | `400 {"error":"several spaces are bound (billing, payments); set space",...}` | a write without `space` by a principal bound to several spaces |
 | `404 {"error":"space nope not found",...}` | unknown space, or a space the caller cannot see |
 | `409` with a generic conflict message | a stub id that belongs to a stub in another area |
 | `400 {"error":"space payments owns /payments/, /psp/: ...",...}` | a stub outside the space's ownership |
-| `403 {"error":"requires permission ... to grant role ... there",...}` | a token request that would exceed the caller's permissions ([escalation rule](#managed-tokens)) |
+| `403 {"error":"forbidden","details":["requires permission ... to grant role ... there"],"required":...}` | a token request that would exceed the caller's permissions ([escalation rule](#managed-tokens)) |
 | `401 {"error":"unauthorized","details":["token expired"]}` | an expired managed token |
 | `401 {"error":"unauthorized","details":["session expired or unknown: sign in again"]}` | an expired, logged-out or unknown session cookie |
 | `401 {"error":"unauthorized","details":["invalid bearer token"]}` | a JWT that fails validation |
@@ -713,9 +731,13 @@ With Helm, put the same document under the `access` value ([Helm: access control
 ## Upgrade notes
 
 These notes apply when upgrading from a release without access control. Without an access file and without OIDC,
-every endpoint keeps its role, response bodies (including the `403` of `GET /audit` and `POST /reset`) are
-unchanged, and existing stubs, journal entries, state and files stay in the global area. Check the points below
-before rolling out.
+every endpoint keeps its role, response bodies (including every `403`) are unchanged, and existing stubs, journal
+entries, state and files stay in the global area. Check the points below before rolling out.
+
+**403 bodies.** Once an access file or OIDC is configured, every `403` of the admin API reads
+`{"error":"forbidden","details":[...],"required":...}`, also on routes whose `403` had another `error` text before
+([Errors](#errors)). Clients and scripts that match the `error` text of a `403` should read `details` and `required`
+instead.
 
 **Database.** The migrations are additive:
 
@@ -756,8 +778,9 @@ or a route allow-list sits in front of the admin port, allow them when you use O
 answer `404`, except `/auth/config`. The token endpoints `/__admin/tokens*` and `GET /__admin/spaces` need
 authentication like every other admin route.
 
-**Unlisted admin paths.** An admin route without an explicit permission, including an unknown path under
-`/__admin`, now needs `admin`: a non-admin gets `403` there where it got `404` before. Plugin routes under
+**Unlisted admin paths.** With an access file or OIDC configured, an admin route without an explicit permission,
+including an unknown path under `/__admin`, needs `admin`: a non-admin gets `403` there where it got `404` before.
+Without them nothing changes: an unknown path answers `404` to a caller whose role allows the method. Plugin routes under
 `/__admin/plugins/<name>/` keep `viewer` for `GET` and `editor` for other methods.
 
 **Rolling upgrade and rollback.** Upgrade every replica before you add an access file, create spaces or let
@@ -783,4 +806,5 @@ previous version refuses to start with an empty or custom role in a token entry.
    Move their stubs into their space by exporting them
    (`GET /__admin/export?tag=...`), importing them with `?space=<space>` and deleting the global copies.
 4. Clients that read `principal.role` from `/__admin/info` keep working; use `principal.permissions` for new
-   decisions. `403` responses keep `error`, `details` and `required`.
+   decisions. `403` responses carry `error`, `details` and `required`; with an access file or OIDC, `error` is
+   always `forbidden` ([Errors](#errors)).

@@ -59,8 +59,11 @@ migration table is created with `create table if not exists`.
 To keep DDL rights away from the server, or to migrate once per release instead of in every pod:
 
 1. Run `fastmock migrate` with the new image and a user that owns the schema. It reads only the
-   `FASTMOCK_DATABASE_*` variables (URL, password, TLS settings, `FASTMOCK_DATABASE_MIGRATION_TIMEOUT`) and exits
-   with status 0 once the schema is current.
+   `FASTMOCK_DATABASE_*` variables (URL, password, TLS settings, `FASTMOCK_DATABASE_MIGRATION_TIMEOUT`) and
+   `FASTMOCK_LOG_FORMAT`, and exits with status 0 once the schema is current. It logs like the server (JSON by
+   default): one `applied database migration` line per migration with `version`, `name` and `duration_ms`, and
+   ends with a summary line such as `migrations applied (schema version 10): 9 applied (1-10) in 412 ms`, or
+   `migrations applied (schema version 10): none, the schema was up to date`.
 2. Start the server with `FASTMOCK_DATABASE_MIGRATE=skip`. It applies nothing and checks at start-up that every
    migration it needs is applied and unchanged; otherwise it stops with a message such as
    `the database schema is older than this FastMock version expects (version 4): migration(s) 4 (admin queries)

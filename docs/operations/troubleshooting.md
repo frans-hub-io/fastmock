@@ -27,7 +27,7 @@ Contents:
 
 | Response | Cause | Fix |
 |---|---|---|
-| `401 {"error":"unauthorized","details":[]}` | No `Authorization: Bearer <token>` header, unknown token, or a token longer than 512 characters. | Send the header. Compare `fastmock hash-token '<token>'` with the hash in the token entry. A hash made with `echo token \| sha256sum` includes a new line and is wrong; use `printf '%s' token \| sha256sum` or `fastmock hash-token`. |
+| `401 {"error":"unauthorized","details":[]}` | No `Authorization: Bearer <token>` header, unknown token, or a static or managed token longer than 512 characters. | Send the header. Compare `fastmock hash-token '<token>'` with the hash in the token entry. A hash made with `echo token \| sha256sum` includes a new line and is wrong; use `printf '%s' token \| sha256sum` or `fastmock hash-token`. |
 | `401` after a token change | Token files are read at start-up. | Roll the pods ([Rotating tokens](security.md#rotating-tokens)). |
 | `403 {"error":"origin not allowed","details":[]}` | The request has an `Origin` header (a browser, or a tool that adds it) that is neither in `FASTMOCK_ADMIN_ALLOWED_ORIGINS` nor the admin server's own origin. | Add the exact origin (`https://fastmock-admin.example.com`, scheme and port included) to `FASTMOCK_ADMIN_ALLOWED_ORIGINS`. Behind a Gateway, make sure it forwards the original `Host`. Scripts should not send `Origin`. |
 | `403 {"error":"forbidden","details":["requires role editor"],"required":"editor"}` | The token's role is too low for the call. | Use a token with the role named in `required` ([roles](security.md#admin-tokens-and-roles)). |
@@ -55,7 +55,7 @@ The process exits with one line that names the problem:
 | `no admin tokens configured: set FASTMOCK_ADMIN_TOKENS or FASTMOCK_ADMIN_TOKENS_FILE ...` | Configure at least one token or OIDC sign-in. |
 | `OIDC discovery for ... failed: ... points to ..., which is neither the issuer host nor listed in FASTMOCK_OIDC_ALLOWED_HOSTS` | The provider's discovery document names an endpoint on another host: add the host to `FASTMOCK_OIDC_ALLOWED_HOSTS` if you trust it. |
 | `the discovery document names issuer "...", not FASTMOCK_OIDC_ISSUER "..."` | The issuer setting differs from the provider's (often a trailing slash or the realm path): copy the `issuer` value of the discovery document. |
-| `FASTMOCK_OIDC_... ` errors | See [OIDC configuration](configuration.md#oidc-sign-in). `FASTMOCK_OIDC_API_AUDIENCE` must not be empty and must differ from `FASTMOCK_OIDC_CLIENT_ID`. |
+| `FASTMOCK_OIDC_... ` errors | See [OIDC configuration](configuration.md#oidc-sign-in). `FASTMOCK_OIDC_API_AUDIENCE`, when set, must not be empty and must differ from `FASTMOCK_OIDC_CLIENT_ID`; remove the variable to turn bearer JWTs off. |
 | ``space a and space b overlap: path prefix `/pay/` of space a and `/pay/x` of space b; each path belongs to one space`` (or ``... host `x` of space a and `y` of space b; each host belongs to one space``) | Two spaces own overlapping path prefixes or the same host; a host without a port overlaps the same host with any port ([ownership](access-control.md#ownership-of-the-data-plane)). Give each space its own prefixes and hosts. |
 | `admin token entry #2: expected name:role:sha256hex` / `unknown role` / `hash must be a SHA-256 (64 hex chars)` | Fix that entry (counted from 1, file lines after variable entries). |
 | `FASTMOCK_LISTEN and FASTMOCK_ADMIN_LISTEN must differ` | Use two ports. |

@@ -61,7 +61,7 @@ SHA-256 hashes and compares them in constant time. Create a token and its entry 
 
 ```sh
 fastmock hash-token --generate          # prints a new random token and its hash
-fastmock hash-token "$FASTMOCK_TOKEN"   # prints the hash of an existing token
+fastmock hash-token "$FASTMOCK_TOKEN"   # prints only the hex hash of an existing token
 # FASTMOCK_ADMIN_TOKENS=ci:editor:<hash>,dash:viewer:<hash>
 ```
 
@@ -121,7 +121,7 @@ selects data are listed in [Access control](../operations/access-control.md#perm
 | `GET /info`, `/version`, `/plugins`, `/spaces` | viewer (any token) |
 | `GET /settings`, `/stubs/counters`; `PUT /settings`, `DELETE /stubs/counters` | viewer; editor |
 | `GET /contract-tests`, `/contract-tests/{id}` | viewer (verdicts only; details need editor) |
-| `POST /contract-tests`, `DELETE /contract-tests/{id}` | editor; `POST` with `secretHeaders` needs admin |
+| `POST /contract-tests`, `DELETE /contract-tests/{id}` | editor; `POST` with `secretHeaders` needs admin bound globally (`contracts:secrets`) |
 | `POST /reset`, `GET /audit` | admin |
 | `GET /tokens`, `/tokens/{id}`; `POST /tokens`, `GET /tokens/options`, `DELETE /tokens/{id}` | admin (`tokens:read`, `tokens:write`; see [Managed tokens](#managed-tokens)) |
 | `GET /tokens/self`; `DELETE /tokens/{id}` of the calling token itself | the managed token itself |
@@ -144,7 +144,7 @@ Without OIDC configuration they answer `404`, except `/auth/config`.
 # create (the value is shown only once)
 curl -s -X POST localhost:9090/__admin/tokens -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H 'content-type: application/json' \
-  -d '{"name": "ci-billing", "role": "editor", "spaces": ["billing"], "expiresInDays": 30}'
+  -d '{"name": "ci-billing-nightly", "role": "editor", "spaces": ["billing"], "expiresInDays": 30}'
 # list, read one, read your own, revoke
 curl -s localhost:9090/__admin/tokens?status=active -H "Authorization: Bearer $ADMIN_TOKEN"
 curl -s localhost:9090/__admin/tokens/$ID -H "Authorization: Bearer $ADMIN_TOKEN"
@@ -161,7 +161,8 @@ curl -s -X DELETE localhost:9090/__admin/tokens/$ID -H "Authorization: Bearer $A
 | `DELETE /tokens/{id}` | | the metadata with `status: revoked`; every replica rejects the token, and the tokens it created, within 10 seconds |
 
 Who may create, see and revoke which tokens (the escalation rule), expiry, caching and memory-mode behaviour are
-described in [Access control: managed tokens](../operations/access-control.md#managed-tokens).
+described in [Access control: managed tokens](../operations/access-control.md#managed-tokens). Managed tokens
+cannot be created or revoked while `FASTMOCK_AUTH_DISABLED=true`.
 
 ## Errors
 
@@ -173,7 +174,9 @@ Every error from the admin API has the same JSON shape:
 
 `error` is a single human-readable sentence; `details` lists individual problems when there are several (for
 example the mismatches of a failed verification). Some responses add fields: `403` adds `required`, `422` from
-`/verify` adds the actual `count` and `nearMisses`. Errors never contain stack traces, internal paths or database
+`/verify` adds the actual `count` and `nearMisses`. With an access file or OIDC configured, every `403` reads
+`{"error":"forbidden","details":[...],"required":...}`
+([Access control: errors](../operations/access-control.md#errors)). Errors never contain stack traces, internal paths or database
 messages; internal failures answer `500 {"error":"internal error","details":[]}` and are logged with details on the
 server.
 
@@ -310,6 +313,11 @@ rendered on the admin origin.
 | content type | the request's `Content-Type`, default `application/octet-stream`, at most 255 characters |
 
 Every upload and delete is recorded in the audit log (`file.put`, `file.delete`).
+
+With [spaces](../operations/access-control.md#spaces), body files belong to a space. `GET /files` lists like
+other collections, but `/files/{name}` addresses one file and picks the space like a write, also for `GET`: a
+principal bound to several spaces must pass `?space=` (otherwise `400`), for example
+`GET /__admin/files/invoices/42.json?space=billing`.
 
 ## Audit log
 

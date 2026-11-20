@@ -20,6 +20,7 @@ The UI is served by the **admin listener** (`FASTMOCK_ADMIN_LISTEN`, default `0.
 plane:
 
 ```sh
+# hash-token prints only the hex SHA-256 of the token
 FASTMOCK_STORAGE=memory \
 FASTMOCK_ADMIN_TOKENS="me:admin:$(fastmock hash-token "$FASTMOCK_TOKEN")" \
 fastmock serve
@@ -276,8 +277,8 @@ companion artifacts. Editors can delete a service together with its stubs.
 ### Contract tests
 
 Start a run against an imported service or a pasted OpenAPI/AsyncAPI document, with the target URL, the
-operations to test (all by default), headers, secret headers (only with the `contracts:secrets` permission,
-which admins have; header name to secret name, see
+operations to test (all by default), headers, secret headers (only with the global `contracts:secrets` permission,
+which admins bound globally have; header name to secret name, see
 [Contract testing: secrets](contract-testing.md#secrets-and-redaction)) and a per-call timeout. The history lists
 runs with status and passed/total; a run opens per-operation results with the request, the response excerpt, the
 received messages for event APIs, and every validation error. Viewers see the verdict, status code and size of

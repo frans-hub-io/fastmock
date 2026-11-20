@@ -43,7 +43,7 @@ Tokens are random strings; FastMock stores only their SHA-256 hash:
 
 ```sh
 fastmock hash-token --generate      # new token: prints "token: fm_..." and "hash:  ..."
-fastmock hash-token 'existing-token'
+fastmock hash-token 'existing-token'  # prints only the hex hash, ready for a token entry
 ```
 
 Configure entries as `name:role:sha256hex` in `FASTMOCK_ADMIN_TOKENS` or, preferably, one per line in the file
@@ -55,14 +55,17 @@ appears in the audit log, logs and `GET /__admin/info`, so give every client its
 |---|---|
 | `viewer` | Read everything: stubs (with credentials masked, see [Redaction](#redaction)), journal, callbacks, scenarios, key-value entries, imports, recordings, plugins, info, contract-test verdicts; run read-only queries such as request counts and near-miss analysis. |
 | `editor` | Everything a viewer may, plus every change a test makes: stubs, imports, journal and callback cleanup, scenario states, key-value entries, chaos rules, recordings, gRPC descriptors, plugin admin calls. |
-| `admin` | Everything, plus deleting all stubs at once, `POST /__admin/reset`, reading the audit log and starting contract tests that send server-side secrets (`secretHeaders`). |
+| `admin` | Everything, plus deleting all stubs at once, `POST /__admin/reset`, reading the audit log and starting contract tests that send server-side secrets (`secretHeaders`, the global permission `contracts:secrets`; an `admin` bound only in spaces does not get it). |
 
 The roles are sets of permissions; custom roles, spaces and space-limited bindings come from the access file
 ([Access control](access-control.md)). Without it, `GET` and `HEAD` need `viewer`, other methods `editor`, unless an endpoint says otherwise (the
 [Admin API](../guide/admin-api.md) lists the role of each endpoint). Responses: `401 {"error":"unauthorized","details":[]}`
 with `WWW-Authenticate: Bearer` for a missing or wrong token, `403 {"error":"forbidden","details":["requires role editor"],"required":"editor"}`
 for a role that is too low (principals with custom roles or space bindings get the missing permission in `required`
-instead, for example `"required":"files:read"`). Tokens longer than 512 characters are rejected without hashing.
+instead, for example `"required":"files:read"`). With an access file or OIDC configured, every `403` has this
+`forbidden` shape ([Access control: errors](access-control.md#errors)). Static and managed tokens longer than 512
+characters are rejected without hashing; bearer JWTs follow their own limits
+([Access control: bearer JWTs](access-control.md#bearer-jwts-on-the-admin-api)).
 
 Editors can change everything that tests change, including which callbacks go where (within the egress policy).
 Give `editor` to automated test clients and the people who maintain mocks, `viewer` to dashboards and readers,
@@ -71,10 +74,12 @@ tokens bound to a space see and change only that space's stubs, journal, state, 
 tests. Give each space the `pathPrefixes` or `hosts` of its traffic ([ownership](access-control.md#ownership-of-the-data-plane)):
 its stubs then stay inside them, and requests there are answered only by its own and global stubs. Teams that need separate
 recordings, chaos rules, gRPC descriptors or Kafka settings still need separate FastMock instances (the
-[operator](operator.md) makes that cheap).
+[operator](operator.md) makes that cheap). Body files in the global area are shared with every space, because
+stubs fall back to them ([Spaces](access-control.md#spaces)): keep a team's files in the team's space, and keep
+only files meant for every team in the global area.
 
 `FASTMOCK_AUTH_DISABLED=true` turns authentication off for a laptop. The server logs a warning, and the operator
-refuses the variable.
+refuses the variable. [Managed tokens](#managed-tokens) cannot be created or revoked in this mode.
 
 ## Managed tokens
 
@@ -243,7 +248,9 @@ external receivers.
 - Stubs can use a secret only for HMAC signatures of callbacks, only by name, and only if the name is listed in
   `FASTMOCK_STUB_SECRETS`. Templates cannot read secrets at all.
 - Contract tests can send a secret as a header value only if it is listed in `FASTMOCK_CONTRACT_SECRETS`, only to
-  the hosts bound to it there, never to FastMock's own listeners, and only in runs started by an `admin`. A name
+  the hosts bound to it there, never to FastMock's own listeners, and only in runs started by a principal that
+holds `contracts:secrets` globally (the built-in `admin` role bound globally, or a custom role in a global
+binding). A name
   cannot be both a stub secret and a contract secret, so HMAC keys never leave the server. Values of contract
   secrets are masked wherever they appear in stored run results and in the journal
   ([Contract testing](../guide/contract-testing.md#secrets-and-redaction)).

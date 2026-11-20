@@ -10,7 +10,7 @@ The Helm chart and the operator set most of these variables for you; see [Helm c
 
 | Type | Format | Examples |
 |---|---|---|
-| string | as is; an empty or whitespace-only value counts as unset | `fastmock:` |
+| string | as is; an empty or whitespace-only value counts as unset, except `FASTMOCK_OIDC_API_AUDIENCE`, where a set but empty value stops the start | `fastmock:` |
 | list | items separated by commas or new lines; blanks are ignored | `a,b`, `"a\nb"` |
 | boolean | `1`, `true`, `yes`, `on` / `0`, `false`, `no`, `off` (any case) | `true` |
 | duration | an integer followed by `ms`, `s`, `m`, `h` or `d`; no unit means seconds | `250ms`, `30s`, `15m`, `24h`, `7d`, `2` |
@@ -46,7 +46,8 @@ An invalid value stops the server at start-up with a message that names the vari
 | `FASTMOCK_STUB_POLL` | duration | `5s` | Interval of the maintenance loop: reloads stubs when their revision changed (PostgreSQL `LISTEN/NOTIFY` normally reloads them at once, polling is the fallback), refreshes gRPC descriptors, updates the `fastmock_stubs_loaded` and `fastmock_callbacks_pending` gauges, and once a minute applies retention. |
 
 `fastmock migrate` applies the database migrations and exits. It reads only the `FASTMOCK_DATABASE_*` variables
-(URL, password, TLS and migration timeout), so a migration Job needs no Valkey settings.
+(URL, password, TLS and migration timeout) and the logging settings (`FASTMOCK_LOG_FORMAT`, `RUST_LOG`, `OTEL_*`),
+so a migration Job needs no Valkey settings.
 
 ### Storage TLS
 
@@ -88,7 +89,7 @@ shows host, port, database, SSL mode, Valkey address and ACL user only.
 | `FASTMOCK_ADMIN_TOKENS_FILE` | path | none | File with one `name:role:sha256hex` entry per line; blank lines and lines starting with `#` are ignored. Entries from the file and from `FASTMOCK_ADMIN_TOKENS` are combined. |
 | `FASTMOCK_ACCESS_FILE` | path | none | YAML file with custom roles, spaces and bindings, read once at start-up; an invalid file stops the server with a message naming the entry. See [Access control](access-control.md). |
 | `FASTMOCK_TOKENS_MAX_DAYS` | integer | `365` | Longest lifetime of a [managed token](access-control.md#managed-tokens) in days, 1 to 3650. `expiresInDays` above it is rejected; tokens without `expiresInDays` get 90 days (or this value when it is lower). |
-| `FASTMOCK_AUTH_DISABLED` | boolean | `false` | Turns admin authentication off: every caller becomes `anonymous` with the `admin` role and the same-origin exception for browsers is disabled. For a developer laptop only; the server logs a warning at start-up. The operator refuses this variable in `MockServer.spec.env`. |
+| `FASTMOCK_AUTH_DISABLED` | boolean | `false` | Turns admin authentication off: every caller becomes `anonymous` with the `admin` role and the same-origin exception for browsers is disabled. For a developer laptop only; the server logs a warning at start-up. [Managed tokens](access-control.md#managed-tokens) cannot be created or revoked in this mode. The operator refuses this variable in `MockServer.spec.env`. |
 | `FASTMOCK_ADMIN_ALLOWED_ORIGINS` | list | none | Browser origins (exact `scheme://host[:port]`) allowed to call the admin port, for example `https://fastmock-admin.example.com`. Requests without an `Origin` header (curl, test clients) are not affected. A request whose `Origin` equals `http(s)://` plus its own `Host` header is also accepted while authentication is enabled. Anything else gets `403 {"error":"origin not allowed","details":[]}`. |
 
 | Variable | Type | Default | Effect |
@@ -117,7 +118,7 @@ start-up error, and so is combining it with `FASTMOCK_AUTH_DISABLED=true`. See
 | `FASTMOCK_OIDC_SCOPES` | list | `openid profile email` | Space- or comma-separated scopes; must include `openid`. |
 | `FASTMOCK_OIDC_USERNAME_CLAIM` | string | `preferred_username` | Claim with the user name for `user:` bindings; a dotted path reaches into objects. API JWTs without it use `sub`. `sub` (or `oid` with Entra ID) is recommended ([choosing the username claim](access-control.md#choosing-the-username-claim)); with `email`, sign-in requires `email_verified: true`. |
 | `FASTMOCK_OIDC_GROUPS_CLAIM` | string | `groups` | Claim with the groups for `group:` bindings (array of strings or one string); a dotted path such as `realm_access.roles` reaches into objects. Falls back to userinfo at sign-in when the ID token lacks it. |
-| `FASTMOCK_OIDC_API_AUDIENCE` | string | none | Accept JWTs of the provider with this `aud` as bearer tokens on the admin API. An empty value or the client id stops the start; tokens with a `nonce` claim (ID tokens) are rejected. |
+| `FASTMOCK_OIDC_API_AUDIENCE` | string | none | Accept JWTs of the provider with this `aud` as bearer tokens on the admin API; unset, bearer JWTs are off. Set but empty (unlike other strings, see [Value formats](#value-formats)) or equal to the client id, it stops the start; tokens with a `nonce` claim (ID tokens) and tokens larger than 64 KiB are rejected. |
 | `FASTMOCK_OIDC_CA_FILE` | path | none | PEM bundle of extra trusted roots for the provider connections (discovery, JWKS, token, userinfo). |
 | `FASTMOCK_OIDC_SESSION_TTL` | duration | `8h` | Absolute lifetime of a UI session. A session keeps the groups captured at sign-in until it ends. |
 | `FASTMOCK_OIDC_SESSION_IDLE` | duration | `1h` | A session unused for this long ends. |
@@ -191,7 +192,7 @@ always see the original request. See [Security: redaction](security.md#redaction
 | `FASTMOCK_CALLBACK_DENIED_CIDRS` | list | see below | Address ranges that callbacks, proxy stubs and recording never connect to. Checked on literal IPs in the URL and on every address the host name resolves to. Replaces the default list. |
 | `FASTMOCK_OUTBOUND_CA_FILE` | path | unset | PEM bundle of extra CA certificates trusted for outgoing HTTPS (callbacks, proxy stubs, recording, contract tests), in addition to the built-in public roots. Startup fails if the file is missing or holds no certificate. |
 | `FASTMOCK_STUB_SECRETS` | list | none | Names of secrets that stubs may reference in `callbacks[].hmac.secretRef`. Any other name fails the callback with `secret ... is not configured`. Plugins have their own secrets and are not limited by this list. These secrets can never be sent by contract tests. |
-| `FASTMOCK_CONTRACT_SECRETS` | list | none | Secrets that contract tests may send in `secretHeaders`, each bound to the hosts that may receive it: `name=host1\|host2`, for example `petstore-token=petstore.example.com\|*.petstore.example.com`. Hosts are exact names or IP addresses, or `*.suffix` for subdomains. A name may not also appear in `FASTMOCK_STUB_SECRETS`; a malformed entry is a start-up error. Starting a run with `secretHeaders` needs the `admin` role. See [Contract testing: secrets](../guide/contract-testing.md#secrets-and-redaction). |
+| `FASTMOCK_CONTRACT_SECRETS` | list | none | Secrets that contract tests may send in `secretHeaders`, each bound to the hosts that may receive it: `name=host1\|host2`, for example `petstore-token=petstore.example.com\|*.petstore.example.com`. Hosts are exact names or IP addresses, or `*.suffix` for subdomains. A name may not also appear in `FASTMOCK_STUB_SECRETS`; a malformed entry is a start-up error. Starting a run with `secretHeaders` needs the global permission `contracts:secrets` (the `admin` role bound globally). See [Contract testing: secrets](../guide/contract-testing.md#secrets-and-redaction). |
 
 Default `FASTMOCK_CALLBACK_DENIED_CIDRS`: `127.0.0.0/8`, `::1/128`, `::/128`, `::ffff:127.0.0.0/104`,
 `::ffff:169.254.0.0/112`, `::ffff:0.0.0.0/104`, `169.254.0.0/16`, `fe80::/10`, `fd00:ec2::254/128`,
@@ -276,7 +277,7 @@ are read by the SDK. Prometheus metrics are always available on `/metrics`. See
 ```text
 fastmock serve            run the server (the default command)
 fastmock migrate          apply PostgreSQL migrations and exit (uses the FASTMOCK_DATABASE_* variables)
-fastmock hash-token       print the SHA-256 of a token read from the argument or stdin
+fastmock hash-token       print only the hex SHA-256 of a token read from the argument or stdin
 fastmock hash-token --generate   generate a new random token and print it with its hash
 fastmock validate FILE    validate a stub, a list of stubs or {"stubs": [...]} without a server
 fastmock plugins          list compiled-in plugins

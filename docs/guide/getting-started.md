@@ -57,6 +57,12 @@ export FASTMOCK_TOKEN=fm_3c1f...e9a0
 export FASTMOCK_TOKEN_HASH=6b0d...41c2
 ```
 
+For a token you already have, `hash-token` without `--generate` prints only the hex hash:
+
+```sh
+export FASTMOCK_TOKEN_HASH=$(docker run --rm fastmock:0.1.0 hash-token "$FASTMOCK_TOKEN")
+```
+
 ## 3. Start FastMock in memory mode
 
 Memory mode keeps everything in the process: ideal for a laptop or a CI job.
