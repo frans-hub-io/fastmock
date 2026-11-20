@@ -28,20 +28,22 @@
 {{- if and (eq .Values.storage.database.migrations.mode "job") (or .Values.postgresql.enabled .Values.cnpg.enabled) }}
 {{- fail "storage.database.migrations.mode=job needs an external database: the databases installed with the release do not exist yet when the migration Job runs" }}
 {{- end }}
-{{- if and (not .Values.admin.tokensSecret.name) (not .Values.oidc.issuer) }}
+{{- $oidc := .Values.oidc | default dict }}
+{{- $oidcSecret := $oidc.clientSecret | default dict }}
+{{- if and (not .Values.admin.tokensSecret.name) (not $oidc.issuer) }}
 {{- fail "admin.tokensSecret.name or oidc.issuer is required: FastMock never runs without admin authentication" }}
 {{- end }}
-{{- if .Values.oidc.issuer }}
-{{- if not .Values.oidc.clientId }}
+{{- if $oidc.issuer }}
+{{- if not $oidc.clientId }}
 {{- fail "oidc.clientId is required when oidc.issuer is set" }}
 {{- end }}
-{{- if not .Values.oidc.clientSecret.existingSecret }}
+{{- if not $oidcSecret.existingSecret }}
 {{- fail "oidc.clientSecret.existingSecret is required when oidc.issuer is set: a Secret holding the client secret" }}
 {{- end }}
-{{- if not .Values.oidc.redirectUrl }}
+{{- if not $oidc.redirectUrl }}
 {{- fail "oidc.redirectUrl is required when oidc.issuer is set: the public admin URL followed by /__admin/auth/callback" }}
 {{- end }}
-{{- if and .Values.oidc.trustOutboundCA (not .Values.outboundCA.configMap) }}
+{{- if and $oidc.trustOutboundCA (not .Values.outboundCA.configMap) }}
 {{- fail "oidc.trustOutboundCA needs outboundCA.configMap" }}
 {{- end }}
 {{- end }}
@@ -199,7 +201,7 @@ spec:
               mountPath: /etc/fastmock/admin
               readOnly: true
             {{- end }}
-            {{- if .Values.oidc.issuer }}
+            {{- if $oidc.issuer }}
             - name: oidc
               mountPath: /etc/fastmock/oidc
               readOnly: true
@@ -259,12 +261,12 @@ spec:
                 path: tokens
             defaultMode: 0440
         {{- end }}
-        {{- if .Values.oidc.issuer }}
+        {{- if $oidc.issuer }}
         - name: oidc
           secret:
-            secretName: {{ .Values.oidc.clientSecret.existingSecret }}
+            secretName: {{ $oidcSecret.existingSecret }}
             items:
-              - key: {{ .Values.oidc.clientSecret.key }}
+              - key: {{ $oidcSecret.key | default "client-secret" }}
                 path: client-secret
             defaultMode: 0440
         {{- end }}

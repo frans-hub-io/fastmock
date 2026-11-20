@@ -78,9 +78,11 @@ verify-full
 {{- end }}
 
 {{- define "fastmock.accessEnabled" -}}
-{{- if or .Values.access.roles .Values.access.spaces .Values.access.bindings -}}true{{- end -}}
+{{- $access := .Values.access | default dict -}}
+{{- if or $access.roles $access.spaces $access.bindings -}}true{{- end -}}
 {{- end -}}
 
 {{- define "fastmock.accessFile" -}}
-{{- toYaml (dict "roles" .Values.access.roles "spaces" .Values.access.spaces "bindings" .Values.access.bindings) -}}
+{{- $access := .Values.access | default dict -}}
+{{- toYaml (dict "roles" ($access.roles | default list) "spaces" ($access.spaces | default list) "bindings" ($access.bindings | default list)) -}}
 {{- end -}}

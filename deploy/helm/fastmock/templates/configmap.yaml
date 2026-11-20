@@ -12,32 +12,35 @@ data:
   {{- if .Values.admin.tokensSecret.name }}
   FASTMOCK_ADMIN_TOKENS_FILE: /etc/fastmock/admin/tokens
   {{- end }}
-  {{- with .Values.oidc }}
-  {{- if .issuer }}
-  FASTMOCK_OIDC_ISSUER: {{ .issuer | quote }}
-  FASTMOCK_OIDC_CLIENT_ID: {{ .clientId | quote }}
+  {{- $oidc := .Values.oidc | default dict }}
+  {{- if $oidc.issuer }}
+  FASTMOCK_OIDC_ISSUER: {{ $oidc.issuer | quote }}
+  FASTMOCK_OIDC_CLIENT_ID: {{ $oidc.clientId | quote }}
   FASTMOCK_OIDC_CLIENT_SECRET_FILE: /etc/fastmock/oidc/client-secret
-  FASTMOCK_OIDC_REDIRECT_URL: {{ .redirectUrl | quote }}
-  {{- with .scopes }}
+  FASTMOCK_OIDC_REDIRECT_URL: {{ $oidc.redirectUrl | quote }}
+  {{- with $oidc.scopes }}
   FASTMOCK_OIDC_SCOPES: {{ join " " . | quote }}
   {{- end }}
-  {{- with .claims.username }}
+  {{- with dig "claims" "username" "" $oidc }}
   FASTMOCK_OIDC_USERNAME_CLAIM: {{ . | quote }}
   {{- end }}
-  {{- with .claims.groups }}
+  {{- with dig "claims" "groups" "" $oidc }}
   FASTMOCK_OIDC_GROUPS_CLAIM: {{ . | quote }}
   {{- end }}
-  {{- with .apiAudience }}
+  {{- with $oidc.apiAudience }}
   FASTMOCK_OIDC_API_AUDIENCE: {{ . | quote }}
   {{- end }}
-  {{- if .trustOutboundCA }}
+  {{- if $oidc.trustOutboundCA }}
   FASTMOCK_OIDC_CA_FILE: /etc/fastmock/outbound-ca/ca.crt
   {{- end }}
-  FASTMOCK_OIDC_SESSION_TTL: {{ .session.ttl | quote }}
-  FASTMOCK_OIDC_SESSION_IDLE: {{ .session.idle | quote }}
-  {{- with .allowedHosts }}
-  FASTMOCK_OIDC_ALLOWED_HOSTS: {{ join "," . | quote }}
+  {{- with dig "session" "ttl" "" $oidc }}
+  FASTMOCK_OIDC_SESSION_TTL: {{ . | quote }}
   {{- end }}
+  {{- with dig "session" "idle" "" $oidc }}
+  FASTMOCK_OIDC_SESSION_IDLE: {{ . | quote }}
+  {{- end }}
+  {{- with $oidc.allowedHosts }}
+  FASTMOCK_OIDC_ALLOWED_HOSTS: {{ join "," . | quote }}
   {{- end }}
   {{- end }}
   {{- if include "fastmock.accessEnabled" . }}
