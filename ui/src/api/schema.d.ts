@@ -1387,6 +1387,13 @@ export interface components {
              *     ]
              */
             hosts: string[];
+            /**
+             * @description Mail domains whose captured messages go to the space (`*.domain` for subdomains).
+             * @example [
+             *       "billing.example.com"
+             *     ]
+             */
+            mailDomains: string[];
         };
         /**
          * @description The access configuration, read-only: spaces and roles of the access file, its bindings and
@@ -2391,6 +2398,13 @@ export interface components {
             pathPrefixes: string[];
             /** @description Hosts the space's stubs must match (empty: no restriction). */
             hosts: string[];
+            /**
+             * @description Mail domains whose captured messages go to the space (`*.domain` for subdomains).
+             * @example [
+             *       "billing.example.com"
+             *     ]
+             */
+            mailDomains: string[];
             /** @description The caller's effective permissions in the space. */
             permissions: string[];
         };
@@ -2620,7 +2634,10 @@ export interface components {
             version: string;
             /** @description Commit the binary was built from, when the build set `FASTMOCK_GIT_SHA`. */
             gitSha?: string | null;
-            /** @description Compiled-in optional features and capabilities. */
+            /**
+             * @description Compiled-in optional features and capabilities; with the mail module enabled also `mail`, and
+             *     `mail.imap`, `mail.pop3` (when their listeners are on) and `mail.providers`.
+             */
             features: string[];
         };
         WebSocketDef: {

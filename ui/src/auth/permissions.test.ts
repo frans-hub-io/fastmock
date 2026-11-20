@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boundSpaces, can, canInAllSpaces, covers, isAllSpaces, missingText, permissionsOf, seesAllSpaces, tokensOffered, type Permissions } from './permissions';
+import { BUILTIN_ROLES, boundSpaces, can, canInAllSpaces, covers, isAllSpaces, missingText, permissionsOf, roleInSpaces, seesAllSpaces, spaceScoped, tokensOffered, type Permissions } from './permissions';
 import { loginErrorMessage, ssoReturnPath, takeLoginError } from './sso';
 
 const scoped: Permissions = {
@@ -44,6 +44,19 @@ describe('can', () => {
     expect(can(editor, 'stubs:write', null)).toBe(true);
     expect(can(editor, 'audit:read')).toBe(false);
     expect(can(permissionsOf({ name: 'ops', role: 'admin' }), 'system:reset')).toBe(true);
+  });
+
+  it('gives viewers mail:read and editors every mail permission, all space-scoped', () => {
+    expect(BUILTIN_ROLES.viewer).toContain('mail:read');
+    expect(BUILTIN_ROLES.viewer).not.toContain('mail:write');
+    expect(BUILTIN_ROLES.editor).toEqual(expect.arrayContaining(['mail:read', 'mail:write', 'mail:delete']));
+    for (const p of ['mail:read', 'mail:write', 'mail:delete']) expect(spaceScoped(p)).toBe(true);
+    const editor = permissionsOf({ name: 'ci', role: 'editor' });
+    expect(can(editor, 'mail:delete', 'billing')).toBe(true);
+    expect(can(permissionsOf({ name: 'ci', role: 'viewer' }), 'mail:write')).toBe(false);
+    expect(can({ global: [], spaces: { billing: ['mail:*'] } }, 'mail:delete', 'billing')).toBe(true);
+    expect(roleInSpaces(BUILTIN_ROLES.editor)).toBe('editor');
+    expect(roleInSpaces(BUILTIN_ROLES.editor.filter((p) => !p.startsWith('mail:')))).toBe('custom');
   });
 
   it('tells global principals from space-bound ones', () => {

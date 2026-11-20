@@ -732,7 +732,7 @@ describe('tokens in all spaces', () => {
 });
 
 describe('account summary', () => {
-  const VIEWER_GLOBAL = ['stubs:read', 'journal:read', 'files:read', 'recordings:read', 'callbacks:read', 'state:read', 'chaos:read', 'grpc:read', 'contracts:read', 'info:read'];
+  const VIEWER_GLOBAL = ['stubs:read', 'journal:read', 'files:read', 'recordings:read', 'callbacks:read', 'state:read', 'chaos:read', 'grpc:read', 'contracts:read', 'info:read', 'mail:read'];
   const EDITOR_SPACES = [
     'stubs:read',
     'stubs:write',
@@ -748,6 +748,9 @@ describe('account summary', () => {
     'contracts:read',
     'contracts:details',
     'contracts:write',
+    'mail:read',
+    'mail:write',
+    'mail:delete',
   ];
 
   async function badgeFor(p: Principal) {
