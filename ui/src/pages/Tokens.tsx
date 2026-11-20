@@ -9,7 +9,6 @@ import {
   Modal,
   MultiSelect,
   NumberInput,
-  Paper,
   SegmentedControl,
   Select,
   Stack,
@@ -27,7 +26,9 @@ import { confirmAction, useApiMutation } from '../api/mutations';
 import type { components } from '../api/schema';
 import { ALL_SPACES, appliesInSpaces, can as allowed, canInAllSpaces, isAllSpaces } from '../auth/permissions';
 import { useAuth, useCan, useSpace, useSpaceQuery } from '../auth/useAuth';
-import { PageHeader, Time } from '../components/common';
+import { DataTable, PageHeader, Time, ToneBadge } from '../components/common';
+import { docsUrl } from '../lib/docs';
+import type { Tone } from '../lib/ui';
 import { Denied, Permitted } from '../components/Permitted';
 import { ScopeBadges } from '../components/spaces';
 import { EmptyState, ErrorState, LoadingState, NoAccessState, TokensGate } from '../components/States';
@@ -36,7 +37,7 @@ type TokenInfo = components['schemas']['TokenInfo'];
 type TokenOptions = components['schemas']['TokenOptions'];
 type GrantableRole = components['schemas']['GrantableRole'];
 
-const STATUS_COLOR: Record<string, string> = { active: 'green', expired: 'gray', revoked: 'red' };
+const STATUS_TONE: Record<string, Tone> = { active: 'success', expired: 'neutral', revoked: 'danger' };
 const NAME_RE = /^[A-Za-z0-9._@-]{1,128}$/;
 
 function RoleBadge({ role, options }: { role: string; options: TokenOptions | undefined }) {
@@ -382,7 +383,7 @@ function TokensInner() {
           </Permitted>
         }
       />
-      <Group gap="sm" wrap="wrap">
+      <div className="fm-toolbar">
         <SegmentedControl
           value={status}
           onChange={setStatus}
@@ -394,20 +395,29 @@ function TokensInner() {
           ]}
           aria-label="Token status"
         />
-      </Group>
+      </div>
       {list.isLoading ? (
         <LoadingState />
       ) : list.isError ? (
         <ErrorState error={list.error} onRetry={() => void list.refetch()} />
       ) : !list.data?.tokens.length ? (
-        <EmptyState title={status === 'active' ? 'No active tokens' : 'No tokens'} icon={<IconKey size={26} />}>
+        <EmptyState
+          title={status === 'active' ? 'No active tokens' : 'No tokens'}
+          icon={<IconKey size={30} />}
+          docs={{ label: 'Tokens and roles in the operations guide', href: docsUrl('operations/access-control') }}
+          action={
+            allowed(permissions, 'tokens:write') && grantable ? (
+              <Button leftSection={<IconPlus size={16} />} onClick={() => setCreateOpen(true)}>
+                Create a token
+              </Button>
+            ) : undefined
+          }
+        >
           Tokens created here appear in this list{spaces.current ? ` when they are granted in space ${spaces.current}` : ''}. Static tokens from
           FASTMOCK_ADMIN_TOKENS are not listed.
         </EmptyState>
       ) : (
-        <Paper withBorder radius="md">
-          <div className="table-scroll">
-            <Table fz="sm" highlightOnHover miw={1040} data-testid="tokens-table">
+        <DataTable miw={1040} testId="tokens-table">
               <Table.Thead>
                 <Table.Tr>
                   <Table.Th>Name</Table.Th>
@@ -436,28 +446,26 @@ function TokensInner() {
                         </Text>
                       )}
                     </Table.Td>
-                    <Table.Td>
+                    <Table.Td data-label="Role">
                       <RoleBadge role={t.role} options={options.data} />
                     </Table.Td>
-                    <Table.Td>
+                    <Table.Td data-label="Scope">
                       <ScopeBadges global={t.global} spaces={t.spaces} globalLabel="global" />
                     </Table.Td>
-                    <Table.Td className="truncate" maw={160}>
+                    <Table.Td className="truncate" maw={160} data-label="Created by">
                       {t.createdBy}
                     </Table.Td>
-                    <Table.Td>
+                    <Table.Td data-label="Created">
                       <Time at={t.createdAt} />
                     </Table.Td>
-                    <Table.Td>
+                    <Table.Td data-label="Expires">
                       <Time at={t.expiresAt} />
                     </Table.Td>
-                    <Table.Td>
+                    <Table.Td data-label="Last used">
                       <Time at={t.lastUsedAt} />
                     </Table.Td>
-                    <Table.Td>
-                      <Badge color={STATUS_COLOR[t.status] ?? 'gray'} variant="light">
-                        {t.status}
-                      </Badge>
+                    <Table.Td data-label="Status">
+                      <ToneBadge tone={STATUS_TONE[t.status] ?? 'neutral'}>{t.status}</ToneBadge>
                     </Table.Td>
                     <Table.Td>
                       {t.status === 'active' && (
@@ -487,9 +495,7 @@ function TokensInner() {
                   </Table.Tr>
                 ))}
               </Table.Tbody>
-            </Table>
-          </div>
-        </Paper>
+        </DataTable>
       )}
       <CreateTokenModal
         opened={createOpen}

@@ -1,7 +1,9 @@
 import {
+  ActionIcon,
   Anchor,
   Badge,
   Button,
+  Code,
   Drawer,
   Group,
   NumberInput,
@@ -16,7 +18,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
-import { IconPlayerPause, IconPlayerPlay, IconPlus, IconRefresh, IconSearch, IconTrash } from '@tabler/icons-react';
+import { IconActivity, IconPlayerPause, IconPlayerPlay, IconPlus, IconRefresh, IconSearch, IconTrash } from '@tabler/icons-react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
@@ -25,11 +27,14 @@ import { confirmAction, useApiMutation } from '../api/mutations';
 import type { JournalEntry } from '../api/types';
 import { useCan, useSpace, useSpaceQuery } from '../auth/useAuth';
 import { SpaceBadge } from '../components/spaces';
-import { BodyView, Copy, KeyValueTable, MethodBadge, PageHeader, StatusBadge, Time } from '../components/common';
+import { BodyView, Copy, DataTable, DensityToggle, KeyValueTable, MethodBadge, PageHeader, PathText, StatusBadge, Time, ToneBadge } from '../components/common';
 import { EmptyState, ErrorState, LoadingState } from '../components/States';
 import { toCurl } from '../lib/curl';
 import { formatAbsolute, headerValue } from '../lib/format';
+import { docsUrl } from '../lib/docs';
 import { stubFromJournal } from '../lib/stubs';
+import { formatMs } from '../lib/traffic';
+import { useDensity } from '../lib/ui';
 import { defaultDataPlaneBase, storedDataPlaneBase, useUiConfig } from '../api/uiConfig';
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
@@ -43,23 +48,24 @@ export function EntryDetail({ entry }: { entry: JournalEntry }) {
   const curl = toCurl(base, { method: entry.method, path: entry.path, query: entry.query, headers: entry.headers, body: entry.body });
   return (
     <Stack gap="md">
-      <Group gap="xs" wrap="wrap">
-        <MethodBadge method={entry.method} />
-        <StatusBadge status={entry.status} />
-        <Badge color={entry.matched ? 'green' : 'orange'} variant="light">
-          {entry.matched ? 'matched' : 'unmatched'}
-        </Badge>
-        <Badge variant="outline" color="gray">
-          {entry.durationMs} ms
-        </Badge>
-        <Badge variant="outline" color="gray">
-          {entry.source}
-        </Badge>
-      </Group>
-      <Text className="mono" style={{ wordBreak: 'break-all' }}>
-        {entry.path}
-        {entry.query ? `?${entry.query}` : ''}
-      </Text>
+      <Paper withBorder radius="md" p="sm" className="fm-detail-head">
+        <Group gap="sm" wrap="nowrap" align="flex-start">
+          <MethodBadge method={entry.method} />
+          <Text component="div" size="md" fw={600} className="fm-grow">
+            <PathText path={entry.path} query={entry.query} />
+          </Text>
+        </Group>
+        <Group gap="xs" wrap="wrap" mt="sm">
+          <StatusBadge status={entry.status} />
+          <ToneBadge tone={entry.matched ? 'success' : 'warning'}>{entry.matched ? 'matched' : 'unmatched'}</ToneBadge>
+          <Badge variant="outline" color="gray" tt="none">
+            {entry.durationMs} ms
+          </Badge>
+          <Badge variant="outline" color="gray" tt="none">
+            {entry.source}
+          </Badge>
+        </Group>
+      </Paper>
       <Table fz="sm" verticalSpacing={4} withTableBorder>
         <Table.Tbody>
           <Table.Tr>
@@ -176,6 +182,13 @@ export default function Journal() {
   const spaceQ = useSpaceQuery();
   const [params, setParams] = useSearchParams();
   const [live, setLive] = useState(true);
+  const [density, setDensity] = useDensity();
+  const [more, setMore] = useState(false);
+  const can = useCan();
+  const canStub = can('stubs:write');
+  const navigate = useNavigate();
+  const cfg = useUiConfig();
+  const dataBase = storedDataPlaneBase() ?? defaultDataPlaneBase(cfg.data);
   const get = (k: string) => params.get(k) ?? '';
   const [pathPrefix, setPathPrefix] = useState(get('pathPrefix'));
   const [bodyContains, setBodyContains] = useState(get('bodyContains'));
@@ -235,24 +248,17 @@ export default function Journal() {
       <PageHeader
         title="Request journal"
         description="Every request the mock port received, newest first. Sensitive headers and JSON keys are redacted."
+        meta={
+          <span className="fm-live" data-live={live || undefined} data-testid="live-indicator">
+            <span className="fm-live-dot" aria-hidden />
+            {live ? 'Live, refreshing every 2 seconds' : 'Paused'}
+          </span>
+        }
         actions={
           <>
-            <Button
-              variant={live ? 'light' : 'default'}
-              leftSection={live ? <IconPlayerPause size={16} /> : <IconPlayerPlay size={16} />}
-              onClick={() => setLive((v) => !v)}
-              data-testid="live-toggle"
-            >
-              {live ? 'Pause' : 'Resume'}
-            </Button>
-            <Tooltip label="Refresh now">
-              <Button variant="default" onClick={() => void list.refetch()} aria-label="Refresh" px="xs">
-                <IconRefresh size={16} />
-              </Button>
-            </Tooltip>
             {canEdit && (
               <Button
-                variant="light"
+                variant="subtle"
                 color="red"
                 leftSection={<IconTrash size={16} />}
                 onClick={() =>
@@ -267,144 +273,212 @@ export default function Journal() {
                 Clear
               </Button>
             )}
+            <Tooltip label="Refresh now">
+              <ActionIcon variant="default" size="lg" onClick={() => void list.refetch()} aria-label="Refresh">
+                <IconRefresh size={18} />
+              </ActionIcon>
+            </Tooltip>
+            <Button
+              variant={live ? 'light' : 'filled'}
+              leftSection={live ? <IconPlayerPause size={16} /> : <IconPlayerPlay size={16} />}
+              onClick={() => setLive((v) => !v)}
+              data-testid="live-toggle"
+            >
+              {live ? 'Pause' : 'Resume'}
+            </Button>
           </>
         }
       />
-      <Paper withBorder p="sm" radius="md">
-        <Stack gap="xs">
-          <Group gap="sm" wrap="wrap" align="flex-end">
-            <SegmentedControl
-              value={matched}
-              onChange={(v) => setParam('matched', v)}
-              data={[
-                { label: 'All', value: 'all' },
-                { label: 'Matched', value: 'matched' },
-                { label: 'Unmatched', value: 'unmatched' },
-              ]}
-              aria-label="Matched filter"
-            />
-            <Select placeholder="Any method" data={METHODS} value={method} onChange={(v) => setParam('method', v)} clearable w={140} aria-label="Method" />
-            <TextInput
-              placeholder="Path prefix"
-              value={pathPrefix}
-              onChange={(e) => {
-                setPathPrefix(e.currentTarget.value);
-                setParam('pathPrefix', e.currentTarget.value);
-              }}
-              aria-label="Path prefix"
-              style={{ flex: '1 1 180px' }}
-              className="mono"
-            />
-            <TextInput
-              placeholder="Source (stubs, plugin)"
-              value={source}
-              onChange={(e) => {
-                setSource(e.currentTarget.value);
-                setParam('source', e.currentTarget.value);
-              }}
-              aria-label="Source"
-              w={170}
-            />
-          </Group>
-          <Group gap="sm" wrap="wrap" align="flex-end">
-            <TextInput
-              placeholder="Body contains"
-              value={bodyContains}
-              onChange={(e) => {
-                setBodyContains(e.currentTarget.value);
-                setParam('bodyContains', e.currentTarget.value);
-              }}
-              aria-label="Body contains"
-              style={{ flex: '1 1 180px' }}
-            />
-            <TextInput
-              placeholder="Correlation"
-              value={correlation}
-              onChange={(e) => {
-                setCorrelation(e.currentTarget.value);
-                setParam('correlation', e.currentTarget.value);
-              }}
-              aria-label="Correlation"
-              w={180}
-            />
-            <TextInput type="datetime-local" value={since} onChange={(e) => setParam('since', e.currentTarget.value)} aria-label="Since" w={210} />
-            <NumberInput value={limit} onChange={(v) => setParam('limit', String(v || 200))} min={1} max={10000} w={100} aria-label="Limit" />
-          </Group>
-        </Stack>
-      </Paper>
+      <div className="fm-toolbar">
+        <SegmentedControl
+          value={matched}
+          onChange={(v) => setParam('matched', v)}
+          data={[
+            { label: 'All', value: 'all' },
+            { label: 'Matched', value: 'matched' },
+            { label: 'Unmatched', value: 'unmatched' },
+          ]}
+          aria-label="Matched filter"
+        />
+        <Select placeholder="Any method" data={METHODS} value={method} onChange={(v) => setParam('method', v)} clearable w={140} aria-label="Method" />
+        <TextInput
+          placeholder="Path prefix"
+          leftSection={<IconSearch size={16} />}
+          value={pathPrefix}
+          onChange={(e) => {
+            setPathPrefix(e.currentTarget.value);
+            setParam('pathPrefix', e.currentTarget.value);
+          }}
+          aria-label="Path prefix"
+          className="fm-grow"
+          classNames={{ input: 'mono' }}
+        />
+        <TextInput
+          placeholder="Source (stubs, plugin)"
+          value={source}
+          onChange={(e) => {
+            setSource(e.currentTarget.value);
+            setParam('source', e.currentTarget.value);
+          }}
+          aria-label="Source"
+          w={170}
+        />
+        <DensityToggle value={density} onChange={setDensity} />
+        <Button variant="default" className="fm-more-toggle" onClick={() => setMore((m) => !m)} aria-expanded={more}>
+          {more ? 'Fewer filters' : 'More filters'}
+        </Button>
+        <div className="fm-toolbar-break" />
+        <TextInput
+          placeholder="Body contains"
+          value={bodyContains}
+          onChange={(e) => {
+            setBodyContains(e.currentTarget.value);
+            setParam('bodyContains', e.currentTarget.value);
+          }}
+          aria-label="Body contains"
+          className="fm-grow fm-more"
+          data-open={more || undefined}
+        />
+        <TextInput
+          placeholder="Correlation"
+          value={correlation}
+          onChange={(e) => {
+            setCorrelation(e.currentTarget.value);
+            setParam('correlation', e.currentTarget.value);
+          }}
+          aria-label="Correlation"
+          w={180}
+          className="fm-more"
+          data-open={more || undefined}
+        />
+        <TextInput type="datetime-local" value={since} onChange={(e) => setParam('since', e.currentTarget.value)} aria-label="Since" w={210} className="fm-more" data-open={more || undefined} />
+        <NumberInput value={limit} onChange={(v) => setParam('limit', String(v || 200))} min={1} max={10000} w={100} aria-label="Limit" className="fm-more" data-open={more || undefined} />
+      </div>
 
       {list.isLoading ? (
         <LoadingState />
       ) : list.isError ? (
         <ErrorState error={list.error} onRetry={() => void list.refetch()} />
       ) : !list.data?.requests.length ? (
-        <EmptyState title="No requests yet">Requests to the mock port appear here {live ? 'within two seconds' : 'when you resume live updates'}.</EmptyState>
+        <EmptyState
+          title={params.toString() && params.toString() !== `id=${selectedId ?? ''}` ? 'No requests match the filters' : 'No requests yet'}
+          icon={<IconActivity size={30} />}
+          docs={{ label: 'Getting started with FastMock', href: docsUrl('guide/getting-started') }}
+        >
+          <Stack gap="xs" align="center">
+            <span>Requests to the mock port appear here {live ? 'within two seconds' : 'when you resume live updates'}. Try one:</span>
+            <Group gap={4} wrap="nowrap" className="fm-cmd">
+              <Code className="fm-cmd-code">{`curl -i ${dataBase.replace(/\/+$/, '')}/hello`}</Code>
+              <Copy value={`curl -i ${dataBase.replace(/\/+$/, '')}/hello`} label="Copy command" />
+            </Group>
+          </Stack>
+        </EmptyState>
       ) : (
-        <Paper withBorder radius="md">
-          <div className="table-scroll">
-            <Table highlightOnHover fz="sm" verticalSpacing={6} miw={820} data-testid="journal-table">
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th>When</Table.Th>
-                  <Table.Th>Method</Table.Th>
-                  <Table.Th>Path</Table.Th>
-                  <Table.Th>Status</Table.Th>
-                  <Table.Th>Match</Table.Th>
-                  <Table.Th>Time</Table.Th>
-                  <Table.Th>Source</Table.Th>
-                  {spaces.enabled && <Table.Th>Space</Table.Th>}
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                {list.data.requests.map((r) => (
-                  <Table.Tr
-                    key={r.id}
-                    className="clickable-row"
-                    tabIndex={0}
-                    aria-label={`${r.method} ${r.path} ${r.status}`}
-                    onClick={() => setParam('id', String(r.id))}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        setParam('id', String(r.id));
-                      }
-                    }}
-                    data-testid="journal-row"
-                  >
-                    <Table.Td>
-                      <Time at={r.at} />
-                    </Table.Td>
-                    <Table.Td>
-                      <MethodBadge method={r.method} />
-                    </Table.Td>
-                    <Table.Td className="mono" maw={420} style={{ wordBreak: 'break-all' }}>
-                      {r.path}
-                      {r.query ? <Text span c="dimmed" inherit>{`?${r.query}`}</Text> : null}
-                    </Table.Td>
-                    <Table.Td>
-                      <StatusBadge status={r.status} />
-                    </Table.Td>
-                    <Table.Td>
-                      <Badge size="sm" color={r.matched ? 'green' : 'orange'} variant="dot">
-                        {r.matched ? 'matched' : 'unmatched'}
-                      </Badge>
-                    </Table.Td>
-                    <Table.Td>{r.durationMs} ms</Table.Td>
-                    <Table.Td>{r.source}</Table.Td>
-                    {spaces.enabled && (
-                      <Table.Td>
-                        <SpaceBadge space={r.space} />
-                      </Table.Td>
+        <DataTable
+          testId="journal-table"
+          miw={880}
+          density={density}
+          footer={
+            <Text size="xs" c="dimmed">
+              Showing {list.data.requests.length} entries{live ? ' · live' : ' · paused'}
+            </Text>
+          }
+        >
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>When</Table.Th>
+              <Table.Th>Request</Table.Th>
+              <Table.Th>Status</Table.Th>
+              <Table.Th>Match</Table.Th>
+              <Table.Th>Duration</Table.Th>
+              <Table.Th>Source</Table.Th>
+              {spaces.enabled && <Table.Th>Space</Table.Th>}
+              <Table.Th w={84}>
+                <span className="sr-only">Actions</span>
+              </Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {list.data.requests.map((r) => (
+              <Table.Tr
+                key={r.id}
+                className={`clickable-row ${String(r.id) === selectedId ? 'fm-row-selected' : ''}`}
+                tabIndex={0}
+                aria-label={`${r.method} ${r.path} ${String(r.status)}`}
+                onClick={() => setParam('id', String(r.id))}
+                onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget) return;
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setParam('id', String(r.id));
+                  }
+                }}
+                data-testid="journal-row"
+              >
+                <Table.Td data-label="When">
+                  <Time at={r.at} />
+                </Table.Td>
+                <Table.Td>
+                  <Group gap={8} wrap="nowrap">
+                    <MethodBadge method={r.method} />
+                    <PathText path={r.path} query={r.query} />
+                  </Group>
+                </Table.Td>
+                <Table.Td data-label="Status">
+                  <StatusBadge status={r.status} />
+                </Table.Td>
+                <Table.Td data-label="Match">
+                  <ToneBadge tone={r.matched ? 'success' : 'warning'}>{r.matched ? 'matched' : 'unmatched'}</ToneBadge>
+                </Table.Td>
+                <Table.Td data-label="Duration" className="tabular">
+                  {formatMs(r.durationMs)}
+                </Table.Td>
+                <Table.Td data-label="Source">
+                  <span className="fm-chip">{r.source}</span>
+                </Table.Td>
+                {spaces.enabled && (
+                  <Table.Td data-label="Space">
+                    <SpaceBadge space={r.space} />
+                  </Table.Td>
+                )}
+                <Table.Td data-empty={!canStub && r.matched ? true : undefined}>
+                  <Group gap={2} wrap="nowrap" justify="flex-end" className="fm-row-actions">
+                    {!r.matched && (
+                      <Tooltip label="Explain with near misses">
+                        <ActionIcon
+                          variant="subtle"
+                          color="gray"
+                          aria-label={`Explain ${r.method} ${r.path}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void navigate(`/near-misses?id=${String(r.id)}`);
+                          }}
+                        >
+                          <IconSearch size={16} />
+                        </ActionIcon>
+                      </Tooltip>
                     )}
-                  </Table.Tr>
-                ))}
-              </Table.Tbody>
-            </Table>
-          </div>
-          <Text size="xs" c="dimmed" p="sm">
-            Showing {list.data.requests.length} entries{live ? ' · live' : ' · paused'}
-          </Text>
-        </Paper>
+                    {canStub && (
+                      <Tooltip label="Create stub from this request">
+                        <ActionIcon
+                          variant="subtle"
+                          color="gray"
+                          aria-label={`Create stub from ${r.method} ${r.path}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void navigate('/stubs/new', { state: { stub: { ...stubFromJournal(r), ...(r.space ? { space: r.space } : {}) } } });
+                          }}
+                        >
+                          <IconPlus size={16} />
+                        </ActionIcon>
+                      </Tooltip>
+                    )}
+                  </Group>
+                </Table.Td>
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </DataTable>
       )}
       <Drawer opened={!!selectedId} onClose={() => setParam('id', null)} position="right" size="xl" title="Request detail">
         {selected ? <EntryDetail entry={selected} /> : single.isError ? <ErrorState error={single.error} /> : <LoadingState />}

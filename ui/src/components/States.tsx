@@ -1,8 +1,9 @@
-import { Alert, Button, Center, Group, Loader, Stack, Text, ThemeIcon } from '@mantine/core';
-import { IconAlertTriangle, IconInbox, IconLock, IconPlugConnectedX } from '@tabler/icons-react';
-import type { ReactNode } from 'react';
+import { Alert, Anchor, Button, Center, Group, Loader, Stack, Text, ThemeIcon } from '@mantine/core';
+import { IconAlertTriangle, IconBook2, IconInbox, IconLock, IconPlugConnectedX } from '@tabler/icons-react';
+import { useId, type ReactNode } from 'react';
 import { ApiError, errorMessage, isForbidden, isNotFound } from '../api/http';
 import { useFeature, useTokensApi } from '../api/features';
+import classes from './States.module.css';
 
 export function LoadingState({ label = 'Loading…' }: { label?: string }) {
   return (
@@ -57,18 +58,90 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
   );
 }
 
-export function EmptyState({ title, children, icon }: { title: string; children?: ReactNode; icon?: ReactNode }) {
+/** A self-made illustration from the brand's shapes: two slanted cards (the monogram's italic), a gold dot. */
+function Illustration({ icon }: { icon: ReactNode }) {
+  const id = useId().replace(/:/g, '');
   return (
-    <Center py={48}>
-      <Stack align="center" gap="xs" maw={460}>
-        <ThemeIcon variant="light" size={48} radius="xl" color="gray">
-          {icon ?? <IconInbox size={26} />}
-        </ThemeIcon>
-        <Text fw={600}>{title}</Text>
+    <div className={classes.art} aria-hidden>
+      <svg viewBox="0 0 160 120" width="160" height="120" focusable="false">
+        <defs>
+          <linearGradient id={`${id}f`} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" className={classes.fransA} />
+            <stop offset="1" className={classes.fransB} />
+          </linearGradient>
+          <linearGradient id={`${id}h`} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" className={classes.hubA} />
+            <stop offset="1" className={classes.hubB} />
+          </linearGradient>
+        </defs>
+        <ellipse cx="80" cy="66" rx="72" ry="46" className={classes.blob} />
+        <g transform="skewX(-10) translate(14 0)">
+          <rect x="36" y="22" width="70" height="56" rx="10" className={classes.back} />
+          <rect x="50" y="36" width="74" height="58" rx="11" fill={`url(#${id}f)`} />
+          <rect x="60" y="76" width="30" height="5" rx="2.5" className={classes.line} />
+          <rect x="94" y="76" width="16" height="5" rx="2.5" className={classes.lineSoft} />
+        </g>
+        <circle cx="134" cy="28" r="9" fill={`url(#${id}h)`} />
+        <circle cx="26" cy="92" r="5" className={classes.dot} />
+        <circle cx="146" cy="88" r="3" className={classes.dot} />
+      </svg>
+      <span className={classes.artIcon}>{icon}</span>
+    </div>
+  );
+}
+
+/**
+ * What a screen shows when it has nothing to list: an illustration, the title, one line of explanation, the
+ * primary action and, optionally, where the documentation explains more.
+ */
+export function EmptyState({
+  title,
+  children,
+  icon,
+  action,
+  docs,
+  compact,
+  testId,
+}: {
+  title: string;
+  children?: ReactNode;
+  icon?: ReactNode;
+  action?: ReactNode;
+  docs?: { label: string; href: string };
+  compact?: boolean;
+  testId?: string;
+}) {
+  const glyph = icon ?? <IconInbox size={26} />;
+  return (
+    <Center py={compact ? 'md' : 40} data-testid={testId}>
+      <Stack align="center" gap={compact ? 6 : 'xs'} maw={480}>
+        {compact ? (
+          <ThemeIcon variant="light" size={44} radius="xl" color="fhPurple">
+            {glyph}
+          </ThemeIcon>
+        ) : (
+          <Illustration icon={glyph} />
+        )}
+        <Text fw={700} size={compact ? 'sm' : 'lg'} ta="center">
+          {title}
+        </Text>
         {children && (
           <Text c="dimmed" size="sm" ta="center" component="div">
             {children}
           </Text>
+        )}
+        {action && (
+          <Group gap="xs" justify="center" mt={compact ? 4 : 'xs'}>
+            {action}
+          </Group>
+        )}
+        {docs && (
+          <Anchor href={docs.href} target="_blank" rel="noopener noreferrer" size="xs" mt={4}>
+            <Group gap={4} wrap="nowrap">
+              <IconBook2 size={14} aria-hidden />
+              {docs.label}
+            </Group>
+          </Anchor>
         )}
       </Stack>
     </Center>
