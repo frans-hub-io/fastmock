@@ -185,6 +185,18 @@ fn oidc_problem(spec: &FastMockSpec) -> Option<&'static str> {
         Some(
             "oidc.redirectUrl must be the public https admin URL followed by /__admin/auth/callback",
         )
+    } else if o
+        .api_audience
+        .as_deref()
+        .is_some_and(|a| a.trim().is_empty())
+    {
+        Some("oidc.apiAudience must not be empty: remove it to turn bearer JWTs off")
+    } else if o
+        .api_audience
+        .as_deref()
+        .is_some_and(|a| a.trim() == o.client_id.trim())
+    {
+        Some("oidc.apiAudience must differ from oidc.clientId")
     } else {
         None
     }
@@ -2406,6 +2418,40 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn blank_api_audience_is_refused_with_a_status_reason() {
+        let sso = sso_secret(json!({"client-secret": "b25l"}));
+        let (base, calls) = mock(Arc::new(move |call: &str, body: &Value| {
+            echo_kube(call, body, &sso)
+        }))
+        .await;
+        let ctx = test_ctx(&base);
+        let mut fm = oidc_server("client-secret");
+        if let Some(o) = fm.spec.oidc.as_mut() {
+            o.api_audience = Some(String::new());
+        }
+        reconcile_server_inner(&fm, &ctx).await.unwrap();
+        let st = written_status(&calls, "fastmocks");
+        let ready = condition_of(&st, "Ready");
+        assert_eq!(ready["status"], "False", "{st}");
+        assert_eq!(ready["reason"], "InvalidSpec", "{st}");
+        assert!(
+            ready["message"]
+                .as_str()
+                .unwrap()
+                .contains("oidc.apiAudience must not be empty"),
+            "{st}"
+        );
+        assert!(
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(c, _)| !c.contains("/deployments/")),
+            "no Deployment may be applied"
+        );
+    }
+
     async fn applied_checksum(secret_value_b64: &str) -> String {
         let sso = sso_secret(json!({"client-secret": secret_value_b64}));
         let (base, calls) = mock(Arc::new(move |call: &str, body: &Value| {
@@ -2509,5 +2555,33 @@ mod tests {
         ] {
             assert!(oidc_problem(&with(bad)).is_some());
         }
+    }
+
+    #[test]
+    fn blank_api_audience_is_refused() {
+        let ok = crate::crd::OidcSpec {
+            issuer: "https://sso.example.com/realms/mocks".into(),
+            client_id: "fastmock".into(),
+            redirect_url: "https://mock-admin.example.com/__admin/auth/callback".into(),
+            ..Default::default()
+        };
+        let with = |aud: &str| FastMockSpec {
+            oidc: Some(crate::crd::OidcSpec {
+                api_audience: Some(aud.into()),
+                ..ok.clone()
+            }),
+            ..Default::default()
+        };
+        for blank in ["", "  "] {
+            assert_eq!(
+                oidc_problem(&with(blank)),
+                Some("oidc.apiAudience must not be empty: remove it to turn bearer JWTs off")
+            );
+        }
+        assert_eq!(
+            oidc_problem(&with("fastmock")),
+            Some("oidc.apiAudience must differ from oidc.clientId")
+        );
+        assert!(oidc_problem(&with("fastmock-api")).is_none());
     }
 }

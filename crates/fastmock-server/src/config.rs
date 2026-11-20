@@ -355,6 +355,16 @@ fn env(name: &str) -> Option<String> {
         .filter(|v| !v.trim().is_empty())
 }
 
+/// Like [`env`], except that `FASTMOCK_OIDC_API_AUDIENCE` keeps a blank value, so that a set but
+/// empty audience stops the start instead of silently turning bearer JWTs off.
+fn oidc_env(name: &str) -> Option<String> {
+    if name == "OIDC_API_AUDIENCE" {
+        std::env::var(format!("FASTMOCK_{name}")).ok()
+    } else {
+        env(name)
+    }
+}
+
 fn list(v: &str) -> Vec<String> {
     v.split([',', '\n'])
         .map(|s| s.trim().to_string())
@@ -738,7 +748,7 @@ impl Config {
             journal_scan_concurrency: parse("JOURNAL_SCAN_CONCURRENCY", 2usize)?.max(1),
             tokens_max_days: parse_tokens_max_days(env("TOKENS_MAX_DAYS").as_deref())?,
             token_cache_ttl: TOKEN_CACHE_TTL,
-            oidc: crate::oidc::settings::from_env(&env)?,
+            oidc: crate::oidc::settings::from_env(&oidc_env)?,
         };
         if cfg.max_inflight_body_bytes < cfg.max_body_bytes {
             bail!("FASTMOCK_MAX_INFLIGHT_BODY_BYTES must be at least FASTMOCK_MAX_BODY_BYTES");

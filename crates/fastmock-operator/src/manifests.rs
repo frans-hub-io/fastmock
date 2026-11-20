@@ -105,7 +105,7 @@ pub fn env_map(name: &str, spec: &FastMockSpec) -> BTreeMap<String, String> {
             ("SESSION_TTL", &o.session_ttl),
             ("SESSION_IDLE", &o.session_idle),
         ] {
-            if let Some(v) = v {
+            if let Some(v) = v.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
                 put(k, v);
             }
         }
@@ -479,5 +479,33 @@ mod tests {
             && m["readOnly"] == true));
         let plain = env_map("m", &FastMockSpec::default());
         assert!(plain.keys().all(|k| !k.starts_with("FASTMOCK_OIDC_")));
+    }
+
+    #[test]
+    fn empty_optional_oidc_values_are_not_put_into_the_env() {
+        let spec = FastMockSpec {
+            oidc: Some(crate::crd::OidcSpec {
+                issuer: "https://sso.example.com/realms/mocks".into(),
+                client_id: "fastmock".into(),
+                redirect_url: "https://mock-admin.example.com/__admin/auth/callback".into(),
+                api_audience: Some(String::new()),
+                username_claim: Some(" ".into()),
+                session_ttl: Some(String::new()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let env = env_map("m", &spec);
+        for k in [
+            "FASTMOCK_OIDC_API_AUDIENCE",
+            "FASTMOCK_OIDC_USERNAME_CLAIM",
+            "FASTMOCK_OIDC_SESSION_TTL",
+        ] {
+            assert!(!env.contains_key(k), "{k}");
+        }
+        assert_eq!(
+            env["FASTMOCK_OIDC_ISSUER"],
+            "https://sso.example.com/realms/mocks"
+        );
     }
 }

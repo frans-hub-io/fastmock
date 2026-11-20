@@ -132,7 +132,10 @@ fn duration(var: &str, v: Option<String>, default: Duration) -> anyhow::Result<D
 /// `FASTMOCK_OIDC_ISSUER` is not set; then no other `FASTMOCK_OIDC_*` variable may be set either.
 pub fn from_env(env: &dyn Fn(&str) -> Option<String>) -> anyhow::Result<Option<OidcSettings>> {
     let Some(issuer) = env("OIDC_ISSUER").map(|s| s.trim().to_string()) else {
-        if let Some(v) = VARS.iter().find(|v| env(v).is_some()) {
+        if let Some(v) = VARS
+            .iter()
+            .find(|v| env(v).is_some_and(|x| !x.trim().is_empty()))
+        {
             bail!("FASTMOCK_{v} is set but FASTMOCK_OIDC_ISSUER is not: OIDC needs an issuer");
         }
         return Ok(None);
@@ -195,7 +198,7 @@ pub fn from_env(env: &dyn Fn(&str) -> Option<String>) -> anyhow::Result<Option<O
     let api_audience = env("OIDC_API_AUDIENCE").map(|s| s.trim().to_string());
     match api_audience.as_deref() {
         Some("") => bail!(
-            "FASTMOCK_OIDC_API_AUDIENCE is empty: set the audience of the API tokens, or leave it unset to refuse bearer JWTs"
+            "FASTMOCK_OIDC_API_AUDIENCE is set but empty: set the audience of the API tokens, or remove the variable to turn bearer JWTs off"
         ),
         Some(a) if a == client_id => bail!(
             "FASTMOCK_OIDC_API_AUDIENCE must differ from FASTMOCK_OIDC_CLIENT_ID: the client id is the audience of ID tokens, which are not API tokens"
@@ -355,7 +358,9 @@ mod tests {
             .filter(|(k, _)| *k != "OIDC_CLIENT_ID")
             .collect();
         assert!(err(&no_id).contains("CLIENT_ID"));
-        assert!(err(&with(&[("OIDC_API_AUDIENCE", " ")])).contains("is empty"));
+        assert!(err(&with(&[("OIDC_API_AUDIENCE", " ")])).contains("is set but empty"));
+        assert!(err(&with(&[("OIDC_API_AUDIENCE", "")])).contains("is set but empty"));
+        assert!(parse(&[("OIDC_API_AUDIENCE", "")]).unwrap().is_none());
         assert!(err(&with(&[("OIDC_API_AUDIENCE", "fastmock")])).contains("must differ"));
         let api = parse(&with(&[("OIDC_API_AUDIENCE", "fastmock-api")]))
             .unwrap()
