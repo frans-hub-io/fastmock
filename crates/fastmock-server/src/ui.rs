@@ -72,6 +72,7 @@ pub fn content_type(path: &str) -> &'static str {
         Some("js" | "mjs") => "text/javascript; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
         Some("json" | "map") => "application/json",
+        Some("webmanifest") => "application/manifest+json",
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
         Some("ico") => "image/x-icon",
@@ -255,6 +256,10 @@ mod tests {
         );
         assert_eq!(content_type("assets/a.CSS"), "text/css; charset=utf-8");
         assert_eq!(content_type("favicon.svg"), "image/svg+xml");
+        assert_eq!(
+            content_type("manifest.webmanifest"),
+            "application/manifest+json"
+        );
         assert_eq!(content_type("index.html"), "text/html; charset=utf-8");
         assert_eq!(content_type("blob"), "application/octet-stream");
     }

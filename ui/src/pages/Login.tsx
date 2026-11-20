@@ -1,9 +1,11 @@
 import { Alert, Anchor, Button, Center, Code, Divider, Paper, PasswordInput, Stack, Text, Title } from '@mantine/core';
-import { IconKey, IconLock, IconLogin2 } from '@tabler/icons-react';
+import { IconKey, IconLogin2 } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Navigate, useLocation } from 'react-router';
 import { errorMessage } from '../api/http';
+import signatureDark from '../assets/brand/FastMock_by_FransHub_dark.svg';
+import signatureLight from '../assets/brand/FastMock_by_FransHub_light.svg';
 import { loginErrorMessage, takeLoginError } from '../auth/sso';
 import { useAuth } from '../auth/useAuth';
 
@@ -65,9 +67,9 @@ export function LoginPage() {
         <form onSubmit={submit} noValidate>
           <Stack gap="md">
             <Stack gap={4} align="center">
-              <IconLock size={34} stroke={1.5} aria-hidden />
-              <Title order={1} size="h2">
-                FastMock
+              <Title order={1} size="h2" lh={1} mb="xs">
+                <img src={signatureLight} alt="FastMock" width={240} height={57} className="fm-signature fm-on-light" />
+                <img src={signatureDark} alt="FastMock" width={240} height={57} className="fm-signature fm-on-dark" />
               </Title>
               <Text c="dimmed" size="sm" ta="center">
                 {sso ? 'Sign in with your organization account or an admin API token' : 'Sign in with an admin API token'}

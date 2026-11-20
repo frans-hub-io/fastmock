@@ -1,11 +1,26 @@
+import { readFileSync } from 'node:fs';
 import { defineConfig } from 'vitest/config';
+import type { Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 
 const admin = process.env.FASTMOCK_ADMIN_URL ?? 'http://127.0.0.1:25090';
 
+/** Ships the OFL texts of the bundled fonts next to the font files in `dist/assets/`. */
+function fontLicenses(): Plugin {
+  return {
+    name: 'fastmock-font-licenses',
+    apply: 'build',
+    generateBundle() {
+      for (const name of ['OFL-NotoSans.txt', 'OFL-JetBrainsMono.txt']) {
+        this.emitFile({ type: 'asset', fileName: `assets/${name}`, source: readFileSync(new URL(`./src/assets/fonts/${name}`, import.meta.url)) });
+      }
+    },
+  };
+}
+
 export default defineConfig({
   base: '/ui/',
-  plugins: [react()],
+  plugins: [react(), fontLicenses()],
   build: {
     outDir: 'dist',
     emptyOutDir: true,

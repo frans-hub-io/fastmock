@@ -42,6 +42,10 @@ import {
 } from '@tabler/icons-react';
 import type { ComponentType, ReactNode } from 'react';
 import { Link, NavLink as RouterNavLink, useLocation } from 'react-router';
+import lockupDark from '../assets/brand/FransHub_FastMock_dark.svg';
+import lockupLight from '../assets/brand/FransHub_FastMock_light.svg';
+import monogramDark from '../assets/brand/FransHub_monogram_dark.svg';
+import monogramLight from '../assets/brand/FransHub_monogram_light.svg';
 import { boundSpaces, can, kindLabel, seesAllSpaces, type Permission } from '../auth/permissions';
 import { useAuth, useSpace } from '../auth/useAuth';
 import classes from './Shell.module.css';
@@ -228,10 +232,14 @@ export function Shell({ children }: { children: ReactNode }) {
         <Group gap="sm" wrap="nowrap" className={classes.headerLeft}>
           <Burger opened={opened} onClick={toggle} hiddenFrom="md" size="sm" aria-label="Toggle navigation" />
           <Link to="/" className={`${classes.brand} ${spaces.enabled ? classes.brandCompact : ''}`} aria-label="FastMock">
-            <span className={classes.logo} aria-hidden>
-              F
+            <span className={`${classes.lockup} ${spaces.enabled ? classes.lockupCompact : ''}`}>
+              <img src={lockupLight} alt="" width={193} height={26} className="fm-on-light" />
+              <img src={lockupDark} alt="" width={193} height={26} className="fm-on-dark" />
             </span>
-            <span className={spaces.enabled ? classes.brandTextCompact : undefined}>FastMock</span>
+            <span className={`${classes.mark} ${spaces.enabled ? classes.markCompact : ''}`}>
+              <img src={monogramLight} alt="" width={42} height={24} className="fm-on-light" />
+              <img src={monogramDark} alt="" width={42} height={24} className="fm-on-dark" />
+            </span>
           </Link>
           {info?.version && (
             <Badge variant="outline" color="gray" size="sm" visibleFrom="sm">

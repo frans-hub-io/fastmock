@@ -42,7 +42,7 @@ const NAME_RE = /^[A-Za-z0-9._@-]{1,128}$/;
 function RoleBadge({ role, options }: { role: string; options: TokenOptions | undefined }) {
   const def = options?.roles.find((r) => r.name === role);
   const badge = (
-    <Badge variant="light" color={def?.builtin === false ? 'teal' : 'indigo'} tt="none">
+    <Badge variant="light" color={def?.builtin === false ? 'teal' : undefined} tt="none">
       {role}
     </Badge>
   );

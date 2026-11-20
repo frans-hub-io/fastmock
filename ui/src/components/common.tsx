@@ -25,20 +25,13 @@ export function PageHeader({ title, description, actions }: { title: string; des
   );
 }
 
-const METHOD_COLORS: Record<string, string> = {
-  GET: 'blue',
-  POST: 'green',
-  PUT: 'orange',
-  PATCH: 'yellow',
-  DELETE: 'red',
-  HEAD: 'gray',
-  OPTIONS: 'gray',
-};
+const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']);
 
 export function MethodBadge({ method }: { method?: string | null }) {
   const m = (method ?? 'ANY').toUpperCase();
+  const known = HTTP_METHODS.has(m);
   return (
-    <Badge variant="light" color={METHOD_COLORS[m] ?? 'grape'} radius="sm" w={72} styles={{ label: { overflow: 'visible' } }}>
+    <Badge variant="light" className={known ? 'fm-http' : undefined} data-method={known ? m.toLowerCase() : undefined} radius="sm" w={72} styles={{ label: { overflow: 'visible' } }}>
       {m}
     </Badge>
   );
