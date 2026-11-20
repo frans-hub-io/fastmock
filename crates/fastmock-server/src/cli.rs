@@ -33,6 +33,37 @@ enum Command {
     Plugins,
 }
 
+async fn migrate(db: &crate::config::DatabaseSettings) -> anyhow::Result<String> {
+    fastmock_store::pg_connect_options(&db.url, &db.tls)?;
+    let pg = fastmock_store::connect_postgres(&db.url, &db.tls, 2).await?;
+    let applied = fastmock_store::migrate(&pg, db.migration_timeout).await?;
+    Ok(migrate_summary(
+        &applied,
+        fastmock_store::PgStore::expected_schema_version(),
+    ))
+}
+
+/// The line `fastmock migrate` ends with.
+fn migrate_summary(applied: &[fastmock_store::AppliedMigration], version: i64) -> String {
+    match (applied.first(), applied.last()) {
+        (Some(first), Some(last)) => {
+            let ms: u128 = applied.iter().map(|m| m.duration.as_millis()).sum();
+            let range = if first.version == last.version {
+                first.version.to_string()
+            } else {
+                format!("{}-{}", first.version, last.version)
+            };
+            format!(
+                "migrations applied (schema version {version}): {} applied ({range}) in {ms} ms",
+                applied.len()
+            )
+        }
+        _ => format!(
+            "migrations applied (schema version {version}): none, the schema was up to date"
+        ),
+    }
+}
+
 /// Runs the `fastmock` command line with the plugins registered through
 /// [`register_plugins`](crate::register_plugins).
 pub async fn run() -> anyhow::Result<()> {
@@ -42,16 +73,10 @@ pub async fn run() -> anyhow::Result<()> {
         Command::Serve => serve().await,
         Command::Migrate => {
             let db = crate::config::database_from_env()?;
-            let plan = fastmock_store::pg_connect_options(&db.url, &db.tls)?;
-            for w in &plan.warnings {
-                eprintln!("warning: PostgreSQL TLS: {w}");
-            }
-            let pg = fastmock_store::connect_postgres(&db.url, &db.tls, 2).await?;
-            fastmock_store::migrate(&pg, db.migration_timeout).await?;
-            println!(
-                "migrations applied (schema version {})",
-                fastmock_store::PgStore::expected_schema_version()
-            );
+            let telemetry = crate::telemetry::init(crate::config::log_format_from_env()?)?;
+            let result = migrate(&db).await;
+            telemetry.shutdown();
+            println!("{}", result?);
             Ok(())
         }
         Command::HashToken { generate, token } => {
@@ -107,5 +132,38 @@ pub async fn run() -> anyhow::Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use fastmock_store::AppliedMigration;
+
+    use super::migrate_summary;
+
+    fn applied(version: i64, ms: u64) -> AppliedMigration {
+        AppliedMigration {
+            version,
+            name: format!("m{version}"),
+            duration: Duration::from_millis(ms),
+        }
+    }
+
+    #[test]
+    fn migrate_summary_names_what_was_applied() {
+        assert_eq!(
+            migrate_summary(&[applied(1, 20), applied(2, 5), applied(10, 1)], 10),
+            "migrations applied (schema version 10): 3 applied (1-10) in 26 ms"
+        );
+        assert_eq!(
+            migrate_summary(&[applied(10, 3)], 10),
+            "migrations applied (schema version 10): 1 applied (10) in 3 ms"
+        );
+        assert_eq!(
+            migrate_summary(&[], 10),
+            "migrations applied (schema version 10): none, the schema was up to date"
+        );
     }
 }

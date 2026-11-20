@@ -131,6 +131,15 @@ pub struct ValkeySettings {
     pub tls: ValkeyTls,
 }
 
+/// `FASTMOCK_LOG_FORMAT`: `json` (the default) or `text`.
+pub fn log_format_from_env() -> anyhow::Result<LogFormat> {
+    match env("LOG_FORMAT").as_deref().unwrap_or("json") {
+        "json" => Ok(LogFormat::Json),
+        "text" => Ok(LogFormat::Text),
+        other => bail!("FASTMOCK_LOG_FORMAT must be json or text, got {other}"),
+    }
+}
+
 pub fn valkey_from_env() -> anyhow::Result<ValkeySettings> {
     valkey_settings(&env)
 }
@@ -679,11 +688,7 @@ impl Config {
             plugins: env("PLUGINS").map(|v| list(&v)),
             secrets_dir: env("SECRETS_DIR").map(PathBuf::from),
             stub_poll: dur("STUB_POLL", "5s")?,
-            log_format: match env("LOG_FORMAT").as_deref().unwrap_or("json") {
-                "json" => LogFormat::Json,
-                "text" => LogFormat::Text,
-                other => bail!("FASTMOCK_LOG_FORMAT must be json or text, got {other}"),
-            },
+            log_format: log_format_from_env()?,
             tls: match (env("TLS_CERT_FILE"), env("TLS_KEY_FILE")) {
                 (Some(c), Some(k)) => Some(TlsSettings {
                     cert_file: c.into(),
