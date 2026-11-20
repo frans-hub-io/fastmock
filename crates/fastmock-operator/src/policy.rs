@@ -21,7 +21,7 @@ const DENIED_ENV: &[&str] = &[
     "FASTMOCK_ADMIN_LISTEN",
 ];
 
-const DENIED_ENV_PREFIXES: &[&str] = &["FASTMOCK_SECRET_", "LD_"];
+const DENIED_ENV_PREFIXES: &[&str] = &["FASTMOCK_SECRET_", "FASTMOCK_OIDC_", "LD_"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImagePolicy {
@@ -117,6 +117,12 @@ pub fn referenced_secrets(spec: &FastMockSpec) -> Vec<(String, String)> {
     }
     if let Some(r) = &spec.admin_tokens_secret {
         out.push(("adminTokensSecret".to_string(), r.name.clone()));
+    }
+    if let Some(o) = &spec.oidc {
+        out.push((
+            "oidc.clientSecretRef".to_string(),
+            o.client_secret_ref.name.clone(),
+        ));
     }
     for s in &spec.image_pull_secrets {
         out.push(("imagePullSecrets".to_string(), s.clone()));
@@ -221,6 +227,7 @@ mod tests {
                 "Fastmock_Access_File".to_string(),
                 "/tmp/a.yaml".to_string(),
             ),
+            ("FASTMOCK_OIDC_ISSUER".to_string(), "https://x".to_string()),
             ("RUST_LOG".to_string(), "debug".to_string()),
         ]);
         let denied = denied_env_keys(&env);
@@ -228,6 +235,7 @@ mod tests {
             denied,
             vec![
                 "FASTMOCK_AUTH_DISABLED",
+                "FASTMOCK_OIDC_ISSUER",
                 "FASTMOCK_SECRET_DB",
                 "FASTMOCK_VALKEY_PREFIX",
                 "Fastmock_Access_File",
@@ -258,13 +266,23 @@ mod tests {
                 key: "tokens".into(),
             }),
             image_pull_secrets: vec!["pull".into()],
+            oidc: Some(crate::crd::OidcSpec {
+                client_secret_ref: crate::crd::OidcSecretRef {
+                    name: "sso".into(),
+                    key: "client-secret".into(),
+                },
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let names: Vec<String> = referenced_secrets(&spec)
             .into_iter()
             .map(|(_, n)| n)
             .collect();
-        assert_eq!(names, vec!["payments-secrets", "db", "tokens", "pull"]);
+        assert_eq!(
+            names,
+            vec!["payments-secrets", "db", "tokens", "sso", "pull"]
+        );
     }
 
     #[test]

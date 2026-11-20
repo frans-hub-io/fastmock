@@ -61,6 +61,69 @@ pub struct AccessSpec {
     pub config_map_ref: AccessConfigMapRef,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OidcSecretRef {
+    /// Secret in the namespace of the FastMock; it must carry the label `fastmock.franshub.io/allow-mount: "true"`.
+    pub name: String,
+    #[serde(default = "default_client_secret_key")]
+    pub key: String,
+}
+
+fn default_client_secret_key() -> String {
+    "client-secret".into()
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CaConfigMapRef {
+    /// ConfigMap in the namespace of the FastMock; it must carry the label `fastmock.franshub.io/allow-mount: "true"`.
+    pub name: String,
+    #[serde(default = "default_ca_key")]
+    pub key: String,
+}
+
+fn default_ca_key() -> String {
+    "ca.crt".into()
+}
+
+/// OIDC sign-in for the UI and OIDC bearer JWTs for the admin API (`FASTMOCK_OIDC_*`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OidcSpec {
+    /// Issuer URL (https); discovery from `/.well-known/openid-configuration`.
+    pub issuer: String,
+    pub client_id: String,
+    /// The client secret, mounted read-only and passed as `FASTMOCK_OIDC_CLIENT_SECRET_FILE`.
+    pub client_secret_ref: OidcSecretRef,
+    /// Public admin URL followed by `/__admin/auth/callback`.
+    pub redirect_url: String,
+    /// Default `openid profile email`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+    /// Default `preferred_username`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username_claim: Option<String>,
+    /// Default `groups`; dotted paths such as `realm_access.roles` work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groups_claim: Option<String>,
+    /// Enables bearer JWTs on the admin API for this audience.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_audience: Option<String>,
+    /// Absolute session lifetime, default `8h`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_ttl: Option<String>,
+    /// Idle timeout, default `1h`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_idle: Option<String>,
+    /// Hosts besides the issuer's that the discovery document may point to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_hosts: Vec<String>,
+    /// PEM bundle of extra CAs for the IdP connections, passed as `FASTMOCK_OIDC_CA_FILE`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_config_map_ref: Option<CaConfigMapRef>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageSpec {
@@ -141,6 +204,9 @@ pub struct FastMockSpec {
     /// Access control for the server: a ConfigMap with its access file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<AccessSpec>,
+    /// SSO sign-in (OIDC) for the UI and bearer JWTs for the admin API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oidc: Option<OidcSpec>,
 }
 
 fn one() -> i32 {

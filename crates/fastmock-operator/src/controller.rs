@@ -170,6 +170,23 @@ pub async fn reconcile_server(ms: Arc<FastMock>, ctx: Arc<Ctx>) -> Result<Action
     r
 }
 
+fn oidc_problem(spec: &FastMockSpec) -> Option<&'static str> {
+    let o = spec.oidc.as_ref()?;
+    if !o.issuer.starts_with("https://") {
+        Some("oidc.issuer must be an https URL")
+    } else if o.client_id.trim().is_empty() {
+        Some("oidc.clientId is required")
+    } else if !o.redirect_url.starts_with("https://")
+        || !o.redirect_url.ends_with("/__admin/auth/callback")
+    {
+        Some(
+            "oidc.redirectUrl must be the public https admin URL followed by /__admin/auth/callback",
+        )
+    } else {
+        None
+    }
+}
+
 fn storage_problem(spec: &FastMockSpec) -> Option<&'static str> {
     let invalid = match spec.storage.mode.as_str() {
         "memory" => None,
@@ -216,6 +233,41 @@ async fn check_secrets(
         )));
     }
     Ok(None)
+}
+
+/// The CA ConfigMap of `spec.oidc`: present, labelled for mounting, with the key.
+async fn check_oidc_ca(
+    cms: &Api<ConfigMap>,
+    spec: &FastMockSpec,
+) -> Result<Option<(&'static str, String)>, Error> {
+    let Some(r) = spec
+        .oidc
+        .as_ref()
+        .and_then(|o| o.ca_config_map_ref.as_ref())
+    else {
+        return Ok(None);
+    };
+    Ok(match cms.get_opt(&r.name).await? {
+        None => Some((
+            "ConfigMapNotFound",
+            format!(
+                "referenced ConfigMap not found: oidc.caConfigMapRef={}",
+                r.name
+            ),
+        )),
+        Some(cm) if !secret_allowed(cm.metadata.labels.as_ref()) => Some((
+            "ConfigMapNotAllowed",
+            format!(
+                "referenced ConfigMaps must carry the label {ALLOW_MOUNT_LABEL}=true: oidc.caConfigMapRef={}",
+                r.name
+            ),
+        )),
+        Some(cm) if !cm.data.as_ref().is_some_and(|d| d.contains_key(&r.key)) => Some((
+            "ConfigMapNotFound",
+            format!("ConfigMap {} has no key {}", r.name, r.key),
+        )),
+        Some(_) => None,
+    })
 }
 
 /// The access file of a `FastMock`: `Ok(None)` without `spec.access`, `Err((reason, message))` when the
@@ -281,30 +333,33 @@ async fn reconcile_server_inner(ms: &FastMock, ctx: &Ctx) -> Result<Action, Erro
     let image = ctx.images.resolve(&spec.image);
     let denied_env = denied_env_keys(&spec.env);
     let mut access_doc = None;
-    let refusal: Option<(&str, String, Duration)> = if let Some(msg) = storage_problem(spec) {
-        Some(("InvalidSpec", msg.to_string(), RESYNC))
-    } else if let Err(msg) = &image {
-        Some(("ImageNotAllowed", msg.clone(), RESYNC))
-    } else if !denied_env.is_empty() {
-        Some((
-            "EnvNotAllowed",
-            format!(
-                "spec.env must not set {}; use the dedicated spec fields",
-                denied_env.join(", ")
-            ),
-            RESYNC,
-        ))
-    } else if let Some((r, m)) = check_secrets(&secrets, spec).await? {
-        Some((r, m, Duration::from_secs(60)))
-    } else {
-        match access_file(&cms, spec).await? {
-            Ok(doc) => {
-                access_doc = doc;
-                None
+    let refusal: Option<(&str, String, Duration)> =
+        if let Some(msg) = storage_problem(spec).or_else(|| oidc_problem(spec)) {
+            Some(("InvalidSpec", msg.to_string(), RESYNC))
+        } else if let Err(msg) = &image {
+            Some(("ImageNotAllowed", msg.clone(), RESYNC))
+        } else if !denied_env.is_empty() {
+            Some((
+                "EnvNotAllowed",
+                format!(
+                    "spec.env must not set {}; use the dedicated spec fields",
+                    denied_env.join(", ")
+                ),
+                RESYNC,
+            ))
+        } else if let Some((r, m)) = check_secrets(&secrets, spec).await? {
+            Some((r, m, Duration::from_secs(60)))
+        } else if let Some((r, m)) = check_oidc_ca(&cms, spec).await? {
+            Some((r, m, Duration::from_secs(60)))
+        } else {
+            match access_file(&cms, spec).await? {
+                Ok(doc) => {
+                    access_doc = doc;
+                    None
+                }
+                Err((r, m)) => Some((r, m, Duration::from_secs(60))),
             }
-            Err((r, m)) => Some((r, m, Duration::from_secs(60))),
-        }
-    };
+        };
     if let Some((reason, msg, requeue)) = refusal {
         tracing::warn!(fastmock = %name, namespace = %ns, %reason, %msg, "FastMock refused");
         write_status(&servers, &name, prev, &blocked(reason, &msg)).await?;
@@ -1138,5 +1193,37 @@ mod tests {
         assert!(storage_problem(&spec).is_some());
         spec.storage.mode = "postgres".into();
         assert!(storage_problem(&spec).is_some());
+    }
+
+    #[test]
+    fn oidc_rules() {
+        let ok = crate::crd::OidcSpec {
+            issuer: "https://sso.example.com/realms/mocks".into(),
+            client_id: "fastmock".into(),
+            redirect_url: "https://mock-admin.example.com/__admin/auth/callback".into(),
+            ..Default::default()
+        };
+        let with = |o: crate::crd::OidcSpec| FastMockSpec {
+            oidc: Some(o),
+            ..Default::default()
+        };
+        assert!(oidc_problem(&FastMockSpec::default()).is_none());
+        assert!(oidc_problem(&with(ok.clone())).is_none());
+        for bad in [
+            crate::crd::OidcSpec {
+                issuer: "http://sso.example.com".into(),
+                ..ok.clone()
+            },
+            crate::crd::OidcSpec {
+                client_id: " ".into(),
+                ..ok.clone()
+            },
+            crate::crd::OidcSpec {
+                redirect_url: "https://mock-admin.example.com/".into(),
+                ..ok.clone()
+            },
+        ] {
+            assert!(oidc_problem(&with(bad)).is_some());
+        }
     }
 }

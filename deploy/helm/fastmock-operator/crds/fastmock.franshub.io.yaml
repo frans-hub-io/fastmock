@@ -73,6 +73,79 @@ spec:
                 items:
                   type: string
                 type: array
+              oidc:
+                description: SSO sign-in (OIDC) for the UI and bearer JWTs for the admin API.
+                nullable: true
+                properties:
+                  allowedHosts:
+                    description: Hosts besides the issuer's that the discovery document may point to.
+                    items:
+                      type: string
+                    type: array
+                  apiAudience:
+                    description: Enables bearer JWTs on the admin API for this audience.
+                    nullable: true
+                    type: string
+                  caConfigMapRef:
+                    description: PEM bundle of extra CAs for the IdP connections, passed as `FASTMOCK_OIDC_CA_FILE`.
+                    nullable: true
+                    properties:
+                      key:
+                        default: ca.crt
+                        type: string
+                      name:
+                        description: 'ConfigMap in the namespace of the FastMock; it must carry the label `fastmock.franshub.io/allow-mount: "true"`.'
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  clientId:
+                    type: string
+                  clientSecretRef:
+                    description: The client secret, mounted read-only and passed as `FASTMOCK_OIDC_CLIENT_SECRET_FILE`.
+                    properties:
+                      key:
+                        default: client-secret
+                        type: string
+                      name:
+                        description: 'Secret in the namespace of the FastMock; it must carry the label `fastmock.franshub.io/allow-mount: "true"`.'
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  groupsClaim:
+                    description: Default `groups`; dotted paths such as `realm_access.roles` work.
+                    nullable: true
+                    type: string
+                  issuer:
+                    description: Issuer URL (https); discovery from `/.well-known/openid-configuration`.
+                    type: string
+                  redirectUrl:
+                    description: Public admin URL followed by `/__admin/auth/callback`.
+                    type: string
+                  scopes:
+                    description: Default `openid profile email`.
+                    items:
+                      type: string
+                    type: array
+                  sessionIdle:
+                    description: Idle timeout, default `1h`.
+                    nullable: true
+                    type: string
+                  sessionTtl:
+                    description: Absolute session lifetime, default `8h`.
+                    nullable: true
+                    type: string
+                  usernameClaim:
+                    description: Default `preferred_username`.
+                    nullable: true
+                    type: string
+                required:
+                - clientId
+                - clientSecretRef
+                - issuer
+                - redirectUrl
+                type: object
               otelEndpoint:
                 nullable: true
                 type: string

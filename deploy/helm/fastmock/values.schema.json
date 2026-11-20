@@ -203,6 +203,82 @@
       },
       "additionalProperties": false
     },
+    "oidc": {
+      "type": "object",
+      "properties": {
+        "issuer": {
+          "type": "string",
+          "pattern": "^$|^https://[^/?#]+"
+        },
+        "clientId": {
+          "type": "string"
+        },
+        "clientSecret": {
+          "type": "object",
+          "properties": {
+            "existingSecret": {
+              "type": "string",
+              "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+              "maxLength": 253
+            },
+            "key": {
+              "type": "string",
+              "pattern": "^[-._a-zA-Z0-9]+$"
+            }
+          },
+          "additionalProperties": false
+        },
+        "redirectUrl": {
+          "type": "string",
+          "pattern": "^$|^https://[^/?#]+/__admin/auth/callback$"
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "claims": {
+          "type": "object",
+          "properties": {
+            "username": {
+              "type": "string"
+            },
+            "groups": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "apiAudience": {
+          "type": "string"
+        },
+        "trustOutboundCA": {
+          "type": "boolean"
+        },
+        "session": {
+          "type": "object",
+          "properties": {
+            "ttl": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h|d)?$"
+            },
+            "idle": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h|d)?$"
+            }
+          },
+          "additionalProperties": false
+        },
+        "allowedHosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "callbacks": {
       "type": "object",
       "properties": {

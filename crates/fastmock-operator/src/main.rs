@@ -115,5 +115,15 @@ mod tests {
             ["properties"]["access"]["properties"]["configMapRef"];
         assert_eq!(access["properties"]["key"]["default"], "access.yaml");
         assert_eq!(access["required"], serde_json::json!(["name"]));
+        let oidc = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]
+            ["oidc"];
+        assert_eq!(
+            oidc["required"],
+            serde_json::json!(["clientId", "clientSecretRef", "issuer", "redirectUrl"])
+        );
+        assert_eq!(
+            oidc["properties"]["clientSecretRef"]["properties"]["key"]["default"],
+            "client-secret"
+        );
     }
 }

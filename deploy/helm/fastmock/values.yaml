@@ -27,6 +27,24 @@ access:
   spaces: []
   bindings: []
 
+oidc:
+  issuer: ""
+  clientId: ""
+  clientSecret:
+    existingSecret: ""
+    key: client-secret
+  redirectUrl: ""
+  scopes: []
+  claims:
+    username: ""
+    groups: ""
+  apiAudience: ""
+  trustOutboundCA: false
+  session:
+    ttl: 8h
+    idle: 1h
+  allowedHosts: []
+
 callbacks:
   allowedHosts: []
   deniedCidrs: ""
