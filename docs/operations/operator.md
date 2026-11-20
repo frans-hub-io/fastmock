@@ -152,13 +152,15 @@ kubectl -n team-payments label secret payments-mock-oidc fastmock.franshub.io/al
 | `redirectUrl` | required | Public https admin URL followed by `/__admin/auth/callback`. |
 | `scopes` | `openid profile email` | `FASTMOCK_OIDC_SCOPES`. |
 | `usernameClaim`, `groupsClaim` | `preferred_username`, `groups` | Claims for `user:` and `group:` bindings; `sub` (or `oid` with Entra ID) is recommended for `user:` bindings ([choosing the username claim](access-control.md#choosing-the-username-claim)). |
-| `apiAudience` | none | Accept the provider's JWTs with this audience on the admin API; must differ from `clientId`. |
+| `apiAudience` | none | Accept the provider's JWTs with this audience on the admin API; must not be empty and must differ from `clientId`. Leave it out to turn bearer JWTs off. |
 | `sessionTtl`, `sessionIdle` | `8h`, `1h` | Session lifetimes. |
 | `allowedHosts` | `[]` | Hosts besides the issuer's that discovery endpoints may use. |
 | `caConfigMapRef` | none | `{name, key}` of a labelled ConfigMap with extra CA certificates for the provider (`key` defaults to `ca.crt`), mounted at `/etc/fastmock/oidc-ca`. |
 
-An `issuer` or `redirectUrl` that is not https, a missing `clientId` or a redirect URL not ending in
-`/__admin/auth/callback` refuse the spec (`InvalidSpec`); a missing or unlabelled Secret or CA ConfigMap gives
+An `issuer` or `redirectUrl` that is not https, a missing `clientId`, a redirect URL not ending in
+`/__admin/auth/callback`, or an `apiAudience` that is empty or equal to `clientId` refuse the spec (`InvalidSpec`,
+with the message `oidc.apiAudience must not be empty: remove it to turn bearer JWTs off` or
+`oidc.apiAudience must differ from oidc.clientId` for the audience); a missing or unlabelled Secret or CA ConfigMap gives
 `SecretNotFound`, `SecretNotAllowed`, `ConfigMapNotFound` or `ConfigMapNotAllowed`, and a client secret Secret
 without the configured key, or with an empty value, gives `SecretKeyNotFound`. The server checks the rest at
 start-up. `FASTMOCK_OIDC_*` cannot be set through `spec.env`. The admin port is not published by `spec.route`,
@@ -311,7 +313,7 @@ billing   payments   14      True
 |---|---|---|---|
 | `Ready` | True | `Available` | At least one replica is ready (`message`: `2/2 replicas ready`). |
 | `Ready` | False | `Progressing` | Applied, no replica ready yet. |
-| `Ready` | False | `InvalidSpec` | `storage.mode` is not `memory`/`postgres`, `postgres` without `database` and `valkey`, or more than one replica with memory storage. |
+| `Ready` | False | `InvalidSpec` | `storage.mode` is not `memory`/`postgres`, `postgres` without `database` and `valkey`, more than one replica with memory storage, or invalid `oidc` fields ([OIDC sign-in](#oidc-sign-in)), for example an empty `oidc.apiAudience`. |
 | `Ready` | False | `ImageNotAllowed` | The image does not match an allowed prefix. |
 | `Ready` | False | `EnvNotAllowed` | `spec.env` sets a variable that is reserved for dedicated fields. |
 | `Ready` | False | `SecretNotAllowed` | A referenced Secret lacks the label `fastmock.franshub.io/allow-mount: "true"`. |

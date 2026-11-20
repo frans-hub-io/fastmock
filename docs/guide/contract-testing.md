@@ -259,10 +259,12 @@ Rules:
   bound answers `400`.
 - Contract secrets are separate from stub secrets. A name in `FASTMOCK_STUB_SECRETS` (the HMAC keys of callbacks)
   can never be used in a contract test, and FastMock refuses to start when a name appears in both lists.
-- Starting a run with `secretHeaders` needs the permission `contracts:secrets`, which is global: the built-in
-  `admin` role bound globally has it, a role bound only in spaces never does, and the access file refuses it in
-  space bindings ([Access control](../operations/access-control.md#permissions)). Editors and space-bound
-  principals can still run contract tests without secret headers.
+- Starting a run with `secretHeaders` needs the permission `contracts:secrets`, which only global bindings grant:
+  the built-in `admin` role bound globally has it, and a role bound only in spaces never does (an `admin` binding
+  in a space is accepted but lacks it). A custom role that lists `contracts:secrets` by name must be bound with
+  `global: true`; the access file refuses it in a space binding
+  ([Access control: bindings](../operations/access-control.md#bindings)). Editors and space-bound principals can
+  still run contract tests without secret headers.
 - A secret value must be at least 8 bytes long. Secret header values are never stored: they show as `***` in the run.
   Once a run has used a secret, its exact value is also masked wherever it appears in stored data of this replica:
   response excerpts, error texts, and the request journal (headers, query strings, bodies). A service that echoes

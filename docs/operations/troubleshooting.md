@@ -29,7 +29,7 @@ Contents:
 |---|---|---|
 | `401 {"error":"unauthorized","details":[]}` | No `Authorization: Bearer <token>` header, unknown token, or a static or managed token longer than 512 characters. | Send the header. Compare `fastmock hash-token '<token>'` with the hash in the token entry. A hash made with `echo token \| sha256sum` includes a new line and is wrong; use `printf '%s' token \| sha256sum` or `fastmock hash-token`. |
 | `401` after a token change | Token files are read at start-up. | Roll the pods ([Rotating tokens](security.md#rotating-tokens)). |
-| `403 {"error":"origin not allowed","details":[]}` | The request has an `Origin` header (a browser, or a tool that adds it) that is neither in `FASTMOCK_ADMIN_ALLOWED_ORIGINS` nor the admin server's own origin. | Add the exact origin (`https://fastmock-admin.example.com`, scheme and port included) to `FASTMOCK_ADMIN_ALLOWED_ORIGINS`. Behind a Gateway, make sure it forwards the original `Host`. Scripts should not send `Origin`. |
+| `403 {"error":"origin not allowed","details":[]}` (static tokens only) or `403 {"error":"forbidden","details":["origin not allowed"]}` (access file or OIDC) | The request has an `Origin` header (a browser, or a tool that adds it) that is neither in `FASTMOCK_ADMIN_ALLOWED_ORIGINS` nor the admin server's own origin. | Add the exact origin (`https://fastmock-admin.example.com`, scheme and port included) to `FASTMOCK_ADMIN_ALLOWED_ORIGINS`. Behind a Gateway, make sure it forwards the original `Host`. Scripts should not send `Origin`. |
 | `403 {"error":"forbidden","details":["requires role editor"],"required":"editor"}` | The token's role is too low for the call. | Use a token with the role named in `required` ([roles](security.md#admin-tokens-and-roles)). |
 
 `fastmock_admin_auth_failures_total{reason}` (`token`, `expired`, `role`, `permission`, `origin`, `session`, `jwt`, `csrf`) and
@@ -55,7 +55,7 @@ The process exits with one line that names the problem:
 | `no admin tokens configured: set FASTMOCK_ADMIN_TOKENS or FASTMOCK_ADMIN_TOKENS_FILE ...` | Configure at least one token or OIDC sign-in. |
 | `OIDC discovery for ... failed: ... points to ..., which is neither the issuer host nor listed in FASTMOCK_OIDC_ALLOWED_HOSTS` | The provider's discovery document names an endpoint on another host: add the host to `FASTMOCK_OIDC_ALLOWED_HOSTS` if you trust it. |
 | `the discovery document names issuer "...", not FASTMOCK_OIDC_ISSUER "..."` | The issuer setting differs from the provider's (often a trailing slash or the realm path): copy the `issuer` value of the discovery document. |
-| `FASTMOCK_OIDC_... ` errors | See [OIDC configuration](configuration.md#oidc-sign-in). `FASTMOCK_OIDC_API_AUDIENCE`, when set, must not be empty and must differ from `FASTMOCK_OIDC_CLIENT_ID`; remove the variable to turn bearer JWTs off. |
+| `FASTMOCK_OIDC_... ` errors | See [OIDC configuration](configuration.md#oidc-sign-in). `FASTMOCK_OIDC_API_AUDIENCE`, when set, must not be empty (`FASTMOCK_OIDC_API_AUDIENCE is set but empty: set the audience of the API tokens, or remove the variable to turn bearer JWTs off`) and must differ from `FASTMOCK_OIDC_CLIENT_ID`; remove the variable to turn bearer JWTs off. |
 | ``space a and space b overlap: path prefix `/pay/` of space a and `/pay/x` of space b; each path belongs to one space`` (or ``... host `x` of space a and `y` of space b; each host belongs to one space``) | Two spaces own overlapping path prefixes or the same host; a host without a port overlaps the same host with any port ([ownership](access-control.md#ownership-of-the-data-plane)). Give each space its own prefixes and hosts. |
 | `admin token entry #2: expected name:role:sha256hex` / `unknown role` / `hash must be a SHA-256 (64 hex chars)` | Fix that entry (counted from 1, file lines after variable entries). |
 | `FASTMOCK_LISTEN and FASTMOCK_ADMIN_LISTEN must differ` | Use two ports. |
@@ -227,7 +227,7 @@ operator log has a line per refusal (`FastMock refused`).
 | `Ready=False ConfigMapNotAllowed` | Label the access ConfigMap: `kubectl label configmap <name> fastmock.franshub.io/allow-mount=true`. |
 | `Ready=False ConfigMapNotFound` | Create the ConfigMap named in `spec.access.configMapRef`, or add the key (default `access.yaml`). |
 | `Ready=False EnvNotAllowed` | Remove the listed variables from `spec.env` and use the dedicated fields (`storage`, `adminTokensSecret`, `secretsSecret`, `access`). |
-| `Ready=False InvalidSpec` | Set `spec.storage.mode` (`memory` or `postgres`); `postgres` needs `database` and `valkey`; memory allows one replica. |
+| `Ready=False InvalidSpec` | Read the condition's `message`. Set `spec.storage.mode` (`memory` or `postgres`); `postgres` needs `database` and `valkey`; memory allows one replica. For `oidc.apiAudience must not be empty: remove it to turn bearer JWTs off` or `oidc.apiAudience must differ from oidc.clientId`, set the audience of the API tokens or remove `apiAudience`. |
 | `Ready=False Progressing` | Pods are not ready: `kubectl describe deploy <name>`, pod logs, [Readiness fails](#readiness-fails). |
 | `RouteReady=False ApplyFailed` | Gateway API CRDs are missing or the route is invalid; the message has the API error. |
 | `Synced=False ServerNotReady` | The `FastMock` is missing or not ready yet; the `MockApi` retries every 15 s. |

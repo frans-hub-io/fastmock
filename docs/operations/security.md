@@ -162,7 +162,8 @@ rebinding), FastMock refuses every admin request with an `Origin` header unless:
 - the origin is the admin server itself (`Origin` equals `http(s)://` plus the request's `Host`), which is how
   the built-in UI calls the API.
 
-Refusals answer `403 {"error":"origin not allowed","details":[]}` and count as
+Refusals answer `403 {"error":"forbidden","details":["origin not allowed"]}` with an access file or OIDC
+configured, `403 {"error":"origin not allowed","details":[]}` with static tokens only, and count as
 `fastmock_admin_auth_failures_total{reason="origin"}`. Non-browser clients do not send `Origin` and are not
 affected.
 

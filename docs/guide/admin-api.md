@@ -85,14 +85,15 @@ admin listener's own origin.
 | `401 {"error":"unauthorized","details":[]}` + `WWW-Authenticate: Bearer` | token missing, unknown or revoked |
 | `401 {"error":"unauthorized","details":["token expired"]}` | managed token past its expiry |
 | `503 {"error":"token store unavailable","details":[]}` | a managed token could not be checked because the database is unreachable (only while managed tokens exist; otherwise an unknown `fm_` value answers `401` without a database lookup) |
-| `401 {"error":"unauthorized","details":["invalid bearer token"]}` + `WWW-Authenticate: Bearer error="invalid_token"` | a JWT with a bad signature, issuer, audience or lifetime, or an ID token (a JWT with `nonce`) |
+| `401 {"error":"unauthorized","details":["invalid bearer token"]}` + `WWW-Authenticate: Bearer error="invalid_token"` | with `FASTMOCK_OIDC_API_AUDIENCE` set, a bearer value with three dot-separated parts that is not a valid JWT for that audience: bad signature, issuer, audience or lifetime, malformed or larger than 64 KiB, or an ID token (a JWT with `nonce`) |
 | `401 {"error":"unauthorized","details":["session expired or unknown: sign in again"]}` | session cookie expired, logged out or unknown; the cookie is cleared |
 | `403 {"error":"forbidden","details":["missing X-FastMock-Request: 1 header"]}` | a change authenticated by the session cookie without the CSRF header |
 | `403 {"error":"forbidden","details":["user bob has no access: ..."],"required":"..."}` | an OIDC user without any binding |
 | `503 {"error":"session store unavailable","details":[]}` | the hot store holding sessions is unreachable |
 | `403 {"error":"forbidden","details":["requires role editor"],"required":"editor"}` | token valid, role too low |
 | `403 {"error":"forbidden","details":["requires permission files:read"],"required":"files:read"}` | a token with a custom role or space bindings lacks the permission ([Access control](../operations/access-control.md#errors)) |
-| `403 {"error":"origin not allowed","details":[]}` | browser request from another origin |
+| `403 {"error":"forbidden","details":["origin not allowed"]}` | browser request from another origin, with an access file or OIDC configured |
+| `403 {"error":"origin not allowed","details":[]}` | browser request from another origin, with static tokens only |
 
 ## Roles per endpoint
 
@@ -162,7 +163,7 @@ curl -s -X DELETE localhost:9090/__admin/tokens/$ID -H "Authorization: Bearer $A
 
 Who may create, see and revoke which tokens (the escalation rule), expiry, caching and memory-mode behaviour are
 described in [Access control: managed tokens](../operations/access-control.md#managed-tokens). Managed tokens
-cannot be created or revoked while `FASTMOCK_AUTH_DISABLED=true`.
+cannot be created or revoked while `FASTMOCK_AUTH_DISABLED=true` (`409`).
 
 ## Errors
 
@@ -173,9 +174,12 @@ Every error from the admin API has the same JSON shape:
 ```
 
 `error` is a single human-readable sentence; `details` lists individual problems when there are several (for
-example the mismatches of a failed verification). Some responses add fields: `403` adds `required`, `422` from
-`/verify` adds the actual `count` and `nearMisses`. With an access file or OIDC configured, every `403` reads
-`{"error":"forbidden","details":[...],"required":...}`
+example the mismatches of a failed verification). Some responses add fields: `422` from `/verify` adds the actual
+`count` and `nearMisses`, and a `403` for a missing role or permission adds `required`. With static tokens only,
+`required` comes with the role check of the request (`requires role editor`); refusals from the endpoint itself
+keep the plain shape, for example `403 {"error":"secretHeaders require the admin role","details":[]}`. With an
+access file or OIDC configured, every `403` reads `{"error":"forbidden","details":[...],"required":...}`, with
+`required` wherever a role or permission is missing
 ([Access control: errors](../operations/access-control.md#errors)). Errors never contain stack traces, internal paths or database
 messages; internal failures answer `500 {"error":"internal error","details":[]}` and are logged with details on the
 server.
@@ -186,7 +190,7 @@ server.
 | 401 / 403 | see [Authentication](#authentication) |
 | 404 | the stub, request, file, key, space or route does not exist, or the space is not visible to the caller |
 | 405 | method not allowed on this route |
-| 409 | conflict: stub id exists on `POST /stubs` (or belongs to a stub in another space on import), incompatible gRPC descriptor, too many files |
+| 409 | conflict: stub id exists on `POST /stubs` (or belongs to a stub in another space on import), incompatible gRPC descriptor, too many files, managed tokens created or revoked while `FASTMOCK_AUTH_DISABLED=true` |
 | 413 | body larger than the route allows |
 | 415 | `POST /import` cannot detect or convert the format; missing JSON content type |
 | 422 | a verification that failed (`/verify`, `/verify/sequence`), or a journal scan over its work budget |

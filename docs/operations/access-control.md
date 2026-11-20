@@ -54,7 +54,7 @@ everywhere.
 | `contracts:read` | `GET /contract-tests`, `/contract-tests/{id}` (verdicts) | space |
 | `contracts:details` | request and response excerpts and error texts of contract test results | space |
 | `contracts:write` | `POST /contract-tests`, `DELETE /contract-tests/{id}` | space |
-| `contracts:secrets` | `secretHeaders` in `POST /contract-tests` | global (the secrets of `FASTMOCK_CONTRACT_SECRETS` are server-wide); the access file refuses it in space bindings |
+| `contracts:secrets` | `secretHeaders` in `POST /contract-tests` | global (the secrets of `FASTMOCK_CONTRACT_SECRETS` are server-wide); a custom role that lists it by name cannot be bound in spaces, see [Bindings](#bindings) |
 | `info:read` | `GET /info`, `/version`, `/plugins`, `/spaces` | global, implied by any binding |
 | `audit:read` | `GET /audit` | global |
 | `system:reset` | `POST /reset` | global |
@@ -89,7 +89,8 @@ The built-in roles cannot be redefined.
 like the token file; change it and restart (with Helm, `helm upgrade` rolls the pods). A file with an error stops
 the server with a one-line message that names the file and the entry, for example
 ``access file /etc/fastmock/access/access.yaml: roles[0] (stub-author): unknown permission `stubs:wrte` `` or
-`access file /etc/fastmock/access/access.yaml: bindings[3] (token:nosuch): ...` for a binding of an unknown token.
+`access file /etc/fastmock/access/access.yaml: bindings[3] (token:nosuch): no token named nosuch in FASTMOCK_ADMIN_TOKENS or FASTMOCK_ADMIN_TOKENS_FILE`
+for a binding of an unknown token.
 
 ```yaml
 roles:
@@ -146,12 +147,25 @@ permission there but none of the global ones (`stubs:purge`, `system:reset`, `au
 and so on).
 `info:read` comes with any binding.
 
+`contracts:secrets` is granted only by global bindings. A space binding of `admin`, or of a custom role that gets
+the permission through a wildcard (`contracts:*`), is accepted and simply does not grant it; `GET /__admin/info`
+shows the permissions the caller actually holds. A space binding of a custom role that lists `contracts:secrets`
+by name stops the start:
+
+```text
+access file /etc/fastmock/access/access.yaml: bindings[1] (group:qa): role `secret-runner` lists contracts:secrets, a global permission that a binding limited to spaces cannot grant (contract secrets are server-wide); bind the role with global: true or remove contracts:secrets from it
+```
+
+Bind such a role with `global: true`, or remove `contracts:secrets` from it.
+
 ## Managed tokens
 
 Besides the static entries of `FASTMOCK_ADMIN_TOKENS`, tokens can be created and revoked through the admin API
 without a restart. A managed token has a name, one role (built-in or custom) and a scope: global or a list of
 spaces. Its expiry is mandatory. Managed tokens need authentication: while `FASTMOCK_AUTH_DISABLED=true`, they
-cannot be created or revoked.
+cannot be created or revoked, and `POST /__admin/tokens` answers
+`409 {"error":"managed tokens cannot be created while authentication is disabled (FASTMOCK_AUTH_DISABLED=true)","details":[]}`
+(`revoked` for `DELETE /__admin/tokens/{id}`).
 
 ```sh
 curl -s -X POST localhost:9090/__admin/tokens -H "Authorization: Bearer $ADMIN_TOKEN" \
@@ -336,13 +350,15 @@ Requests with an `Authorization` header are not affected.
 
 ### Bearer JWTs on the admin API
 
-With `FASTMOCK_OIDC_API_AUDIENCE` set, a bearer value that looks like a JWT (three base64url parts) is validated
-like the ID token, but against that audience, without `nonce` and without `azp` (the token may have been issued to
+With `FASTMOCK_OIDC_API_AUDIENCE` set, a bearer value that is not a static token and has three dot-separated
+parts (whatever their content and length) is treated as a JWT and validated like the ID token, but against that audience, without `nonce` and without `azp` (the token may have been issued to
 another client, for example a CI pipeline using client credentials or a CLI using the device flow). `iat` is
 optional. The username claim falls back to `sub` when absent; the groups claim is read from the token (userinfo is
 not called). Tokens that carry a `nonce` claim (ID tokens) are rejected, and so are tokens larger than 64 KiB. The
 audience must differ from the client id: `FASTMOCK_OIDC_API_AUDIENCE` set to an empty value, or to the value of
-`FASTMOCK_OIDC_CLIENT_ID`, stops the start. When the variable is not set at all, bearer JWTs are off.
+`FASTMOCK_OIDC_CLIENT_ID`, stops the start. An empty value stops it with
+`FASTMOCK_OIDC_API_AUDIENCE is set but empty: set the audience of the API tokens, or remove the variable to turn bearer JWTs off`.
+When the variable is not set at all, bearer JWTs are off.
 
 Precedence: a request with an `Authorization` header is decided by that header alone, in this order: static
 tokens, managed `fm_` tokens, JWTs. The session cookie is used only when there is no `Authorization` header. A
