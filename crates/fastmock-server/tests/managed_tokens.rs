@@ -658,6 +658,90 @@ async fn no_escalation_through_tokens() {
     }
 }
 
+fn grantable(v: &Value) -> Vec<(String, bool, Vec<String>)> {
+    v["roles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["name"].as_str().unwrap().to_string(),
+                r["global"].as_bool().unwrap(),
+                r["spaces"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|s| s.as_str().unwrap().to_string())
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn token_options_follow_the_escalation_rule() {
+    let h = H::start(StorageKind::Memory, None).await;
+    let all = vec!["alpha".to_string(), "beta".to_string()];
+    let admin = h.ok(Method::GET, "/tokens/options", ADMIN, None).await;
+    assert_eq!(admin["maxDays"], 365);
+    assert_eq!(admin["defaultDays"], 90);
+    assert_eq!(
+        grantable(&admin),
+        vec![
+            ("viewer".to_string(), true, all.clone()),
+            ("editor".to_string(), true, all.clone()),
+            ("admin".to_string(), true, all.clone()),
+            ("team-lead".to_string(), true, all.clone()),
+        ]
+    );
+    let roles = admin["roles"].as_array().unwrap();
+    assert_eq!(roles[0]["builtin"], true);
+    assert_eq!(roles[3]["builtin"], false);
+    assert!(
+        roles[3]["permissions"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("tokens:write"))
+    );
+
+    let lead = h.ok(Method::GET, "/tokens/options", LEAD, None).await;
+    let alpha = vec!["alpha".to_string()];
+    assert_eq!(
+        grantable(&lead),
+        vec![
+            ("viewer".to_string(), false, alpha.clone()),
+            ("editor".to_string(), false, alpha.clone()),
+            ("admin".to_string(), false, vec![]),
+            ("team-lead".to_string(), false, alpha.clone()),
+        ]
+    );
+    for (role, space) in [("viewer", "alpha"), ("team-lead", "alpha")] {
+        h.create(
+            LEAD,
+            json!({"name": format!("opt-{role}"), "role": role, "spaces": [space]}),
+        )
+        .await;
+    }
+    let (st, _) = h
+        .call(
+            Method::POST,
+            "/tokens",
+            LEAD,
+            Some(json!({"name": "opt-admin", "role": "admin", "spaces": ["alpha"]})),
+        )
+        .await;
+    assert_eq!(st, 403);
+
+    let (st, v) = h.call(Method::GET, "/tokens/options", ED, None).await;
+    assert_eq!(
+        (st, v["required"].clone()),
+        (403, json!("tokens:write")),
+        "{v}"
+    );
+    let (st, _) = h.call(Method::GET, "/tokens/options", VIEWER, None).await;
+    assert_eq!(st, 403);
+}
+
 #[tokio::test]
 async fn revocation_reaches_other_replicas_within_the_cache_ttl() {
     let Some(storage) = pg_storage().await else {

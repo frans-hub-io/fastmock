@@ -1160,6 +1160,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/__admin/tokens/options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Choices for creating a token
+         * @description The roles the caller may grant and where, and the lifetime limits. Needs `tokens:write` somewhere. A role is grantable in a scope when the caller holds `tokens:write` and every permission of the role there.
+         */
+        get: operations["getTokenOptions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/__admin/tokens/self": {
         parameters: {
             query?: never;
@@ -1625,6 +1645,29 @@ export interface components {
             fixedDelayMs?: number | null;
             delay?: null | components["schemas"]["Delay"];
             proxyPassThrough?: boolean;
+        };
+        /** @description A role and the scopes in which the caller may grant it. */
+        GrantableRole: {
+            /** @example editor */
+            name: string;
+            /** @description `viewer`, `editor` or `admin`; false for custom roles of the access file. */
+            builtin: boolean;
+            /**
+             * @example [
+             *       "stubs:read",
+             *       "stubs:write"
+             *     ]
+             */
+            permissions: string[];
+            /** @description The caller may create global tokens with this role. */
+            global: boolean;
+            /**
+             * @description Spaces in which the caller may create tokens with this role.
+             * @example [
+             *       "payments"
+             *     ]
+             */
+            spaces: string[];
         };
         GraphQlImport: {
             /** @description GraphQL SDL. A `# microcksId: <name> : <version>` comment names the service. */
@@ -2356,6 +2399,26 @@ export interface components {
         };
         TokenList: {
             tokens: components["schemas"]["TokenInfo"][];
+        };
+        /** @description What the caller may choose when creating a token. */
+        TokenOptions: {
+            /**
+             * Format: int32
+             * @description Longest lifetime in days (`FASTMOCK_TOKENS_MAX_DAYS`).
+             * @example 365
+             */
+            maxDays: number;
+            /**
+             * Format: int32
+             * @description Lifetime used when `expiresInDays` is omitted.
+             * @example 90
+             */
+            defaultDays: number;
+            /**
+             * @description Every role, built-in first, with the scopes where the caller may grant it (the escalation rule
+             *     applied to the caller).
+             */
+            roles: components["schemas"]["GrantableRole"][];
         };
         /** @enum {string} */
         TokenStatus: "active" | "expired" | "revoked";
@@ -6862,6 +6925,44 @@ export interface operations {
             };
             /** @description An active token or a static token has this name */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getTokenOptions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Options */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenOptions"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Requires tokens:write */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

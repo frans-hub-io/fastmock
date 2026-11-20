@@ -349,6 +349,15 @@ fn deny(p: &Principal, msg: String) -> ApiError {
     ApiError(StatusCode::FORBIDDEN, msg)
 }
 
+/// The first permission of a role (with `perms`) that the caller does not hold in `scope`.
+fn missing_for_role(p: &Principal, perms: PermSet, scope: Option<&str>) -> Option<Permission> {
+    let (needed, held) = match scope {
+        None => (perms, p.permissions.global()),
+        Some(space) => (perms.space_scoped(), p.permissions.in_space(space)),
+    };
+    needed.iter().find(|x| !held.contains(*x))
+}
+
 /// The escalation rule: in each requested scope the caller needs `tokens:write` and every permission the
 /// role grants there.
 fn check_grant(
@@ -359,11 +368,7 @@ fn check_grant(
 ) -> ApiResult<()> {
     for s in scopes {
         require(p, Permission::TokensWrite, *s)?;
-        let (needed, held) = match s {
-            None => (perms, p.permissions.global()),
-            Some(space) => (perms.space_scoped(), p.permissions.in_space(space)),
-        };
-        if let Some(missing) = needed.iter().find(|x| !held.contains(*x)) {
+        if let Some(missing) = missing_for_role(p, perms, *s) {
             return Err(deny(
                 p,
                 format!(
@@ -664,9 +669,87 @@ pub async fn revoke_token(
     Ok(Json(TokenInfo::of(&t)))
 }
 
+/// A role and the scopes in which the caller may grant it.
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantableRole {
+    #[schema(example = "editor")]
+    pub name: String,
+    /// `viewer`, `editor` or `admin`; false for custom roles of the access file.
+    pub builtin: bool,
+    #[schema(example = json!(["stubs:read", "stubs:write"]))]
+    pub permissions: Vec<String>,
+    /// The caller may create global tokens with this role.
+    pub global: bool,
+    /// Spaces in which the caller may create tokens with this role.
+    #[schema(example = json!(["payments"]))]
+    pub spaces: Vec<String>,
+}
+
+/// What the caller may choose when creating a token.
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenOptions {
+    /// Longest lifetime in days (`FASTMOCK_TOKENS_MAX_DAYS`).
+    #[schema(example = 365)]
+    pub max_days: u32,
+    /// Lifetime used when `expiresInDays` is omitted.
+    #[schema(example = 90)]
+    pub default_days: u32,
+    /// Every role, built-in first, with the scopes where the caller may grant it (the escalation rule
+    /// applied to the caller).
+    pub roles: Vec<GrantableRole>,
+}
+
+#[utoipa::path(
+    get, path = "/__admin/tokens/options", tag = "tokens", operation_id = "getTokenOptions",
+    summary = "Choices for creating a token",
+    description = "The roles the caller may grant and where, and the lifetime limits. Needs `tokens:write` somewhere. A role is grantable in a scope when the caller holds `tokens:write` and every permission of the role there.",
+    responses(
+        (status = 200, description = "Options", body = TokenOptions),
+        (status = 401, description = "Missing or invalid token", body = ErrorBody),
+        (status = 403, description = "Requires tokens:write", body = ErrorBody),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn token_options(
+    State(app): State<AppState>,
+    Extension(p): Extension<Principal>,
+) -> Json<TokenOptions> {
+    let access = app.auth.access();
+    let space_names: Vec<&str> = access.spaces().map(|s| s.name.as_str()).collect();
+    let roles = access
+        .roles()
+        .into_iter()
+        .map(|(name, perms, builtin)| {
+            let grantable = |s: Option<&str>| {
+                p.allowed(Permission::TokensWrite, s) && missing_for_role(&p, perms, s).is_none()
+            };
+            GrantableRole {
+                name: name.to_string(),
+                builtin,
+                permissions: perms.names().into_iter().map(String::from).collect(),
+                global: grantable(None),
+                spaces: space_names
+                    .iter()
+                    .filter(|s| grantable(Some(s)))
+                    .map(|s| s.to_string())
+                    .collect(),
+            }
+        })
+        .collect();
+    let max_days = app.cfg.tokens_max_days;
+    Json(TokenOptions {
+        max_days,
+        default_days: crate::config::DEFAULT_TOKEN_DAYS.min(max_days),
+        roles,
+    })
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/tokens", get(list_tokens).post(create_token))
+        .route("/tokens/options", get(token_options))
         .route("/tokens/self", get(own_token))
         .route("/tokens/{id}", get(get_token).delete(revoke_token))
 }
@@ -674,7 +757,7 @@ pub fn routes() -> Router<AppState> {
 #[derive(utoipa::OpenApi)]
 #[openapi(
     tags((name = "tokens", description = "Managed admin tokens with expiry and revocation")),
-    paths(create_token, list_tokens, own_token, get_token, revoke_token),
+    paths(create_token, list_tokens, token_options, own_token, get_token, revoke_token),
     components(schemas(TokenStatus))
 )]
 pub struct TokensApi;

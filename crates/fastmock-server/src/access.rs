@@ -551,6 +551,15 @@ impl AccessConfig {
         self.spaces.get(name)
     }
 
+    /// Built-in roles, then the custom roles of the access file, with their permissions.
+    pub fn roles(&self) -> Vec<(&str, PermSet, bool)> {
+        BUILTIN_ROLES
+            .iter()
+            .filter_map(|n| builtin_role(n).map(|p| (*n, p, true)))
+            .chain(self.roles.iter().map(|(n, p)| (n.as_str(), *p, false)))
+            .collect()
+    }
+
     pub fn spaces(&self) -> impl Iterator<Item = &SpaceDef> {
         self.spaces.values()
     }
@@ -767,6 +776,7 @@ pub fn route_rule(method: &Method, full_path: &str) -> (Permission, ScopeKind) {
         ("PUT" | "POST" | "DELETE", ["async-mocks", _, ..]) => global(StubsWrite),
         ("GET", ["tokens"]) => natural(TokensRead),
         ("POST", ["tokens"]) => natural(TokensWrite),
+        ("GET", ["tokens", "options"]) => natural(TokensWrite),
         ("GET", ["tokens", "self"]) | ("DELETE", ["tokens", _]) => global(InfoRead),
         ("GET", ["tokens", _]) => natural(TokensRead),
         ("GET", ["plugins", _, ..]) => global(StubsRead),
@@ -1069,6 +1079,10 @@ bindings:
         assert_eq!(
             r(Method::GET, "/__admin/tokens/x"),
             (TokensRead, ScopeKind::Space)
+        );
+        assert_eq!(
+            r(Method::GET, "/__admin/tokens/options"),
+            (TokensWrite, ScopeKind::Space)
         );
         assert_eq!(
             r(Method::GET, "/__admin/nope"),

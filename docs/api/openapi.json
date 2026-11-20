@@ -6151,6 +6151,53 @@
         ]
       }
     },
+    "/__admin/tokens/options": {
+      "get": {
+        "tags": [
+          "tokens"
+        ],
+        "summary": "Choices for creating a token",
+        "description": "The roles the caller may grant and where, and the lifetime limits. Needs `tokens:write` somewhere. A role is grantable in a scope when the caller holds `tokens:write` and every permission of the role there.",
+        "operationId": "getTokenOptions",
+        "responses": {
+          "200": {
+            "description": "Options",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenOptions"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires tokens:write",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/__admin/tokens/self": {
       "get": {
         "tags": [
@@ -7868,6 +7915,51 @@
           }
         },
         "additionalProperties": false
+      },
+      "GrantableRole": {
+        "type": "object",
+        "description": "A role and the scopes in which the caller may grant it.",
+        "required": [
+          "name",
+          "builtin",
+          "permissions",
+          "global",
+          "spaces"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "editor"
+          },
+          "builtin": {
+            "type": "boolean",
+            "description": "`viewer`, `editor` or `admin`; false for custom roles of the access file."
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "stubs:read",
+              "stubs:write"
+            ]
+          },
+          "global": {
+            "type": "boolean",
+            "description": "The caller may create global tokens with this role."
+          },
+          "spaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Spaces in which the caller may create tokens with this role.",
+            "example": [
+              "payments"
+            ]
+          }
+        }
       },
       "GraphQlImport": {
         "type": "object",
@@ -10678,6 +10770,38 @@
             "items": {
               "$ref": "#/components/schemas/TokenInfo"
             }
+          }
+        }
+      },
+      "TokenOptions": {
+        "type": "object",
+        "description": "What the caller may choose when creating a token.",
+        "required": [
+          "maxDays",
+          "defaultDays",
+          "roles"
+        ],
+        "properties": {
+          "maxDays": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Longest lifetime in days (`FASTMOCK_TOKENS_MAX_DAYS`).",
+            "example": 365,
+            "minimum": 0
+          },
+          "defaultDays": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Lifetime used when `expiresInDays` is omitted.",
+            "example": 90,
+            "minimum": 0
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GrantableRole"
+            },
+            "description": "Every role, built-in first, with the scopes where the caller may grant it (the escalation rule\napplied to the caller)."
           }
         }
       },
