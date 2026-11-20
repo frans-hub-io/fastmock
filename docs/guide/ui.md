@@ -2,8 +2,8 @@
 
 FastMock ships a web UI inside the `fastmock` binary. It runs in the browser, talks only to the admin API, and
 covers everything the admin API offers: stubs, the request journal, verification, scenarios, callbacks,
-recording, chaos rules, files, services, contract tests, async mocks, settings, managed admin tokens, the audit
-log and the API reference.
+recording, chaos rules, files, services, contract tests, async mocks, settings, managed admin tokens, the access
+configuration, the audit log and the API reference.
 
 - [Opening the UI](#opening-the-ui)
 - [Signing in, permissions and signing out](#signing-in-permissions-and-signing-out)
@@ -72,9 +72,9 @@ the same rules, so hiding a button is a convenience, not the protection. With th
 
 | Role | In the UI |
 |---|---|
-| `viewer` | every screen read-only: no create, edit, delete, import, clear, trigger or upload controls; sensitive stub header values are masked by the server; the audit log and admin tokens are hidden |
+| `viewer` | every screen read-only: no create, edit, delete, import, clear, trigger or upload controls; sensitive stub header values are masked by the server; the audit log and admin tokens are hidden, and the Access page shows only your own access |
 | `editor` | everything that changes test state: stubs, imports, journal, callbacks, scenarios, chaos, KV, files, recordings, snapshots, contract tests, async mocks, settings, gRPC descriptors |
-| `admin` | everything an editor can do, plus the audit log, admin tokens, secret headers of contract tests and deleting all stubs |
+| `admin` | everything an editor can do, plus the audit log, admin tokens, the spaces, roles and bindings on the Access page, secret headers of contract tests and deleting all stubs |
 
 Custom roles of the access file get exactly the controls their permissions allow.
 
@@ -82,7 +82,9 @@ Custom roles of the access file get exactly the controls their permissions allow
 
 When the access file defines [spaces](../operations/access-control.md#spaces), the header shows a space selector
 with the spaces you can see. **All spaces** is offered when you hold a permission globally or are bound to several
-spaces; a principal bound to a single space always works in it. The choice is remembered in this browser.
+spaces; a principal bound to a single space always works in it. A binding or token in all spaces
+(`spaces: ["*"]`) lists every space and counts as several, unless the server has only one space. The choice is
+remembered in this browser.
 
 - Lists send the selected space to the server (`?space=`): stubs, the request journal, near misses, verification,
   scenarios, callbacks, files, contract tests, admin tokens and the dashboard counters. With **All spaces** they
@@ -295,7 +297,9 @@ use and status. Static tokens from `FASTMOCK_ADMIN_TOKENS` are not listed.
 - **Create token** (needs `tokens:write`) asks for a name, an optional description, a role, the scope and the
   lifetime in days. Only roles you may grant are offered, and only in the spaces where you may grant them: you
   must hold every permission of the role there ([escalation rule](../operations/access-control.md#managed-tokens)),
-  so a space-bound lead cannot create global tokens. The lifetime is limited to the server maximum
+  so a space-bound lead cannot create global tokens. **All spaces** is offered as a scope when you hold the
+  role's permissions globally or in all spaces; the token then works in every space, including spaces added later.
+  Tokens in all spaces show **All spaces** in the scope column. The lifetime is limited to the server maximum
   (`FASTMOCK_TOKENS_MAX_DAYS`) and defaults to 90 days, or `FASTMOCK_TOKENS_MAX_DAYS` when lower. A token
   created with a managed token expires no later than that token.
 - After creation the value is shown **once**, with a copy button and a warning; it is kept only in the dialog and
@@ -303,6 +307,23 @@ use and status. Static tokens from `FASTMOCK_ADMIN_TOKENS` are not listed.
 - **Revoke** (after a confirmation) stops the token, and the tokens created with it, on every replica within 10
   seconds; revoked and expired tokens stay visible under their status filters. Tokens created by an SSO user keep
   working after that user leaves; the creator column shows whose tokens to revoke.
+
+### Access
+
+The **Access** page (`/ui/access`, next to Admin tokens in the navigation) shows who may do what. It is
+read-only.
+
+- **Your access**, shown to everyone: your global permissions and, for each space, your effective permissions there
+  (from `GET /__admin/info`). Permissions you hold in all spaces are shown under **All spaces**.
+- With the `access:read` permission (admins, or a custom role that lists it, bound globally) the page also shows
+  three tables from `GET /__admin/access`: **Spaces** (name, path prefixes, hosts), **Roles** (name, a badge for
+  built-in roles, permissions) and **Bindings** (subject, role, scope: **Global**, **All spaces** or the list of
+  spaces).
+
+Spaces, roles and bindings cannot be created or changed in the UI. They come from the
+[access file](../operations/access-control.md#the-access-file): `FASTMOCK_ACCESS_FILE`, the `access` values of the
+Helm chart or the operator's `spec.access.configMapRef`. A change takes effect after a restart; with Helm and the
+operator the pods roll on their own.
 
 ### Audit log
 

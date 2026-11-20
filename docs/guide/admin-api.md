@@ -124,6 +124,7 @@ selects data are listed in [Access control](../operations/access-control.md#perm
 | `GET /contract-tests`, `/contract-tests/{id}` | viewer (verdicts only; details need editor) |
 | `POST /contract-tests`, `DELETE /contract-tests/{id}` | editor; `POST` with `secretHeaders` needs admin bound globally (`contracts:secrets`) |
 | `POST /reset`, `GET /audit` | admin |
+| `GET /access` | admin (`access:read`; see [Version and info](#version-and-info)) |
 | `GET /tokens`, `/tokens/{id}`; `POST /tokens`, `GET /tokens/options`, `DELETE /tokens/{id}` | admin (`tokens:read`, `tokens:write`; see [Managed tokens](#managed-tokens)) |
 | `GET /tokens/self`; `DELETE /tokens/{id}` of the calling token itself | the managed token itself |
 
@@ -155,10 +156,10 @@ curl -s -X DELETE localhost:9090/__admin/tokens/$ID -H "Authorization: Bearer $A
 
 | Endpoint | Body or parameters | Response |
 |---|---|---|
-| `POST /tokens` | `{name, role, spaces?, global?, expiresInDays?, description?}`; exactly one of `spaces` and `global: true`; `expiresInDays` 1 to `FASTMOCK_TOKENS_MAX_DAYS`, default 90 days or `FASTMOCK_TOKENS_MAX_DAYS` when lower; a token created by a managed token expires no later than its creator | `201` with `token` (the value, once) and the metadata; `409` when the name is taken by an active or a static token |
-| `GET /tokens` | `?space=`, `?status=active\|expired\|revoked` | `{"tokens": [...]}`: metadata of the tokens the caller may manage, newest first |
-| `GET /tokens/{id}`, `GET /tokens/self` | | metadata: `id`, `name`, `role`, `spaces`, `global`, `description`, `createdBy`, `createdAt`, `expiresAt`, `lastUsedAt`, `revokedAt`, `status`, and `parentId` for a token created by a managed token |
-| `GET /tokens/options` | | what the caller may choose when creating a token: `maxDays`, `defaultDays` and every role with its `permissions`, `builtin`, and where the caller may grant it (`global`, `spaces`); needs `tokens:write` somewhere |
+| `POST /tokens` | `{name, role, spaces?, global?, expiresInDays?, description?}`; exactly one of `spaces` and `global: true`; `spaces: ["*"]` for every space, now and later (`*` must be the only entry); `expiresInDays` 1 to `FASTMOCK_TOKENS_MAX_DAYS`, default 90 days or `FASTMOCK_TOKENS_MAX_DAYS` when lower; a token created by a managed token expires no later than its creator | `201` with `token` (the value, once) and the metadata; `409` when the name is taken by an active or a static token |
+| `GET /tokens` | `?space=`, `?status=active\|expired\|revoked` | `{"tokens": [...]}`: metadata of the tokens the caller may manage, newest first; `?space=` also matches tokens in all spaces |
+| `GET /tokens/{id}`, `GET /tokens/self` | | metadata: `id`, `name`, `role`, `spaces` (`["*"]` for a token in all spaces), `global`, `description`, `createdBy`, `createdAt`, `expiresAt`, `lastUsedAt`, `revokedAt`, `status`, and `parentId` for a token created by a managed token |
+| `GET /tokens/options` | | what the caller may choose when creating a token: `maxDays`, `defaultDays` and every role with its `permissions`, `builtin`, and where the caller may grant it (`global`, `spaces`, and `allSpaces` for tokens in all spaces); needs `tokens:write` somewhere |
 | `DELETE /tokens/{id}` | | the metadata with `status: revoked`; every replica rejects the token, and the tokens it created, within 10 seconds |
 
 Who may create, see and revoke which tokens (the escalation rule), expiry, caching and memory-mode behaviour are
@@ -362,10 +363,22 @@ curl -s -H "Authorization: Bearer $FASTMOCK_TOKEN" http://localhost:9090/__admin
 
 `features` lists `tokens` when the server supports [managed tokens](#managed-tokens). `gitSha` is set when the binary was built with the `FASTMOCK_GIT_SHA` environment variable, otherwise `null`.
 `GET /info` returns the version, storage kind, uptime, number of loaded stubs (`stubsLoaded`, only those the caller can see), plugins and the caller's identity:
-`principal` with `name`, `kind`, `role` and `permissions` (`global` and per-space lists). `instanceId` is a random
+`principal` with `name`, `kind`, `role` and `permissions`: `global`, per-space lists in `spaces`, and `allSpaces`,
+the permissions granted in [all spaces](../operations/access-control.md#all-spaces) (empty when none; they also
+appear under every space). `instanceId` is a random
 id of the answering process, new on every start; `warnings` (present when not empty) lists stored stubs that break
 the rules of their space after the access file changed. `GET /spaces` lists the
 spaces the caller can see with its permissions in each ([Access control](../operations/access-control.md#inspecting-your-permissions)).
+
+`GET /access` (permission `access:read`, admins) returns the loaded access configuration: whether an access file
+is loaded (`configured`), whether OIDC is enabled (`oidc`), the spaces with their path prefixes and hosts, the
+roles with their expanded permissions, and the bindings of the access file with subject, role and scope. It never
+contains token values or hashes. Spaces, roles and bindings are changed only in the access file
+([Access control: viewing the access configuration](../operations/access-control.md#viewing-the-access-configuration)).
+
+```sh
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:9090/__admin/access | jq '.bindings'
+```
 
 ## Limits
 

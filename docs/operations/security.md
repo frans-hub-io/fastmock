@@ -55,7 +55,7 @@ appears in the audit log, logs and `GET /__admin/info`, so give every client its
 |---|---|
 | `viewer` | Read everything: stubs (with credentials masked, see [Redaction](#redaction)), journal, callbacks, scenarios, key-value entries, imports, recordings, plugins, info, contract-test verdicts; run read-only queries such as request counts and near-miss analysis. |
 | `editor` | Everything a viewer may, plus every change a test makes: stubs, imports, journal and callback cleanup, scenario states, key-value entries, chaos rules, recordings, gRPC descriptors, plugin admin calls. |
-| `admin` | Everything, plus deleting all stubs at once, `POST /__admin/reset`, reading the audit log and starting contract tests that send server-side secrets (`secretHeaders`, the global permission `contracts:secrets`; an `admin` bound only in spaces does not get it). |
+| `admin` | Everything, plus deleting all stubs at once, `POST /__admin/reset`, reading the audit log and the access configuration (`GET /__admin/access`), and starting contract tests that send server-side secrets (`secretHeaders`, the global permission `contracts:secrets`; an `admin` bound only in spaces does not get it). |
 
 The roles are sets of permissions; custom roles, spaces and space-limited bindings come from the access file
 ([Access control](access-control.md)). Without it, `GET` and `HEAD` need `viewer`, other methods `editor`, unless an endpoint says otherwise (the

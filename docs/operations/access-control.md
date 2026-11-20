@@ -19,6 +19,7 @@ data-plane URL space.
 - [Ownership of the data plane](#ownership-of-the-data-plane)
 - [What is scoped and what is global](#what-is-scoped-and-what-is-global)
 - [Inspecting your permissions](#inspecting-your-permissions)
+- [Viewing the access configuration](#viewing-the-access-configuration)
 - [In the web UI](#in-the-web-ui)
 - [Errors](#errors)
 - [Examples](#examples)
@@ -57,6 +58,7 @@ everywhere.
 | `contracts:secrets` | `secretHeaders` in `POST /contract-tests` | global (the secrets of `FASTMOCK_CONTRACT_SECRETS` are server-wide); a custom role that lists it by name cannot be bound in spaces, see [Bindings](#bindings) |
 | `info:read` | `GET /info`, `/version`, `/plugins`, `/spaces` | global, implied by any binding |
 | `audit:read` | `GET /audit` | global |
+| `access:read` | `GET /access` (the [access configuration](#viewing-the-access-configuration): spaces, roles and bindings) | global |
 | `system:reset` | `POST /reset` | global |
 | `tokens:read`, `tokens:write` | `GET /tokens`, `/tokens/{id}`; `POST /tokens`, `DELETE /tokens/{id}` ([managed tokens](#managed-tokens)) | space (the scopes of the token) |
 
@@ -77,7 +79,7 @@ masked ([Security: redaction](security.md#redaction)).
 
 | Role | Permissions |
 |---|---|
-| `viewer` | every `*:read` permission except `audit:read` and `tokens:read` |
+| `viewer` | every `*:read` permission except `audit:read`, `tokens:read` and `access:read` |
 | `editor` | `viewer` plus `stubs:write`, `imports:run`, `journal:delete`, `files:write`, `recordings:write`, `callbacks:delete`, `state:write`, `chaos:write`, `grpc:write`, `contracts:details`, `contracts:write` |
 | `admin` | every permission |
 
@@ -116,12 +118,19 @@ bindings:
 
 All three lists are optional. Unknown fields are errors.
 
+Spaces, custom roles and bindings are defined only in the access file: the file named by `FASTMOCK_ACCESS_FILE`,
+the `access` values of the [Helm chart](helm.md#access-control), or the ConfigMap named by
+`spec.access.configMapRef` with the [operator](operator.md#access-file). There is no API that creates or changes
+them. To add a space, add it to the file and restart (with Helm and the operator the pods roll on their own). The
+UI's [Access page](../guide/ui.md#access) and `GET /__admin/access` show the configuration read-only
+([Viewing the access configuration](#viewing-the-access-configuration)).
+
 ## Custom roles
 
 | Field | Meaning |
 |---|---|
 | `name` | `[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?`, not `viewer`, `editor` or `admin`. |
-| `permissions` | Permission names; `resource:*` grants every permission of a resource (`stubs:*`, `contracts:*`). Unknown names are start-up errors. |
+| `permissions` | Permission names; `resource:*` grants every permission of a resource (`stubs:*`, `contracts:*`), and `"*"` (quoted) every permission. Unknown names are start-up errors. |
 | `description` | Optional text. |
 
 A custom role can be used in a binding and as the role of a token entry: `ci-billing:stub-author:<sha256>` in
@@ -129,8 +138,8 @@ A custom role can be used in a binding and as the role of a token entry: `ci-bil
 
 ## Bindings
 
-A binding gives a role to a subject, either everywhere (`global: true`) or in a list of spaces (`spaces`, exactly
-one of the two).
+A binding gives a role to a subject, either everywhere (`global: true`), in a list of spaces (`spaces`) or in every
+space (`spaces: ["*"]`, see [All spaces](#all-spaces)); exactly one of `global` and `spaces`.
 
 | Subject | Matches |
 |---|---|
@@ -157,6 +166,74 @@ access file /etc/fastmock/access/access.yaml: bindings[1] (group:qa): role `secr
 ```
 
 Bind such a role with `global: true`, or remove `contracts:secrets` from it.
+
+### All spaces
+
+`spaces: ["*"]` binds the role in every space of the access file, including spaces added to the file later: once
+the server restarts with a new space, the binding covers it without a change of its own. Quote the `*`; a bare
+`*` is not valid YAML there.
+
+```yaml
+bindings:
+  - subject: group:qa
+    role: editor
+    spaces: ["*"]
+```
+
+In each space the binding grants what a binding naming that space would grant, and nothing more:
+
+- it does not grant global data: stubs, journal entries, files, scenario states and key-value entries of the
+  global area, and requests that no stub matched, still need a global binding;
+- it does not grant global permissions (`stubs:purge`, `system:reset`, `audit:read`, `access:read`,
+  `contracts:secrets`, `recordings:*`, `chaos:*`, `grpc:*`, see [Permissions](#permissions));
+- a principal with such a binding counts as bound to several spaces, so writes without `space` answer `400`
+  ([Selecting a space](#selecting-a-space-in-the-api)), unless the file defines exactly one space.
+
+`*` must be the only entry, and the file must define at least one space; otherwise the server does not start:
+
+```text
+access file /etc/fastmock/access/access.yaml: bindings[2] (group:qa): "*" must be the only entry in spaces
+access file /etc/fastmock/access/access.yaml: bindings[2] (group:qa): spaces: ["*"] needs at least one space in the file
+```
+
+A custom role that lists `contracts:secrets` by name is refused with `spaces: ["*"]` exactly as in any other space
+binding (see above).
+
+### A developer who works in several spaces
+
+There are three ways to give one person or team access to several spaces:
+
+- **List the spaces** in the binding: `spaces: [payments, billing]`. The binding covers exactly these spaces; a
+  new space needs a change of the file.
+- **Use groups.** Bind each team's group in its space and add the person to the groups at the identity provider.
+  Group changes take effect at the next sign-in, without a change of the file.
+- **Bind all spaces** with `spaces: ["*"]`, for someone who works with every team, such as a QA lead or an
+  engineer on support duty, and should keep working in spaces added later.
+
+Use `global: true` instead when the person also needs global data (global stubs, unmatched requests, global files
+and state) or global permissions such as recordings, chaos rules, gRPC descriptors, the audit log or the access
+configuration. Bindings combine: a global `viewer` binding together with an `editor` binding in `["*"]` lets a
+person read everything and change the stubs and test data of every space, but nothing in the global area.
+
+```yaml
+spaces:
+  - name: payments
+  - name: billing
+  - name: orders
+bindings:
+  - subject: group:payments-dev
+    role: editor
+    spaces: [payments, billing]
+  - subject: group:qa
+    role: editor
+    spaces: ["*"]
+  - subject: group:qa
+    role: viewer
+    global: true
+  - subject: group:platform
+    role: admin
+    global: true
+```
 
 ## Managed tokens
 
@@ -186,23 +263,26 @@ response; FastMock stores its SHA-256 hash. Store it in your secret manager righ
 |---|---|
 | `name` | `[A-Za-z0-9._@-]`, at most 128 characters. Unique among active tokens and different from every static token name (`409` otherwise); a name becomes free again when its token is revoked or expired. It appears as the principal name in `/info`, logs and the audit log. |
 | `role` | `viewer`, `editor`, `admin` or a custom role of the access file. |
-| `spaces` or `global: true` | Exactly one of them. A token in spaces gets the role's space permissions in each of them (like a space binding). |
+| `spaces` or `global: true` | Exactly one of them. A token in spaces gets the role's space permissions in each of them (like a space binding). `spaces: ["*"]` gives them in every space of the access file, including spaces added later, like a binding in [all spaces](#all-spaces); `*` must be the only entry (`400` with `"*" must be the only entry in spaces` otherwise). The token keeps `["*"]` as stored, and the spaces are resolved on every request. |
 | `expiresInDays` | 1 to `FASTMOCK_TOKENS_MAX_DAYS` (default 365). When omitted: 90 days, or `FASTMOCK_TOKENS_MAX_DAYS` when lower. A token created by a managed token never outlives it (see below). |
 | `description` | Optional, at most 1024 bytes. |
 
 | Endpoint | Permission |
 |---|---|
 | `POST /tokens` | the escalation rule below |
-| `GET /tokens` | `tokens:read`; lists the tokens for which the caller holds `tokens:read` in every scope (global tokens need it globally). Filters: `?space=`, `?status=active\|expired\|revoked`. |
+| `GET /tokens` | `tokens:read`; lists the tokens for which the caller holds `tokens:read` in every scope (global tokens need it globally). Filters: `?space=` (a token in all spaces belongs to every space), `?status=active\|expired\|revoked`. |
 | `GET /tokens/{id}` | `tokens:read` in every scope of the token; others answer 404 |
 | `DELETE /tokens/{id}` | `tokens:write` in every scope of the token, or the token itself (self-revocation) |
 | `GET /tokens/self` | the managed token itself (any static token gets 404) |
-| `GET /tokens/options` | `tokens:write` somewhere; the roles with the scopes where the caller may grant them under the escalation rule, and `maxDays`/`defaultDays` (used by the UI's create form) |
+| `GET /tokens/options` | `tokens:write` somewhere; the roles with the scopes where the caller may grant them under the escalation rule (`global`, `spaces`, and `allSpaces` when the caller may create tokens in all spaces with the role), and `maxDays`/`defaultDays` (used by the UI's create form) |
 
 **Escalation rule.** The caller can create a token only if, in each requested scope, it holds `tokens:write` and
 every permission the role grants there: for a global token, globally; for a token in space `s`, the space
-permissions of the role in `s`. A token therefore never holds more than its creator, and a caller bound only to
-spaces cannot create a global token. A denial names the first missing permission:
+permissions of the role in `s`; for a token in all spaces (`spaces: ["*"]`), each of these either globally or
+through the caller's own binding or token in all spaces. Being bound to every current space one by one is not
+enough, because a token in all spaces also covers spaces added later. A token therefore never holds more than its
+creator, and a caller bound only to spaces cannot create a global token. A denial names the first missing
+permission:
 `403 {"error":"forbidden","details":["requires permission files:write in space billing to grant role editor there"],"required":"files:write"}`.
 The built-in `editor` role lacks `tokens:write`; to let a team manage its own tokens, bind a custom role with
 `tokens:read` and `tokens:write` in its space:
@@ -238,6 +318,10 @@ bindings:
   list shows the creator (`createdBy`); revoke a person's tokens as part of off-boarding.
 - Revoked and expired tokens stay listed with `status` `revoked` or `expired` for 90 days, then they are deleted.
 - If the role of a token disappears from the access file, the token is rejected until the role is back.
+- A token in all spaces grants nothing in spaces while the access file defines none; requests are not refused for
+  that reason, and the token covers the spaces as soon as the file defines them.
+- A token in all spaces may create tokens in all spaces or in any list of spaces, within the escalation rule; the
+  expiry cap and the revocation of the tokens it created apply as for any managed token.
 - In memory mode (`FASTMOCK_STORAGE=memory`) managed tokens live in the process and are lost on restart. With
   PostgreSQL they are stored in `fm_api_tokens` and shared by all replicas.
 
@@ -637,23 +721,58 @@ that requests there are answered only by that team's stubs and global ones.
 ```json
 {"principal": {"name": "ci-billing", "kind": "token", "role": "viewer",
   "permissions": {"global": ["info:read"],
-                  "spaces": {"billing": ["stubs:read", "stubs:write", "imports:run", "journal:read", "state:read"]}}}}
+                  "spaces": {"billing": ["stubs:read", "stubs:write", "imports:run", "journal:read", "state:read"]},
+                  "allSpaces": []}}}
 ```
 
 `permissions.global` holds what is granted everywhere; `permissions.spaces` what is granted only in single spaces
-(the effective permissions in a space are both lists together). `kind` is `token` for static tokens, `apiToken`
+(the effective permissions in a space are both lists together). `permissions.allSpaces` lists the permissions
+granted through a binding or token in [all spaces](#all-spaces) (empty when there is none); these permissions also
+appear under every space of `permissions.spaces`, so clients that read only `spaces` keep working. `kind` is `token` for static tokens, `apiToken`
 for [managed tokens](#managed-tokens), `user` for [OIDC users](#oidc-sign-in-and-bearer-jwts) (`anonymous` when
 authentication is disabled). Users also get `groups`, the group names from the provider. `role` is kept for older clients: the highest built-in role whose permissions
 the principal holds everywhere, `viewer` when it holds less. `stubsLoaded` in the same response counts only the
 stubs the caller can see.
 
 `GET /__admin/spaces` lists the spaces the caller can see (every space for a principal that holds a space
-permission globally; `info:read`, which every principal has, does not count; otherwise its bound spaces) with the caller's permissions in each:
+permission globally or is bound in all spaces; `info:read`, which every principal has, does not count; otherwise its bound spaces) with the caller's permissions in each:
 
 ```json
 {"spaces": [{"name": "billing", "pathPrefixes": [], "hosts": [],
              "permissions": ["stubs:read", "stubs:write", "imports:run", "journal:read", "state:read"]}]}
 ```
+
+## Viewing the access configuration
+
+`GET /__admin/access` returns the configuration that the server loaded: spaces, roles and bindings. It needs the
+global permission `access:read`, which the built-in `admin` role has; a custom role gets it by listing
+`access:read`, `access:*` or `"*"` and being bound with `global: true`. Without an access file and OIDC it needs `admin`,
+like every admin-only route.
+
+```json
+{"configured": true, "oidc": true,
+ "spaces": [{"name": "billing", "pathPrefixes": ["/billing/"], "hosts": ["billing.example.com"]},
+            {"name": "payments", "pathPrefixes": ["/payments/"], "hosts": []}],
+ "roles": [{"name": "viewer", "builtin": true, "permissions": ["stubs:read", "journal:read", "..."]},
+           {"name": "editor", "builtin": true, "permissions": ["..."]},
+           {"name": "admin", "builtin": true, "permissions": ["..."]},
+           {"name": "ci", "builtin": false, "permissions": ["stubs:read", "stubs:write", "..."]}],
+ "bindings": [{"subject": "token:ci-payments", "role": "ci", "global": false, "spaces": ["payments"]},
+              {"subject": "group:qa", "role": "editor", "global": false, "spaces": ["*"]},
+              {"subject": "group:platform", "role": "admin", "global": true, "spaces": []}]}
+```
+
+| Field | Meaning |
+|---|---|
+| `configured` | an access file is loaded |
+| `oidc` | OIDC sign-in or bearer JWTs are enabled |
+| `spaces` | the spaces of the access file, sorted by name, with `name`, `pathPrefixes` and `hosts` |
+| `roles` | the built-in roles first (`viewer`, `editor`, `admin`), then the custom roles sorted by name; `permissions` lists the permission names with wildcards expanded |
+| `bindings` | the bindings of the access file in file order: `subject` as written, `role`, `global`, and `spaces` (`["*"]` for [all spaces](#all-spaces), empty for a global binding) |
+
+The response contains no token values or hashes, no file paths and no OIDC client settings. Without an access
+file, `configured` is `false`, `spaces` and `bindings` are empty and `roles` holds the built-in roles. The
+response is read-only: spaces, roles and bindings change only in the [access file](#the-access-file).
 
 ## In the web UI
 
@@ -677,6 +796,11 @@ of its own and the server checks every call.
   `GET /__admin/version`) lists managed tokens with role, scope, creator, creation, expiry,
   last use and status, creates tokens limited to the roles and spaces of `GET /__admin/tokens/options` and to
   `FASTMOCK_TOKENS_MAX_DAYS`, shows the new value once with a copy button, and revokes after a confirmation.
+  **All spaces** is offered as a scope where `allSpaces` of the chosen role is `true`, and tokens in all spaces
+  show **All spaces** in the list.
+- **Access** shows every signed-in user **Your access**: the global permissions and the effective permissions in
+  each space (**All spaces** for permissions granted in all spaces). With `access:read` the page also shows the
+  spaces, roles and bindings of `GET /__admin/access` as read-only tables. Changes are made in the access file.
 
 ## Errors
 
@@ -791,8 +915,10 @@ before, only the response was sent. `fastmock_admin_auth_failures_total` has new
 **New routes.** `GET /__admin/auth/config`, `GET /__admin/auth/login`, `GET /__admin/auth/callback` and
 `POST /__admin/auth/logout` are reached without an admin token (the sign-in flow needs them). If a WAF, a Gateway
 or a route allow-list sits in front of the admin port, allow them when you use OIDC sign-in; without OIDC they
-answer `404`, except `/auth/config`. The token endpoints `/__admin/tokens*` and `GET /__admin/spaces` need
-authentication like every other admin route.
+answer `404`, except `/auth/config`. The token endpoints `/__admin/tokens*`, `GET /__admin/spaces` and
+`GET /__admin/access` need authentication like every other admin route; `GET /__admin/access` needs the global
+permission `access:read` (`admin`). Custom roles bound with `global: true` that should see the
+[access configuration](#viewing-the-access-configuration) need `access:read` added.
 
 **Unlisted admin paths.** With an access file or OIDC configured, an admin route without an explicit permission,
 including an unknown path under `/__admin`, needs `admin`: a non-admin gets `403` there where it got `404` before.
