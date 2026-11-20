@@ -64,6 +64,17 @@ fn migrate_summary(applied: &[fastmock_store::AppliedMigration], version: i64) -
     }
 }
 
+/// What `fastmock hash-token` prints: the token and its hash on two labelled lines for `--generate`,
+/// otherwise only the hex hash, so that `$(fastmock hash-token "$T")` yields it.
+fn hash_token_output(token: &str, generate: bool) -> String {
+    let hash = auth::hash_token(token);
+    if generate {
+        format!("token: {token}\nhash:  {hash}\n")
+    } else {
+        format!("{hash}\n")
+    }
+}
+
 /// Runs the `fastmock` command line with the plugins registered through
 /// [`register_plugins`](crate::register_plugins).
 pub async fn run() -> anyhow::Result<()> {
@@ -89,10 +100,7 @@ pub async fn run() -> anyhow::Result<()> {
                     s.trim().to_string()
                 }
             };
-            if generate {
-                println!("token: {token}");
-            }
-            println!("hash:  {}", auth::hash_token(&token));
+            print!("{}", hash_token_output(&token, generate));
             Ok(())
         }
         Command::Validate { file } => {
