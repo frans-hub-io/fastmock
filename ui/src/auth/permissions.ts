@@ -90,8 +90,29 @@ export function can(perms: Permissions | null | undefined, needed: Permission, w
 export function permissionsOf(principal: Partial<Principal> | null | undefined): Permissions | null {
   if (!principal) return null;
   const p = principal.permissions as Partial<Permissions> | undefined;
-  if (p && Array.isArray(p.global)) return { global: p.global, spaces: p.spaces ?? {} };
-  return principal.role ? { global: BUILTIN_ROLES[principal.role], spaces: {} } : null;
+  if (p && Array.isArray(p.global)) return { global: strings(p.global), spaces: spaceLists(p.spaces) };
+  if (!principal.role) return null;
+  const builtin = Object.hasOwn(BUILTIN_ROLES, principal.role) ? BUILTIN_ROLES[principal.role] : undefined;
+  return { global: builtin ?? [], spaces: {} };
+}
+
+function strings(list: unknown): Permission[] {
+  return Array.isArray(list) ? list.filter((x): x is string => typeof x === 'string') : [];
+}
+
+function spaceLists(spaces: unknown): Record<string, Permission[]> {
+  if (!spaces || typeof spaces !== 'object') return {};
+  return Object.fromEntries(Object.entries(spaces).map(([k, v]) => [k, strings(v)]));
+}
+
+/**
+ * True when the server offers the managed-token API: `/__admin/version` lists the `tokens` feature, or the
+ * principal holds an explicit `tokens:` permission (a bare `*` does not count).
+ */
+export function tokensOffered(features: readonly string[] | undefined, perms: Permissions | null | undefined): boolean {
+  if (features?.includes('tokens')) return true;
+  if (!perms) return false;
+  return [perms.global, ...Object.values(perms.spaces)].some((l) => l.some((x) => x.startsWith('tokens:')));
 }
 
 /** Spaces in which the principal is bound (global grants not included). */

@@ -4,7 +4,7 @@ import { ApiError, errorFromResponse, rawFetch, tokenStore, type AuthMode } from
 import type { Info } from '../api/types';
 import { AuthContext, type AuthState, type AuthStatus, type Expiry } from './context';
 import { permissionsOf } from './permissions';
-import { browser, ssoReturnPath } from './sso';
+import { browser, fetchAuthConfig, ssoReturnPath } from './sso';
 
 async function fetchInfo(token: string | null): Promise<Info> {
   const res = await rawFetch('GET', '/__admin/info', { token, skipAuthRedirect: true });
@@ -21,6 +21,18 @@ function endSessionUrl(raw: unknown): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * True when a request without a bearer token was authenticated by the SSO session cookie. A principal of
+ * another kind got its credentials elsewhere (for example a proxy that adds `Authorization`); servers that
+ * do not report the kind are asked whether SSO is configured.
+ */
+async function isSession(i: Info): Promise<boolean> {
+  if (i.authDisabled) return false;
+  const kind = (i.principal as { kind?: string }).kind;
+  if (kind !== undefined) return kind === 'user';
+  return (await fetchAuthConfig()).oidc;
 }
 
 async function endSession(): Promise<void> {
@@ -61,9 +73,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     const token = tokenStore.get();
     fetchInfo(token)
-      .then((i) => {
+      .then(async (i) => {
+        const session = !token && (await isSession(i));
         if (cancelled) return;
-        if (!token && !i.authDisabled) tokenStore.setSession(true);
+        if (session) tokenStore.setSession(true);
         setMode(tokenStore.mode());
         setInfo(i);
         setStatus('authenticated');

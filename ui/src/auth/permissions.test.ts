@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boundSpaces, can, covers, missingText, permissionsOf, seesAllSpaces, type Permissions } from './permissions';
+import { boundSpaces, can, covers, missingText, permissionsOf, seesAllSpaces, tokensOffered, type Permissions } from './permissions';
 import { loginErrorMessage, ssoReturnPath, takeLoginError } from './sso';
 
 const scoped: Permissions = {
@@ -66,5 +66,33 @@ describe('SSO helpers', () => {
     expect(takeLoginError('/stubs')).toEqual({ code: null, rest: '/stubs' });
     expect(loginErrorMessage('no_access')).toMatch(/no access/);
     expect(loginErrorMessage('weird')).toBe('Sign-in failed (weird).');
+  });
+});
+
+describe('unknown roles and partial permissions', () => {
+  it('grants an unknown role nothing instead of failing', () => {
+    const p = permissionsOf({ name: 'x', role: 'auditor' as never });
+    expect(p).toEqual({ global: [], spaces: {} });
+    expect(seesAllSpaces(p)).toBe(false);
+    expect(can(p, 'stubs:read')).toBe(false);
+    expect(permissionsOf({ name: 'x', role: 'constructor' as never })).toEqual({ global: [], spaces: {} });
+  });
+
+  it('keeps what the server lists and drops malformed space entries', () => {
+    const p = permissionsOf({ name: 'x', role: 'auditor' as never, permissions: { global: ['journal:read'], spaces: { billing: null as never, payments: ['stubs:read'] } } });
+    expect(p).toEqual({ global: ['journal:read'], spaces: { billing: [], payments: ['stubs:read'] } });
+    expect(can(p, 'stubs:read', 'billing')).toBe(false);
+    expect(can(p, 'stubs:read', 'payments')).toBe(true);
+    expect(seesAllSpaces(p)).toBe(true);
+  });
+});
+
+describe('tokensOffered', () => {
+  it('needs the tokens feature or an explicit tokens permission, not a bare *', () => {
+    expect(tokensOffered(['files'], { global: ['*'], spaces: {} })).toBe(false);
+    expect(tokensOffered(undefined, { global: ['*'], spaces: {} })).toBe(false);
+    expect(tokensOffered(['tokens'], { global: ['*'], spaces: {} })).toBe(true);
+    expect(tokensOffered([], { global: [], spaces: { payments: ['tokens:write'] } })).toBe(true);
+    expect(tokensOffered([], null)).toBe(false);
   });
 });

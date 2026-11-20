@@ -10,9 +10,9 @@ const ADMIN_PERMS = { global: ['*'], spaces: {} };
 
 interface Principal {
   name: string;
-  role: 'viewer' | 'editor' | 'admin';
-  kind: string;
-  permissions: { global: string[]; spaces: Record<string, string[]> };
+  role: string;
+  kind?: string;
+  permissions?: { global: string[]; spaces: Record<string, string[] | null> };
   groups?: string[];
 }
 
@@ -37,6 +37,8 @@ interface Server {
   session?: boolean;
   spaces?: typeof SPACES;
   expireSession?: () => boolean;
+  /** `features` of `GET /__admin/version`. */
+  features?: string[];
 }
 
 function server(s: Server) {
@@ -50,6 +52,7 @@ function server(s: Server) {
       if (!ok) return { status: 401, body: { error: 'unauthorized' } };
     }
     if (url.pathname === '/__admin/info') return { body: info(s.principal) };
+    if (url.pathname === '/__admin/version') return { body: { version: '0.1.0', features: s.features ?? ['files', 'tokens'] } };
     if (url.pathname === '/__admin/spaces') return { body: { spaces: s.spaces ?? [] } };
     if (url.pathname === '/__admin/stubs' && init.method === 'GET') {
       const space = url.searchParams.get('space');
@@ -161,6 +164,53 @@ describe('session mode', () => {
     expect(screen.getByTestId('role-badge')).toHaveTextContent('admin');
     expect(screen.queryByTestId('space-select')).not.toBeInTheDocument();
   });
+
+  it('stays out of session mode when a proxy authenticates a token principal, and signs out locally', async () => {
+    const calls = server({ principal: { name: 'ops', role: 'admin', kind: 'token', permissions: ADMIN_PERMS }, session: true, oidc: true });
+    renderApp(<AppRoutes />, '/stubs');
+    await screen.findAllByTestId('stub-row');
+    await userEvent.click(screen.getByTestId('principal'));
+    await userEvent.click(await screen.findByTestId('logout'));
+    expect(await screen.findByTestId('token-input')).toBeInTheDocument();
+    expect(calls.some((c) => c.url.startsWith('/__admin/auth/logout'))).toBe(false);
+    expect(screen.queryByTestId('session-expired')).not.toBeInTheDocument();
+  });
+
+  it('uses session mode for a principal without a kind only when SSO is configured', async () => {
+    const legacy: Principal = { name: 'ops', role: 'admin', permissions: ADMIN_PERMS };
+    for (const oidc of [true, false]) {
+      tokenStore.setSession(false);
+      const calls = server({ principal: legacy, session: true, oidc });
+      const view = renderApp(<AppRoutes />, '/stubs');
+      await screen.findAllByTestId('stub-row');
+      await userEvent.click(screen.getByTestId('principal'));
+      await userEvent.click(await screen.findByTestId('logout'));
+      await screen.findByTestId('token-input');
+      expect(calls.some((c) => c.url === '/__admin/auth/logout'), `oidc=${oidc}`).toBe(oidc);
+      view.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('unknown roles', () => {
+  it('renders the shell for a role the UI does not know and grants it nothing', async () => {
+    tokenStore.set('good');
+    server({ principal: { name: 'auditor-1', role: 'auditor', kind: 'token' }, spaces: SPACES });
+    renderApp(<AppRoutes />, '/');
+    expect(await screen.findByTestId('principal-name')).toHaveTextContent('auditor-1');
+    expect(screen.getByTestId('role-badge')).toHaveTextContent('auditor');
+    expect(screen.queryByRole('link', { name: 'Stubs' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Dashboard' })).toBeInTheDocument();
+  });
+
+  it('tolerates a space without a permission list', async () => {
+    tokenStore.set('good');
+    server({ principal: { name: 'ci', role: 'custom', kind: 'apiToken', permissions: { global: ['info:read'], spaces: { billing: null, payments: ['stubs:read'] } } }, spaces: SPACES });
+    renderApp(<AppRoutes />, '/stubs');
+    expect(await screen.findByTestId('principal-name')).toHaveTextContent('ci');
+    expect(await screen.findByRole('link', { name: 'Stubs' })).toBeInTheDocument();
+  });
 });
 
 describe('spaces', () => {
@@ -250,6 +300,7 @@ describe('tokens page', () => {
       if (url.pathname === '/__admin/auth/config') return { body: { oidc: false, tokenLogin: true } };
       if (init.headers.get('authorization') !== 'Bearer good') return { status: 401, body: { error: 'unauthorized' } };
       if (url.pathname === '/__admin/info') return { body: info({ name: 'ops', role: 'admin', kind: 'token', permissions: ADMIN_PERMS }) };
+      if (url.pathname === '/__admin/version') return { body: { version: '0.1.0', features: ['tokens'] } };
       if (url.pathname === '/__admin/spaces') return { body: { spaces: SPACES } };
       if (url.pathname === '/__admin/tokens/options') return { body: OPTIONS };
       if (url.pathname === '/__admin/tokens' && init.method === 'GET') return { body: { tokens } };
@@ -305,6 +356,29 @@ describe('tokens page', () => {
     expect(calls.some((c) => c.method === 'DELETE')).toBe(false);
     await userEvent.click(await screen.findByTestId('confirm-button'));
     await waitFor(() => expect(calls.some((c) => c.method === 'DELETE' && c.url === `/__admin/tokens/${existing.id}`)).toBe(true));
+  });
+
+  it('is hidden from admins when the server does not advertise the tokens API', async () => {
+    tokenStore.set('good');
+    server({ principal: { name: 'ops', role: 'admin', kind: 'token', permissions: ADMIN_PERMS }, features: ['files'] });
+    renderApp(<AppRoutes />, '/tokens');
+    expect(await screen.findByText('Not available on this server')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Audit log' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Admin tokens' })).not.toBeInTheDocument();
+  });
+
+  it('is shown to admins when the server advertises the tokens API', async () => {
+    tokenStore.set('good');
+    server({ principal: { name: 'ops', role: 'admin', kind: 'token', permissions: ADMIN_PERMS }, features: ['files', 'tokens'] });
+    renderApp(<AppRoutes />, '/');
+    expect(await screen.findByRole('link', { name: 'Admin tokens' })).toBeInTheDocument();
+  });
+
+  it('counts an explicit tokens permission as the API being offered', async () => {
+    tokenStore.set('good');
+    server({ principal: { name: 'ci', role: 'viewer', kind: 'apiToken', permissions: { global: ['info:read', 'tokens:read'], spaces: {} } }, features: [] });
+    renderApp(<AppRoutes />, '/');
+    expect(await screen.findByRole('link', { name: 'Admin tokens' })).toBeInTheDocument();
   });
 
   it('is hidden from principals without tokens:read', async () => {

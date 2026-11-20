@@ -1,5 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
+import { tokensOffered } from '../auth/permissions';
+import { useAuth } from '../auth/useAuth';
 import type { Schema } from '../lib/jsonSchema';
+import { client, unwrap } from './client';
 
 export interface OpenApiDoc {
   openapi?: string;
@@ -46,6 +49,19 @@ export function useFeature(path: string, method?: string): FeatureState {
   const has = specHasPath(spec.data, path, method);
   if (has === undefined) return 'unknown';
   return has ? 'available' : 'missing';
+}
+
+/** `GET /__admin/version`: build version and the features the server advertises. */
+export function useVersion() {
+  return useQuery({ queryKey: ['version'], queryFn: () => unwrap(client.GET('/__admin/version')), retry: false, staleTime: 5 * 60_000 });
+}
+
+/** Whether the server offers the managed-token API (see `tokensOffered`); a failed version request counts as no. */
+export function useTokensApi(): Exclude<FeatureState, 'unknown'> {
+  const { permissions } = useAuth();
+  const version = useVersion();
+  if (tokensOffered(version.data?.features, permissions)) return 'available';
+  return version.isLoading ? 'loading' : 'missing';
 }
 
 export function useStubSchema(): { root: Schema; schema: Schema } | null {

@@ -6,25 +6,8 @@ import { Navigate, useLocation } from 'react-router';
 import { errorMessage } from '../api/http';
 import signatureDark from '../assets/brand/FastMock_by_FransHub_dark.svg';
 import signatureLight from '../assets/brand/FastMock_by_FransHub_light.svg';
-import { loginErrorMessage, takeLoginError } from '../auth/sso';
+import { fetchAuthConfig, loginErrorMessage, takeLoginError } from '../auth/sso';
 import { useAuth } from '../auth/useAuth';
-
-interface AuthConfig {
-  oidc: boolean;
-  tokenLogin: boolean;
-}
-
-/** Sign-in methods; servers without the endpoint offer token sign-in only. */
-async function fetchAuthConfig(): Promise<AuthConfig> {
-  try {
-    const res = await fetch('/__admin/auth/config', { headers: { Accept: 'application/json' }, credentials: 'omit', cache: 'no-store' });
-    if (!res.ok) return { oidc: false, tokenLogin: true };
-    const body = (await res.json()) as Partial<AuthConfig>;
-    return { oidc: body.oidc === true, tokenLogin: body.tokenLogin !== false };
-  } catch {
-    return { oidc: false, tokenLogin: true };
-  }
-}
 
 export function LoginPage() {
   const { status, login, loginSso, expired } = useAuth();

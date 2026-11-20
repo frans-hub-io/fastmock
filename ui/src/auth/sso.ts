@@ -5,6 +5,23 @@ export const browser = {
   },
 };
 
+export interface AuthConfig {
+  oidc: boolean;
+  tokenLogin: boolean;
+}
+
+/** Sign-in methods; servers without the endpoint offer token sign-in only. */
+export async function fetchAuthConfig(): Promise<AuthConfig> {
+  try {
+    const res = await fetch('/__admin/auth/config', { headers: { Accept: 'application/json' }, credentials: 'omit', cache: 'no-store' });
+    if (!res.ok) return { oidc: false, tokenLogin: true };
+    const body = (await res.json()) as Partial<AuthConfig>;
+    return { oidc: body.oidc === true, tokenLogin: body.tokenLogin !== false };
+  } catch {
+    return { oidc: false, tokenLogin: true };
+  }
+}
+
 /** A return path under /ui/ for the SSO sign-in (the server accepts nothing else). */
 export function ssoReturnPath(from: string): string {
   const path = from.startsWith('/') && !from.startsWith('//') ? from : '/';

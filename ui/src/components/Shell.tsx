@@ -46,6 +46,7 @@ import lockupDark from '../assets/brand/FransHub_FastMock_dark.svg';
 import lockupLight from '../assets/brand/FransHub_FastMock_light.svg';
 import monogramDark from '../assets/brand/FransHub_monogram_dark.svg';
 import monogramLight from '../assets/brand/FransHub_monogram_light.svg';
+import { useTokensApi } from '../api/features';
 import { boundSpaces, can, kindLabel, seesAllSpaces, type Permission } from '../auth/permissions';
 import { useAuth, useSpace } from '../auth/useAuth';
 import classes from './Shell.module.css';
@@ -58,6 +59,8 @@ interface NavItem {
   perm?: Permission;
   /** The permission must be held globally (the screen is not scoped by space). */
   global?: boolean;
+  /** Shown only when the server offers the managed-token API. */
+  tokensApi?: boolean;
 }
 
 const NAV: { group: string; items: NavItem[] }[] = [
@@ -95,7 +98,7 @@ const NAV: { group: string; items: NavItem[] }[] = [
     items: [
       { to: '/kv', label: 'KV store', icon: IconDatabase, perm: 'state:read' },
       { to: '/settings', label: 'Settings', icon: IconSettings, perm: 'chaos:read' },
-      { to: '/tokens', label: 'Admin tokens', icon: IconKey, perm: 'tokens:read' },
+      { to: '/tokens', label: 'Admin tokens', icon: IconKey, perm: 'tokens:read', tokensApi: true },
       { to: '/audit', label: 'Audit log', icon: IconHistory, perm: 'audit:read' },
       { to: '/api', label: 'API docs', icon: IconApi },
     ],
@@ -106,10 +109,10 @@ const ROLE_COLOR: Record<string, string> = { viewer: 'gray', editor: 'blue', adm
 
 function Nav({ onNavigate }: { onNavigate?: () => void }) {
   const { permissions } = useAuth();
+  const tokensApi = useTokensApi() === 'available';
   const loc = useLocation();
-  const groups = NAV.map((g) => ({ ...g, items: g.items.filter((i) => !i.perm || can(permissions, i.perm, i.global ? null : undefined)) })).filter(
-    (g) => g.items.length > 0,
-  );
+  const shown = (i: NavItem) => (!i.perm || can(permissions, i.perm, i.global ? null : undefined)) && (!i.tokensApi || tokensApi);
+  const groups = NAV.map((g) => ({ ...g, items: g.items.filter(shown) })).filter((g) => g.items.length > 0);
   return (
     <nav aria-label="Main">
       {groups.map((g) => (

@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { client, unwrap } from '../api/client';
+import { useVersion } from '../api/features';
 import { useAuth, useSpaceQuery } from '../auth/useAuth';
 import { MethodBadge, PageHeader, StatusBadge, Time } from '../components/common';
 import { EmptyState, ErrorState, LoadingState } from '../components/States';
@@ -90,7 +91,7 @@ export default function Dashboard() {
   const { refresh } = useAuth();
   const spaceQ = useSpaceQuery();
   const info = useQuery({ queryKey: ['info'], queryFn: () => unwrap(client.GET('/__admin/info')), refetchInterval: 10_000 });
-  const version = useQuery({ queryKey: ['version'], queryFn: () => unwrap(client.GET('/__admin/version')), retry: false });
+  const version = useVersion();
   const total = useQuery({ queryKey: ['requests', 'count', 'all', spaceQ], queryFn: () => unwrap(client.GET('/__admin/requests/count', { params: { query: spaceQ } })), refetchInterval: 5_000 });
   const unmatchedCount = useQuery({
     queryKey: ['requests', 'count', 'unmatched'],

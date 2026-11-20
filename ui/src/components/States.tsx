@@ -2,7 +2,7 @@ import { Alert, Button, Center, Group, Loader, Stack, Text, ThemeIcon } from '@m
 import { IconAlertTriangle, IconInbox, IconPlugConnectedX } from '@tabler/icons-react';
 import type { ReactNode } from 'react';
 import { errorMessage, isForbidden, isNotFound } from '../api/http';
-import { useFeature } from '../api/features';
+import { useFeature, useTokensApi } from '../api/features';
 
 export function LoadingState({ label = 'Loading…' }: { label?: string }) {
   return (
@@ -71,5 +71,13 @@ export function FeatureGate({ path, method, what, children }: { path: string; me
   const state = useFeature(path, method);
   if (state === 'loading') return <LoadingState />;
   if (state === 'missing') return <NotAvailable what={what} />;
+  return <>{children}</>;
+}
+
+/** Renders `children` only when the server offers the managed-token API. */
+export function TokensGate({ children }: { children: ReactNode }) {
+  const state = useTokensApi();
+  if (state === 'loading') return <LoadingState />;
+  if (state === 'missing') return <NotAvailable what="Token management" />;
   return <>{children}</>;
 }

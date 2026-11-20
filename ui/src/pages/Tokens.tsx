@@ -30,7 +30,7 @@ import { useAuth, useCan, useSpace, useSpaceQuery } from '../auth/useAuth';
 import { PageHeader, Time } from '../components/common';
 import { Permitted } from '../components/Permitted';
 import { SpaceBadge } from '../components/spaces';
-import { EmptyState, ErrorState, FeatureGate, LoadingState } from '../components/States';
+import { EmptyState, ErrorState, LoadingState, TokensGate } from '../components/States';
 
 type TokenInfo = components['schemas']['TokenInfo'];
 type TokenOptions = components['schemas']['TokenOptions'];
@@ -453,8 +453,8 @@ function TokensInner() {
 
 export default function Tokens() {
   return (
-    <FeatureGate path="/__admin/tokens" method="get" what="Token management">
+    <TokensGate>
       <TokensInner />
-    </FeatureGate>
+    </TokensGate>
   );
 }
