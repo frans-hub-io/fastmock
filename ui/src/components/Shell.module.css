@@ -139,7 +139,7 @@
 }
 
 .roleBadge {
-  max-width: 120px;
+  max-width: 240px;
 }
 
 @media (min-width: 75em) {

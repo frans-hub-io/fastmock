@@ -23,12 +23,12 @@ import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-quer
 import { useState, type ReactElement } from 'react';
 import { client, unwrap } from '../api/client';
 import { errorMessage } from '../api/http';
-import { confirmAction, notifySuccess, useApiMutation } from '../api/mutations';
+import { confirmAction, useApiMutation } from '../api/mutations';
 import type { components } from '../api/schema';
-import { ALL_SPACES, can as allowed, canInAllSpaces, isAllSpaces } from '../auth/permissions';
+import { ALL_SPACES, appliesInSpaces, can as allowed, canInAllSpaces, isAllSpaces } from '../auth/permissions';
 import { useAuth, useCan, useSpace, useSpaceQuery } from '../auth/useAuth';
 import { PageHeader, Time } from '../components/common';
-import { Permitted } from '../components/Permitted';
+import { Denied, Permitted } from '../components/Permitted';
 import { ScopeBadges } from '../components/spaces';
 import { EmptyState, ErrorState, LoadingState, NoAccessState, TokensGate } from '../components/States';
 
@@ -63,6 +63,38 @@ function scopesOf(role: GrantableRole | undefined, spacesEnabled: boolean): { gl
 }
 
 const SCOPE_LABEL: Record<Scope, string> = { spaces: 'In spaces', all: 'All spaces', global: 'Global' };
+
+/**
+ * The permissions a token with this role holds in the chosen scope: all of the role's for a global token, only
+ * those that apply in spaces for a token limited to spaces or all spaces.
+ */
+function TokenPermissions({ role, scope }: { role: GrantableRole; scope: Scope }) {
+  const held = scope === 'global' ? role.permissions : role.permissions.filter(appliesInSpaces);
+  const dropped = role.permissions.length - held.length;
+  return (
+    <Stack gap={4}>
+      <Group gap={4} data-testid="token-role-permissions">
+        {held.length ? (
+          held.map((p) => (
+            <Badge key={p} size="sm" variant="outline" color="gray" tt="none">
+              {p}
+            </Badge>
+          ))
+        ) : (
+          <Text size="sm" c="dimmed">
+            none
+          </Text>
+        )}
+      </Group>
+      {dropped > 0 && (
+        <Text size="xs" c="dimmed" data-testid="token-global-only-note">
+          {dropped === 1 ? '1 permission' : `${dropped} permissions`} of the role act on the whole server and are not granted to a
+          token limited to spaces.
+        </Text>
+      )}
+    </Stack>
+  );
+}
 
 function CreateTokenModal({
   opened,
@@ -168,15 +200,7 @@ function CreateTokenModal({
           data-testid="token-role"
           comboboxProps={{ withinPortal: true }}
         />
-        {def && (
-          <Group gap={4} data-testid="token-role-permissions">
-            {def.permissions.map((p) => (
-              <Badge key={p} size="sm" variant="outline" color="gray" tt="none">
-                {p}
-              </Badge>
-            ))}
-          </Group>
-        )}
+        {def && <TokenPermissions role={def} scope={effectiveScope} />}
         {def && choices.length > 1 && (
           <SegmentedControl
             value={effectiveScope}
@@ -241,13 +265,31 @@ function CreateTokenModal({
   );
 }
 
+const ALL_SPACES_REVOKE = 'Requires tokens:write in all spaces (globally or through spaces: ["*"])';
+
 /**
  * The revoke control as is when the caller may revoke the token, else disabled with the missing permission.
  * An all-spaces token needs `tokens:write` globally or through the caller's own all-spaces grant, which
- * `Permitted` cannot express.
+ * `Permitted` cannot express, so it gets its own text.
  */
-function RevokeGuard({ allowed: ok, where, children }: { allowed: boolean; where: string | null | undefined; children: ReactElement<{ disabled?: boolean }> }) {
+function RevokeGuard({
+  allowed: ok,
+  allSpaces,
+  where,
+  children,
+}: {
+  allowed: boolean;
+  allSpaces: boolean;
+  where: string | null | undefined;
+  children: ReactElement<{ disabled?: boolean }>;
+}) {
   if (ok) return children;
+  if (allSpaces)
+    return (
+      <Denied perm="tokens:write" why={ALL_SPACES_REVOKE}>
+        {children}
+      </Denied>
+    );
   return (
     <Permitted perm="tokens:write" where={where}>
       {children}
@@ -419,12 +461,13 @@ function TokensInner() {
                     </Table.Td>
                     <Table.Td>
                       {t.status === 'active' && (
-                        <RevokeGuard allowed={revocable(t)} where={t.global || isAllSpaces(t.spaces) ? null : (t.spaces.find((s) => !can('tokens:write', s)) ?? t.spaces[0])}>
+                        <RevokeGuard allowed={revocable(t)} allSpaces={!t.global && isAllSpaces(t.spaces)} where={t.global || isAllSpaces(t.spaces) ? null : (t.spaces.find((s) => !can('tokens:write', s)) ?? t.spaces[0])}>
                           <Tooltip label={`Revoke ${t.name}`} withArrow disabled={!revocable(t)}>
                             <ActionIcon
                               variant="subtle"
                               color="red"
                               aria-label={`Revoke ${t.name}`}
+                              disabled={!revocable(t)}
                               onClick={() =>
                                 confirmAction({
                                   title: `Revoke token ${t.name}?`,
@@ -455,7 +498,6 @@ function TokensInner() {
         onCreated={(t) => {
           setCreateOpen(false);
           setCreated({ name: t.name, token: t.token });
-          notifySuccess(`Created token ${t.name}`);
           void qc.invalidateQueries({ queryKey: ['tokens'] });
         }}
       />

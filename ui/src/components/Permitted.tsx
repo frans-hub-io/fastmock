@@ -27,6 +27,15 @@ export function Permitted({
   if (!why) return children;
   if (hide) return null;
   return (
+    <Denied perm={perm} why={why}>
+      {children}
+    </Denied>
+  );
+}
+
+/** The control disabled inside a tooltip that says why: for checks `Permitted` cannot express. */
+export function Denied({ perm, why, children }: { perm: Permission; why: string; children: ReactElement<{ disabled?: boolean }> }) {
+  return (
     <Tooltip label={why} withArrow multiline maw={280} events={{ hover: true, focus: true, touch: true }}>
       <span className="permitted" tabIndex={0} data-testid="missing-permission" data-permission={perm}>
         {cloneElement(children, { disabled: true })}

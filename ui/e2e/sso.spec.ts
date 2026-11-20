@@ -22,7 +22,7 @@ test('signs in with SSO, works in the user space with the session cookie and sig
     await expect(page).toHaveURL(/\/ui\/stubs$/);
     await expect(page.getByTestId('principal-name')).toHaveText('alice');
     await expect(page.getByTestId('kind-badge')).toHaveText('user');
-    await expect(page.getByTestId('role-badge')).toHaveText('payments');
+    await expect(page.getByTestId('role-badge')).toHaveText('editor in payments');
     expect(await page.evaluate(() => window.sessionStorage.getItem('fastmock.token'))).toBeNull();
 
     const csrf: string[] = [];

@@ -65,7 +65,7 @@ test('the space selector filters lists, shows the space column and is remembered
 test('a viewer bound to one space sees only that space and no write actions', async ({ page }) => {
   const errors = watchConsole(page);
   await login(page, SPACE_VIEWER_TOKEN);
-  await expect(page.getByTestId('role-badge')).toHaveText('payments');
+  await expect(page.getByTestId('role-badge')).toHaveText('viewer in payments');
   await expect(page.getByTestId('space-select')).toHaveValue('payments');
   await page.getByTestId('space-select').click();
   await expect(page.getByRole('option')).toHaveCount(1);

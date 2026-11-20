@@ -846,18 +846,26 @@ async fn access_view_lists_the_access_file_without_secrets() {
             .contains(&json!("access:read"))
     );
     let bindings = v["bindings"].as_array().unwrap();
-    assert_eq!(bindings.len(), 11);
+    assert_eq!(bindings.len(), 14);
     assert_eq!(
         bindings[0],
-        json!({"subject": "token:allv", "role": "viewer", "global": false, "spaces": ["*"]})
+        json!({"subject": "token:allv", "role": "viewer", "global": false, "spaces": ["*"], "source": "accessFile"})
     );
     assert_eq!(
         bindings[6],
-        json!({"subject": "token:perspace", "role": "team-lead", "global": false, "spaces": ["alpha", "beta"]})
+        json!({"subject": "token:perspace", "role": "team-lead", "global": false, "spaces": ["alpha", "beta"], "source": "accessFile"})
     );
     assert_eq!(
         bindings[9],
-        json!({"subject": "group:auditors", "role": "auditor", "global": true, "spaces": []})
+        json!({"subject": "group:auditors", "role": "auditor", "global": true, "spaces": [], "source": "accessFile"})
+    );
+    assert_eq!(
+        bindings[11..],
+        [
+            json!({"subject": "token:ops", "role": "admin", "global": true, "spaces": [], "source": "adminTokens"}),
+            json!({"subject": "token:ci", "role": "editor", "global": true, "spaces": [], "source": "adminTokens"}),
+            json!({"subject": "token:dash", "role": "viewer", "global": true, "spaces": [], "source": "adminTokens"}),
+        ]
     );
     let mut keys: Vec<&String> = v.as_object().unwrap().keys().collect();
     keys.sort();
@@ -870,6 +878,8 @@ async fn access_view_lists_the_access_file_without_secrets() {
         ADMIN.to_string(),
         LEAD.to_string(),
         hash_token(ADMIN),
+        hash_token(EDITOR),
+        hash_token(VIEWER),
         hash_token(LEAD),
         file.display().to_string(),
         file.parent().unwrap().display().to_string(),
@@ -904,6 +914,51 @@ async fn access_view_lists_the_access_file_without_secrets() {
 }
 
 #[tokio::test]
+async fn access_view_lists_the_roles_of_static_tokens_without_hashes() {
+    let h = H::start(
+        StorageKind::Memory,
+        vec![
+            format!("ops:admin:{}", hash_token(ADMIN)),
+            format!("lead::{}", hash_token(LEAD)),
+        ],
+        Some(
+            r#"
+spaces:
+  - name: alpha
+    pathPrefixes: [/alpha/]
+bindings:
+  - subject: token:lead
+    role: editor
+    spaces: [alpha]
+"#,
+        ),
+    )
+    .await;
+    let (st, text) = h.raw(Method::GET, "/access", ADMIN, None).await;
+    assert_eq!(st, 200, "{text}");
+    let v: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        v["bindings"],
+        json!([
+            {"subject": "token:lead", "role": "editor", "global": false, "spaces": ["alpha"], "source": "accessFile"},
+            {"subject": "token:ops", "role": "admin", "global": true, "spaces": [], "source": "adminTokens"},
+        ]),
+        "name:role:hash adds a global binding, name::hash adds none"
+    );
+    for secret in [
+        ADMIN.to_string(),
+        LEAD.to_string(),
+        hash_token(ADMIN),
+        hash_token(LEAD),
+        hash_token(ADMIN).to_uppercase(),
+        hash_token(LEAD).to_uppercase(),
+        "sha256".to_string(),
+    ] {
+        assert!(!text.contains(&secret), "{secret} leaked: {text}");
+    }
+}
+
+#[tokio::test]
 async fn access_view_without_an_access_file_is_admin_only() {
     let h = H::start(StorageKind::Memory, legacy_tokens(), None).await;
     let v = h.ok(Method::GET, "/access", ADMIN, None).await;
@@ -918,7 +973,11 @@ async fn access_view_without_an_access_file_is_admin_only() {
                 {"name": "editor", "builtin": true, "permissions": v["roles"][1]["permissions"].clone()},
                 {"name": "admin", "builtin": true, "permissions": v["roles"][2]["permissions"].clone()},
             ],
-            "bindings": [],
+            "bindings": [
+                {"subject": "token:ops", "role": "admin", "global": true, "spaces": [], "source": "adminTokens"},
+                {"subject": "token:ci", "role": "editor", "global": true, "spaces": [], "source": "adminTokens"},
+                {"subject": "token:dash", "role": "viewer", "global": true, "spaces": [], "source": "adminTokens"},
+            ],
         })
     );
     assert_eq!(v["roles"][2]["permissions"].as_array().unwrap().len(), 28);

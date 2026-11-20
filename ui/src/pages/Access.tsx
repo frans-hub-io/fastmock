@@ -1,4 +1,4 @@
-import { Alert, Badge, Code, Group, Paper, Stack, Table, Text, Title } from '@mantine/core';
+import { Alert, Badge, Code, Group, Paper, Stack, Table, Text, Title, Tooltip } from '@mantine/core';
 import { IconInfoCircle } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
@@ -50,11 +50,15 @@ function Section({ title, description, children, testId }: { title: string; desc
   );
 }
 
+/**
+ * A read-only table; below the `sm` breakpoint each row is stacked as a card (cells labelled by `data-label`),
+ * so phones need no sideways scrolling.
+ */
 function TableBox({ children, testId, miw }: { children: ReactNode; testId: string; miw: number }) {
   return (
     <Paper withBorder radius="md">
       <div className="table-scroll">
-        <Table fz="sm" miw={miw} data-testid={testId}>
+        <Table fz="sm" miw={miw} className="stack-table" data-testid={testId}>
           {children}
         </Table>
       </div>
@@ -119,7 +123,7 @@ function YourAccess() {
                   <Table.Td>
                     <SpaceBadge space={s} />
                   </Table.Td>
-                  <Table.Td>
+                  <Table.Td data-label="Permissions">
                     <PermissionBadges list={effectiveInSpace(permissions, s)} />
                   </Table.Td>
                 </Table.Tr>
@@ -160,10 +164,10 @@ function SpacesTable({ view }: { view: AccessView }) {
                 <Table.Td>
                   <SpaceBadge space={s.name} />
                 </Table.Td>
-                <Table.Td>
+                <Table.Td data-label="Path prefixes">
                   <Values list={s.pathPrefixes} />
                 </Table.Td>
-                <Table.Td>
+                <Table.Td data-label="Hosts">
                   <Values list={s.hosts} />
                 </Table.Td>
               </Table.Tr>
@@ -220,7 +224,7 @@ function RolesTable({ view }: { view: AccessView }) {
                   )}
                 </Group>
               </Table.Td>
-              <Table.Td>
+              <Table.Td data-label="Permissions">
                 <PermissionBadges list={r.permissions} />
               </Table.Td>
             </Table.Tr>
@@ -233,7 +237,11 @@ function RolesTable({ view }: { view: AccessView }) {
 
 function BindingsTable({ view }: { view: AccessView }) {
   return (
-    <Section title="Bindings" testId="access-bindings" description="In the order of the access file.">
+    <Section
+      title="Bindings"
+      testId="access-bindings"
+      description="Bindings of the access file in file order, then the global roles of static admin tokens written name:role:hash (FASTMOCK_ADMIN_TOKENS)."
+    >
       {view.bindings.length === 0 ? (
         <Text size="sm" c="dimmed">
           The access file has no bindings.
@@ -250,13 +258,26 @@ function BindingsTable({ view }: { view: AccessView }) {
           <Table.Tbody>
             {view.bindings.map((b, i) => (
               <Table.Tr key={`${i}:${b.subject}`} data-testid="access-binding-row">
-                <Table.Td className="mono">{b.subject}</Table.Td>
                 <Table.Td>
+                  <Group gap={6} wrap="nowrap">
+                    <Text span size="sm" className="mono">
+                      {b.subject}
+                    </Text>
+                    {b.source === 'adminTokens' && (
+                      <Tooltip label="The role of a static admin token (FASTMOCK_ADMIN_TOKENS), granted globally" withArrow multiline maw={280}>
+                        <Badge size="sm" variant="light" color="orange" tt="none" data-testid="binding-source-admin-tokens">
+                          admin tokens
+                        </Badge>
+                      </Tooltip>
+                    )}
+                  </Group>
+                </Table.Td>
+                <Table.Td data-label="Role">
                   <Badge variant="light" tt="none">
                     {b.role}
                   </Badge>
                 </Table.Td>
-                <Table.Td>
+                <Table.Td data-label="Scope">
                   <ScopeBadges global={b.global} spaces={b.spaces} />
                 </Table.Td>
               </Table.Tr>
@@ -294,12 +315,12 @@ function Configuration() {
       ) : (
         <Alert variant="light" color="gray" icon={<IconInfoCircle size={18} />} title="No access file" data-testid="access-not-configured">
           Access is controlled by the static admin tokens and the built-in roles viewer, editor and admin; there are no spaces,
-          custom roles or bindings. {DOCS_HINT}
+          custom roles or access-file bindings. {DOCS_HINT}
         </Alert>
       )}
       {view.configured && <SpacesTable view={view} />}
       <RolesTable view={view} />
-      {view.configured && <BindingsTable view={view} />}
+      {(view.configured || view.bindings.length > 0) && <BindingsTable view={view} />}
     </Stack>
   );
 }

@@ -48,7 +48,7 @@ import lockupLight from '../assets/brand/FransHub_FastMock_light.svg';
 import monogramDark from '../assets/brand/FransHub_monogram_dark.svg';
 import monogramLight from '../assets/brand/FransHub_monogram_light.svg';
 import { useTokensApi } from '../api/features';
-import { boundSpaces, can, kindLabel, seesAllSpaces, spaceScoped, type Permission } from '../auth/permissions';
+import { accessSummary, can, kindLabel, spaceScoped, summaryLabel, type Permission } from '../auth/permissions';
 import { useAuth, useSpace } from '../auth/useAuth';
 import classes from './Shell.module.css';
 import { SpaceSelect } from './spaces';
@@ -174,19 +174,11 @@ function ThemeToggle() {
   );
 }
 
-/** The role badge: the role for principals that hold it everywhere, else the spaces they are bound to. */
-function scopeLabel(role: string, spaces: string[], global: boolean, allSpaces: boolean): string {
-  if (global || !spaces.length) return role;
-  if (allSpaces) return 'all spaces';
-  return spaces.length === 1 ? (spaces[0] ?? role) : `${spaces.length} spaces`;
-}
-
 function Principal() {
   const { name, role, kind, info, permissions, logout } = useAuth();
-  const spaces = boundSpaces(permissions);
-  const global = seesAllSpaces(permissions);
-  const allSpaces = !!permissions?.allSpaces?.length;
-  const badge = scopeLabel(role, spaces, global, allSpaces);
+  const summary = accessSummary(permissions, role);
+  const badge = summaryLabel(summary);
+  const color = ROLE_COLOR[summary.global ?? summary.allSpaces ?? summary.spaces[0]?.role ?? ''] ?? 'teal';
   const groups = info?.principal.groups ?? [];
   const who = name || 'anonymous';
   return (
@@ -203,7 +195,7 @@ function Principal() {
                 {kindLabel(kind)}
               </Badge>
             </span>
-            <Badge color={ROLE_COLOR[role] ?? 'teal'} variant="light" data-testid="role-badge" className={classes.roleBadge} tt={badge === role ? undefined : 'none'}>
+            <Badge color={color} variant="light" data-testid="role-badge" className={classes.roleBadge} tt="none" title={badge}>
               {badge}
             </Badge>
           </Group>
@@ -217,13 +209,24 @@ function Principal() {
           </Text>
           <Text size="xs" c="dimmed">
             {kindLabel(kind)}
-            {global || !spaces.length ? ` · ${role}` : ''}
           </Text>
-          {spaces.length > 0 && (
-            <Text size="xs" c="dimmed" data-testid="principal-spaces">
-              Spaces: {allSpaces ? `all (${spaces.join(', ')})` : spaces.join(', ')}
-            </Text>
-          )}
+          <div data-testid="principal-summary">
+            {summary.global && (
+              <Text size="xs" c="dimmed">
+                Global: {summary.global}
+              </Text>
+            )}
+            {summary.allSpaces && (
+              <Text size="xs" c="dimmed">
+                All spaces: {summary.allSpaces}
+              </Text>
+            )}
+            {summary.spaces.map((s) => (
+              <Text key={s.space} size="xs" c="dimmed" className="truncate">
+                {s.space}: {s.role}
+              </Text>
+            ))}
+          </div>
           {groups.length > 0 && (
             <Text size="xs" c="dimmed" lineClamp={3}>
               Groups: {groups.join(', ')}

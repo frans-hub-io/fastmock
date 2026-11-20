@@ -47,8 +47,10 @@ The sign-in page asks for an admin token, the same bearer token the admin API ta
 has OIDC configured ([Access control: OIDC](../operations/access-control.md#oidc-sign-in-and-bearer-jwts)), the
 page also offers **Sign in with SSO**, which sends the browser to the identity provider and back to the page you
 were opening. The UI checks the sign-in with `GET /__admin/info` and shows the principal in the header: its name,
-its kind (`token`, `managed token` or `user`) and its role, or the space it is bound to. The account menu adds the
-groups of an SSO user and the bound spaces.
+its kind (`token`, `managed token` or `user`) and a short summary of its permissions, derived from them: the role
+held globally and the role held in all spaces or in a single space, for example `viewer · editor in all spaces`
+or `editor in payments` (`custom` when the permissions match no built-in role). The account menu lists the same
+per scope (global, all spaces and each space with more permissions) and the groups of an SSO user.
 
 - A token is kept in memory and in the tab's `sessionStorage`, so it survives a reload of the tab but not
   closing it, and it is never written to `localStorage` or cookies. It is sent only to the admin listener, as
@@ -299,12 +301,16 @@ use and status. Static tokens from `FASTMOCK_ADMIN_TOKENS` are not listed.
   must hold every permission of the role there ([escalation rule](../operations/access-control.md#managed-tokens)),
   so a space-bound lead cannot create global tokens. **All spaces** is offered as a scope when you hold the
   role's permissions globally or in all spaces; the token then works in every space, including spaces added later.
-  Tokens in all spaces show **All spaces** in the scope column. The lifetime is limited to the server maximum
+  Tokens in all spaces show **All spaces** in the scope column. Under the role the form lists the permissions
+  the token will hold in the chosen scope: a token limited to spaces or all spaces does not get the role's
+  permissions that act on the whole server (recordings, chaos, gRPC, audit and the like), and the form says how
+  many are left out. The lifetime is limited to the server maximum
   (`FASTMOCK_TOKENS_MAX_DAYS`) and defaults to 90 days, or `FASTMOCK_TOKENS_MAX_DAYS` when lower. A token
   created with a managed token expires no later than that token.
 - After creation the value is shown **once**, with a copy button and a warning; it is kept only in the dialog and
-  dropped when the dialog closes. The UI never stores or logs it, and the server never returns it again.
-- **Revoke** (after a confirmation) stops the token, and the tokens created with it, on every replica within 10
+  dropped when the dialog closes. The dialog is the confirmation; no separate notification is shown. The UI never stores or logs it, and the server never returns it again.
+- **Revoke** (after a confirmation; needs `tokens:write` in the token's spaces, and for a token in all spaces
+  `tokens:write` in all spaces, globally or through `spaces: ["*"]`) stops the token, and the tokens created with it, on every replica within 10
   seconds; revoked and expired tokens stay visible under their status filters. Tokens created by an SSO user keep
   working after that user leaves; the creator column shows whose tokens to revoke.
 
@@ -318,12 +324,14 @@ read-only.
 - With the `access:read` permission (admins, or a custom role that lists it, bound globally) the page also shows
   three tables from `GET /__admin/access`: **Spaces** (name, path prefixes, hosts), **Roles** (name, a badge for
   built-in roles, permissions) and **Bindings** (subject, role, scope: **Global**, **All spaces** or the list of
-  spaces).
+  spaces). Bindings include the global role of every static token written `name:role:hash` in
+  `FASTMOCK_ADMIN_TOKENS` (field `source: adminTokens`), marked with an **admin tokens** badge next to the subject,
+  so every admin is listed; without an access file the Bindings table shows only these.
 
 Spaces, roles and bindings cannot be created or changed in the UI. They come from the
-[access file](../operations/access-control.md#the-access-file): `FASTMOCK_ACCESS_FILE`, the `access` values of the
-Helm chart or the operator's `spec.access.configMapRef`. A change takes effect after a restart; with Helm and the
-operator the pods roll on their own.
+[access file](../operations/access-control.md#the-access-file) (`FASTMOCK_ACCESS_FILE`, the `access` values of the
+Helm chart or the operator's `spec.access.configMapRef`) and from the static token list (`FASTMOCK_ADMIN_TOKENS`).
+A change takes effect after a restart; with Helm and the operator the pods roll on their own.
 
 ### Audit log
 

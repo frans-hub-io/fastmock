@@ -51,7 +51,18 @@ pub struct AccessRole {
     pub permissions: Vec<String>,
 }
 
-/// A binding of the access file.
+/// Where a binding comes from.
+#[derive(Serialize, utoipa::ToSchema, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum AccessBindingSource {
+    /// A binding of the access file (`FASTMOCK_ACCESS_FILE`).
+    AccessFile,
+    /// The role of a static token written `name:role:hash` in `FASTMOCK_ADMIN_TOKENS` or
+    /// `FASTMOCK_ADMIN_TOKENS_FILE`, granted globally.
+    AdminTokens,
+}
+
+/// A binding: of the access file, or the global role of a static token.
 #[derive(Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AccessBinding {
@@ -65,9 +76,13 @@ pub struct AccessBinding {
     /// Spaces the role is granted in: `["*"]` for every space; empty for a global binding.
     #[schema(example = json!(["payments"]))]
     pub spaces: Vec<String>,
+    /// `accessFile` for a binding of the access file; `adminTokens` for the global role of a
+    /// static token written `name:role:hash` (subject `token:<name>`).
+    pub source: AccessBindingSource,
 }
 
-/// The access configuration, read-only: spaces, roles and bindings of the access file.
+/// The access configuration, read-only: spaces and roles of the access file, its bindings and
+/// the global roles of static tokens.
 #[derive(Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AccessView {
@@ -79,7 +94,9 @@ pub struct AccessView {
     pub spaces: Vec<AccessSpace>,
     /// Built-in roles first (viewer, editor, admin), then the custom roles sorted by name.
     pub roles: Vec<AccessRole>,
-    /// Bindings in file order.
+    /// Bindings of the access file in file order, then the roles of static tokens written
+    /// `name:role:hash` in entry order. Static tokens written `name::hash` have only their
+    /// access-file bindings.
     pub bindings: Vec<AccessBinding>,
 }
 
@@ -113,7 +130,19 @@ impl AccessView {
                     role: b.role.clone(),
                     global: b.scope == BindingScope::Global,
                     spaces: b.scope.space_list(),
+                    source: AccessBindingSource::AccessFile,
                 })
+                .chain(
+                    app.auth
+                        .static_token_roles()
+                        .map(|(name, role)| AccessBinding {
+                            subject: format!("token:{name}"),
+                            role: role.to_string(),
+                            global: true,
+                            spaces: Vec::new(),
+                            source: AccessBindingSource::AdminTokens,
+                        }),
+                )
                 .collect(),
         }
     }
@@ -122,7 +151,7 @@ impl AccessView {
 #[utoipa::path(
     get, path = "/__admin/access", tag = "access", operation_id = "getAccess",
     summary = "The access configuration (read-only)",
-    description = "Spaces, roles (with expanded permissions) and bindings of the access file (`FASTMOCK_ACCESS_FILE`). Needs `access:read`, a global permission of the built-in admin role. Changes need a new access file and a restart. Token values and hashes, the file path and OIDC settings are never included; static tokens without an access file have no bindings here.",
+    description = "Spaces, roles (with expanded permissions) and bindings of the access file (`FASTMOCK_ACCESS_FILE`), plus the global role of every static token written `name:role:hash` in `FASTMOCK_ADMIN_TOKENS` or `FASTMOCK_ADMIN_TOKENS_FILE` (`source: adminTokens`). Needs `access:read`, a global permission of the built-in admin role. Changes need a new access file or token list and a restart. Token values and hashes, file paths and OIDC settings are never included.",
     responses(
         (status = 200, description = "The access configuration", body = AccessView),
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
@@ -445,6 +474,7 @@ pub async fn import_mockserver(
         AccessSpace,
         AccessRole,
         AccessBinding,
+        AccessBindingSource,
         GlobalSettings,
         fastmock_core::Delay,
         fastmock_core::LogNormalDelay,

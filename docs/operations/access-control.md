@@ -744,7 +744,8 @@ permission globally or is bound in all spaces; `info:read`, which every principa
 
 ## Viewing the access configuration
 
-`GET /__admin/access` returns the configuration that the server loaded: spaces, roles and bindings. It needs the
+`GET /__admin/access` returns the configuration that the server loaded: spaces, roles and bindings, including the
+global roles of static tokens. It needs the
 global permission `access:read`, which the built-in `admin` role has; a custom role gets it by listing
 `access:read`, `access:*` or `"*"` and being bound with `global: true`. Without an access file and OIDC it needs `admin`,
 like every admin-only route.
@@ -757,9 +758,10 @@ like every admin-only route.
            {"name": "editor", "builtin": true, "permissions": ["..."]},
            {"name": "admin", "builtin": true, "permissions": ["..."]},
            {"name": "ci", "builtin": false, "permissions": ["stubs:read", "stubs:write", "..."]}],
- "bindings": [{"subject": "token:ci-payments", "role": "ci", "global": false, "spaces": ["payments"]},
-              {"subject": "group:qa", "role": "editor", "global": false, "spaces": ["*"]},
-              {"subject": "group:platform", "role": "admin", "global": true, "spaces": []}]}
+ "bindings": [{"subject": "token:ci-payments", "role": "ci", "global": false, "spaces": ["payments"], "source": "accessFile"},
+              {"subject": "group:qa", "role": "editor", "global": false, "spaces": ["*"], "source": "accessFile"},
+              {"subject": "group:platform", "role": "admin", "global": true, "spaces": [], "source": "accessFile"},
+              {"subject": "token:ops", "role": "admin", "global": true, "spaces": [], "source": "adminTokens"}]}
 ```
 
 | Field | Meaning |
@@ -768,11 +770,13 @@ like every admin-only route.
 | `oidc` | OIDC sign-in or bearer JWTs are enabled |
 | `spaces` | the spaces of the access file, sorted by name, with `name`, `pathPrefixes` and `hosts` |
 | `roles` | the built-in roles first (`viewer`, `editor`, `admin`), then the custom roles sorted by name; `permissions` lists the permission names with wildcards expanded |
-| `bindings` | the bindings of the access file in file order: `subject` as written, `role`, `global`, and `spaces` (`["*"]` for [all spaces](#all-spaces), empty for a global binding) |
+| `bindings` | the bindings of the access file in file order, then one global binding for each static token written `name:role:hash` in `FASTMOCK_ADMIN_TOKENS` or `FASTMOCK_ADMIN_TOKENS_FILE`, in entry order: `subject` (as written; `token:<name>` for a static token), `role`, `global`, `spaces` (`["*"]` for [all spaces](#all-spaces), empty for a global binding) and `source` |
+| `bindings[].source` | `accessFile` for a binding of the access file, `adminTokens` for the role of a static token. A static token written `name::hash` (no role) has only its access-file bindings and adds no entry |
 
 The response contains no token values or hashes, no file paths and no OIDC client settings. Without an access
-file, `configured` is `false`, `spaces` and `bindings` are empty and `roles` holds the built-in roles. The
-response is read-only: spaces, roles and bindings change only in the [access file](#the-access-file).
+file, `configured` is `false`, `spaces` is empty, `roles` holds the built-in roles and `bindings` holds only the
+roles of static tokens (`source: adminTokens`). The response is read-only: spaces, roles and bindings change only
+in the [access file](#the-access-file) and the static token list, after a restart.
 
 ## In the web UI
 

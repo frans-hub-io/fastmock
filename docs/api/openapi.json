@@ -16,7 +16,7 @@
           "access"
         ],
         "summary": "The access configuration (read-only)",
-        "description": "Spaces, roles (with expanded permissions) and bindings of the access file (`FASTMOCK_ACCESS_FILE`). Needs `access:read`, a global permission of the built-in admin role. Changes need a new access file and a restart. Token values and hashes, the file path and OIDC settings are never included; static tokens without an access file have no bindings here.",
+        "description": "Spaces, roles (with expanded permissions) and bindings of the access file (`FASTMOCK_ACCESS_FILE`), plus the global role of every static token written `name:role:hash` in `FASTMOCK_ADMIN_TOKENS` or `FASTMOCK_ADMIN_TOKENS_FILE` (`source: adminTokens`). Needs `access:read`, a global permission of the built-in admin role. Changes need a new access file or token list and a restart. Token values and hashes, file paths and OIDC settings are never included.",
         "operationId": "getAccess",
         "responses": {
           "200": {
@@ -7508,12 +7508,13 @@
     "schemas": {
       "AccessBinding": {
         "type": "object",
-        "description": "A binding of the access file.",
+        "description": "A binding: of the access file, or the global role of a static token.",
         "required": [
           "subject",
           "role",
           "global",
-          "spaces"
+          "spaces",
+          "source"
         ],
         "properties": {
           "subject": {
@@ -7538,8 +7539,20 @@
             "example": [
               "payments"
             ]
+          },
+          "source": {
+            "$ref": "#/components/schemas/AccessBindingSource",
+            "description": "`accessFile` for a binding of the access file; `adminTokens` for the global role of a\nstatic token written `name:role:hash` (subject `token:<name>`)."
           }
         }
+      },
+      "AccessBindingSource": {
+        "type": "string",
+        "description": "Where a binding comes from.",
+        "enum": [
+          "accessFile",
+          "adminTokens"
+        ]
       },
       "AccessRole": {
         "type": "object",
@@ -7608,7 +7621,7 @@
       },
       "AccessView": {
         "type": "object",
-        "description": "The access configuration, read-only: spaces, roles and bindings of the access file.",
+        "description": "The access configuration, read-only: spaces and roles of the access file, its bindings and\nthe global roles of static tokens.",
         "required": [
           "configured",
           "oidc",
@@ -7644,7 +7657,7 @@
             "items": {
               "$ref": "#/components/schemas/AccessBinding"
             },
-            "description": "Bindings in file order."
+            "description": "Bindings of the access file in file order, then the roles of static tokens written\n`name:role:hash` in entry order. Static tokens written `name::hash` have only their\naccess-file bindings."
           }
         }
       },

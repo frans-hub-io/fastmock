@@ -13,7 +13,7 @@ export interface paths {
         };
         /**
          * The access configuration (read-only)
-         * @description Spaces, roles (with expanded permissions) and bindings of the access file (`FASTMOCK_ACCESS_FILE`). Needs `access:read`, a global permission of the built-in admin role. Changes need a new access file and a restart. Token values and hashes, the file path and OIDC settings are never included; static tokens without an access file have no bindings here.
+         * @description Spaces, roles (with expanded permissions) and bindings of the access file (`FASTMOCK_ACCESS_FILE`), plus the global role of every static token written `name:role:hash` in `FASTMOCK_ADMIN_TOKENS` or `FASTMOCK_ADMIN_TOKENS_FILE` (`source: adminTokens`). Needs `access:read`, a global permission of the built-in admin role. Changes need a new access file or token list and a restart. Token values and hashes, file paths and OIDC settings are never included.
          */
         get: operations["getAccess"];
         put?: never;
@@ -1325,7 +1325,7 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** @description A binding of the access file. */
+        /** @description A binding: of the access file, or the global role of a static token. */
         AccessBinding: {
             /**
              * @description `token:<name>`, `user:<name>` or `group:<name>`.
@@ -1343,7 +1343,17 @@ export interface components {
              *     ]
              */
             spaces: string[];
+            /**
+             * @description `accessFile` for a binding of the access file; `adminTokens` for the global role of a
+             *     static token written `name:role:hash` (subject `token:<name>`).
+             */
+            source: components["schemas"]["AccessBindingSource"];
         };
+        /**
+         * @description Where a binding comes from.
+         * @enum {string}
+         */
+        AccessBindingSource: "accessFile" | "adminTokens";
         /** @description A built-in role or a custom role of the access file. */
         AccessRole: {
             /** @example stub-author */
@@ -1378,7 +1388,10 @@ export interface components {
              */
             hosts: string[];
         };
-        /** @description The access configuration, read-only: spaces, roles and bindings of the access file. */
+        /**
+         * @description The access configuration, read-only: spaces and roles of the access file, its bindings and
+         *     the global roles of static tokens.
+         */
         AccessView: {
             /** @description An access file (`FASTMOCK_ACCESS_FILE`) is loaded. */
             configured: boolean;
@@ -1388,7 +1401,11 @@ export interface components {
             spaces: components["schemas"]["AccessSpace"][];
             /** @description Built-in roles first (viewer, editor, admin), then the custom roles sorted by name. */
             roles: components["schemas"]["AccessRole"][];
-            /** @description Bindings in file order. */
+            /**
+             * @description Bindings of the access file in file order, then the roles of static tokens written
+             *     `name:role:hash` in entry order. Static tokens written `name::hash` have only their
+             *     access-file bindings.
+             */
             bindings: components["schemas"]["AccessBinding"][];
         };
         /** @enum {string} */

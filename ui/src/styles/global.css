@@ -142,6 +142,41 @@ body,
   overflow-x: auto;
 }
 
+@media (max-width: 47.99em) {
+  .stack-table {
+    min-width: 0 !important;
+  }
+
+  .stack-table thead {
+    display: none;
+  }
+
+  .stack-table,
+  .stack-table tbody,
+  .stack-table tr,
+  .stack-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .stack-table tr {
+    padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  }
+
+  .stack-table td {
+    padding: 2px 0;
+    overflow-wrap: anywhere;
+  }
+
+  .stack-table td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 2px;
+    font-size: var(--mantine-font-size-xs);
+    color: var(--mantine-color-dimmed);
+  }
+}
+
 .cm-host {
   border: 1px solid var(--mantine-color-default-border);
   border-radius: var(--mantine-radius-md);

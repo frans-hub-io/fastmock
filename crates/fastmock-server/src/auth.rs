@@ -135,6 +135,7 @@ impl Principal {
 
 struct TokenEntry {
     hash: [u8; 32],
+    role: Option<String>,
     bindings: Vec<Binding>,
     principal: Principal,
 }
@@ -258,6 +259,7 @@ impl Authenticator {
             }
             tokens.push(TokenEntry {
                 hash: e.hash,
+                role: e.role,
                 principal: Principal::from_bindings(
                     &e.name,
                     PrincipalKind::Token,
@@ -292,6 +294,16 @@ impl Authenticator {
 
     pub fn access(&self) -> &AccessConfig {
         &self.access
+    }
+
+    /// Static tokens whose entry names a role (`name:role:hash`), as `(name, role)` in entry
+    /// order; each holds that role globally.
+    pub fn static_token_roles(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.tokens.iter().filter_map(|t| {
+            t.role
+                .as_deref()
+                .map(|role| (t.principal.name.as_str(), role))
+        })
     }
 
     /// Bindings of a principal: for static tokens the global binding of their entry plus `token:`

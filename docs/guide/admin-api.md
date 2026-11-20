@@ -372,7 +372,8 @@ spaces the caller can see with its permissions in each ([Access control](../oper
 
 `GET /access` (permission `access:read`, admins) returns the loaded access configuration: whether an access file
 is loaded (`configured`), whether OIDC is enabled (`oidc`), the spaces with their path prefixes and hosts, the
-roles with their expanded permissions, and the bindings of the access file with subject, role and scope. It never
+roles with their expanded permissions, and the bindings with subject, role, scope and `source`: `accessFile` for a
+binding of the access file, `adminTokens` for the global role of a static token written `name:role:hash`. It never
 contains token values or hashes. Spaces, roles and bindings are changed only in the access file
 ([Access control: viewing the access configuration](../operations/access-control.md#viewing-the-access-configuration)).
 
