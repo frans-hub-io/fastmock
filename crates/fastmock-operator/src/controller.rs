@@ -218,6 +218,41 @@ async fn check_secrets(
     Ok(None)
 }
 
+/// The access file of a `FastMock`: `Ok(None)` without `spec.access`, `Err((reason, message))` when the
+/// ConfigMap is missing, lacks the key or is not labelled for mounting.
+async fn access_file(
+    cms: &Api<ConfigMap>,
+    spec: &FastMockSpec,
+) -> Result<Result<Option<String>, (&'static str, String)>, Error> {
+    let Some(a) = &spec.access else {
+        return Ok(Ok(None));
+    };
+    let r = &a.config_map_ref;
+    Ok(match cms.get_opt(&r.name).await? {
+        None => Err((
+            "ConfigMapNotFound",
+            format!(
+                "referenced ConfigMap not found: access.configMapRef={}",
+                r.name
+            ),
+        )),
+        Some(cm) if !secret_allowed(cm.metadata.labels.as_ref()) => Err((
+            "ConfigMapNotAllowed",
+            format!(
+                "referenced ConfigMaps must carry the label {ALLOW_MOUNT_LABEL}=true: access.configMapRef={}",
+                r.name
+            ),
+        )),
+        Some(cm) => match cm.data.and_then(|d| d.get(&r.key).cloned()) {
+            Some(doc) => Ok(Some(doc)),
+            None => Err((
+                "ConfigMapNotFound",
+                format!("ConfigMap {} has no key {}", r.name, r.key),
+            )),
+        },
+    })
+}
+
 async fn reconcile_server_inner(ms: &FastMock, ctx: &Ctx) -> Result<Action, Error> {
     let ns = ms
         .namespace()
@@ -231,6 +266,7 @@ async fn reconcile_server_inner(ms: &FastMock, ctx: &Ctx) -> Result<Action, Erro
     let prev = ms.status.as_ref();
     let servers: Api<FastMock> = Api::namespaced(ctx.client.clone(), &ns);
     let secrets: Api<Secret> = Api::namespaced(ctx.client.clone(), &ns);
+    let cms: Api<ConfigMap> = Api::namespaced(ctx.client.clone(), &ns);
     let blocked = |reason: &str, msg: &str| {
         let base = prev.cloned().unwrap_or_default();
         FastMockStatus {
@@ -244,6 +280,7 @@ async fn reconcile_server_inner(ms: &FastMock, ctx: &Ctx) -> Result<Action, Erro
     };
     let image = ctx.images.resolve(&spec.image);
     let denied_env = denied_env_keys(&spec.env);
+    let mut access_doc = None;
     let refusal: Option<(&str, String, Duration)> = if let Some(msg) = storage_problem(spec) {
         Some(("InvalidSpec", msg.to_string(), RESYNC))
     } else if let Err(msg) = &image {
@@ -257,10 +294,16 @@ async fn reconcile_server_inner(ms: &FastMock, ctx: &Ctx) -> Result<Action, Erro
             ),
             RESYNC,
         ))
+    } else if let Some((r, m)) = check_secrets(&secrets, spec).await? {
+        Some((r, m, Duration::from_secs(60)))
     } else {
-        check_secrets(&secrets, spec)
-            .await?
-            .map(|(r, m)| (r, m, Duration::from_secs(60)))
+        match access_file(&cms, spec).await? {
+            Ok(doc) => {
+                access_doc = doc;
+                None
+            }
+            Err((r, m)) => Some((r, m, Duration::from_secs(60))),
+        }
     };
     if let Some((reason, msg, requeue)) = refusal {
         tracing::warn!(fastmock = %name, namespace = %ns, %reason, %msg, "FastMock refused");
@@ -303,7 +346,6 @@ async fn reconcile_server_inner(ms: &FastMock, ctx: &Ctx) -> Result<Action, Erro
     )
     .await?;
     let env = manifests::env_map(&name, spec);
-    let cms: Api<ConfigMap> = Api::namespaced(ctx.client.clone(), &ns);
     apply(
         &cms,
         &format!("{name}-config"),
@@ -312,11 +354,7 @@ async fn reconcile_server_inner(ms: &FastMock, ctx: &Ctx) -> Result<Action, Erro
     .await?;
     let sas: Api<ServiceAccount> = Api::namespaced(ctx.client.clone(), &ns);
     apply(&sas, &name, &manifests::service_account(&name, &ns, &owner)).await?;
-    let checksum = manifests::sha256_hex(&format!(
-        "{}|{}",
-        serde_json::to_string(&env).unwrap_or_default(),
-        tokens
-    ));
+    let checksum = manifests::config_checksum(&env, &tokens, access_doc.as_deref());
     let deployments: Api<Deployment> = Api::namespaced(ctx.client.clone(), &ns);
     apply(
         &deployments,

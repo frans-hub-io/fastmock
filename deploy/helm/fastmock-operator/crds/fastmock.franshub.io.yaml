@@ -30,6 +30,26 @@ spec:
         properties:
           spec:
             properties:
+              access:
+                description: 'Access control for the server: a ConfigMap with its access file.'
+                nullable: true
+                properties:
+                  configMapRef:
+                    description: The access file (custom roles, spaces, bindings), mounted read-only and passed as `FASTMOCK_ACCESS_FILE`.
+                    properties:
+                      key:
+                        default: access.yaml
+                        description: Key holding the access file.
+                        type: string
+                      name:
+                        description: 'ConfigMap in the namespace of the FastMock; it must carry the label `fastmock.franshub.io/allow-mount: "true"`.'
+                        type: string
+                    required:
+                    - name
+                    type: object
+                required:
+                - configMapRef
+                type: object
               adminTokensSecret:
                 nullable: true
                 properties:

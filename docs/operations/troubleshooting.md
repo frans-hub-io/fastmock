@@ -208,7 +208,9 @@ operator log has a line per refusal (`FastMock refused`).
 | `Ready=False ImageNotAllowed` | Use an image under an allowed prefix, or extend `server.allowedImagePrefixes` in the operator chart. |
 | `Ready=False SecretNotAllowed` | Label the Secret named in the message: `kubectl label secret <name> fastmock.franshub.io/allow-mount=true`. |
 | `Ready=False SecretNotFound` | Create the Secret, or fix the name. |
-| `Ready=False EnvNotAllowed` | Remove the listed variables from `spec.env` and use the dedicated fields (`storage`, `adminTokensSecret`, `secretsSecret`). |
+| `Ready=False ConfigMapNotAllowed` | Label the access ConfigMap: `kubectl label configmap <name> fastmock.franshub.io/allow-mount=true`. |
+| `Ready=False ConfigMapNotFound` | Create the ConfigMap named in `spec.access.configMapRef`, or add the key (default `access.yaml`). |
+| `Ready=False EnvNotAllowed` | Remove the listed variables from `spec.env` and use the dedicated fields (`storage`, `adminTokensSecret`, `secretsSecret`, `access`). |
 | `Ready=False InvalidSpec` | Set `spec.storage.mode` (`memory` or `postgres`); `postgres` needs `database` and `valkey`; memory allows one replica. |
 | `Ready=False Progressing` | Pods are not ready: `kubectl describe deploy <name>`, pod logs, [Readiness fails](#readiness-fails). |
 | `RouteReady=False ApplyFailed` | Gateway API CRDs are missing or the route is invalid; the message has the API error. |

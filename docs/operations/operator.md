@@ -60,6 +60,8 @@ spec:
     database: {name: payments-mock-storage, key: database-url}
     valkey: {name: payments-mock-storage, key: valkey-url}
   adminTokensSecret: {name: payments-mock-tokens, key: tokens}
+  access:
+    configMapRef: {name: payments-mock-access}
   secretsSecret: payments-mock-hook-secrets
   env:
     FASTMOCK_STUB_SECRETS: delivery-hook
@@ -74,7 +76,8 @@ spec:
       - {name: internal-gateway, namespace: gateway-system}
 ```
 
-Every Secret it references must carry the label `fastmock.franshub.io/allow-mount: "true"` (see [Policies](#policies)):
+Every Secret it references, and the access ConfigMap, must carry the label `fastmock.franshub.io/allow-mount: "true"`
+(see [Policies](#policies)):
 
 ```sh
 kubectl -n team-payments create secret generic payments-mock-storage \
@@ -82,6 +85,37 @@ kubectl -n team-payments create secret generic payments-mock-storage \
   --from-literal=valkey-url='redis://:<password>@valkey.example.com:6379/'
 kubectl -n team-payments label secret payments-mock-storage fastmock.franshub.io/allow-mount=true
 ```
+
+### Access file
+
+`spec.access.configMapRef` names a ConfigMap in the same namespace that holds the server's
+[access file](access-control.md#the-access-file) (custom roles, spaces, bindings) under `key` (default
+`access.yaml`). The operator mounts it read-only at `/etc/fastmock/access/access.yaml` and sets
+`FASTMOCK_ACCESS_FILE`; that is what makes `MockApi.spec.space` and space-scoped tokens usable on
+operator-managed servers.
+
+```sh
+kubectl -n team-payments create configmap payments-mock-access --from-file=access.yaml
+kubectl -n team-payments label configmap payments-mock-access fastmock.franshub.io/allow-mount=true
+```
+
+```yaml
+spaces:
+  - name: team-payments
+    pathPrefixes: [/payments/]
+  - name: team-billing
+    pathPrefixes: [/billing/]
+bindings:
+  - subject: token:ci-billing
+    role: editor
+    spaces: [team-billing]
+```
+
+The content is part of the pod template checksum, so editing the ConfigMap rolls the pods; the operator re-reads
+it on every change of the `FastMock` and at least every 5 minutes. An invalid access file stops the new pods at
+start-up with a message naming the entry (`Ready=False Progressing`, see the pod log), while the old pods keep
+running. `token:` bindings must name entries of `adminTokensSecret`; the operator's own token
+(`fastmock-operator`) is always a global admin.
 
 ### Fields
 
@@ -96,6 +130,7 @@ kubectl -n team-payments label secret payments-mock-storage fastmock.franshub.io
 | `storage.valkeyPrefix` | `fastmock:<name>:` | Valkey key prefix, so several servers can share one Valkey. |
 | `adminTokensSecret` | none | `{name, key}` of a Secret with your `name:role:sha256hex` token lines. `key` defaults to `tokens`. |
 | `secretsSecret` | none | Secret mounted at `/etc/fastmock/secrets` (HMAC keys, plugin secrets). |
+| `access.configMapRef` | none | `{name, key}` of a ConfigMap holding the [access file](#access-file); `key` defaults to `access.yaml`. |
 | `plugins` | `[]` (all) | Plugins to enable. |
 | `pluginSettings` | `{}` | `plugin → {key: value}`, rendered as `FASTMOCK_PLUGIN_<PLUGIN>_<KEY>`. |
 | `env` | `{}` | Extra [settings](configuration.md); security-relevant variables are refused (see [Policies](#policies)). |
@@ -114,7 +149,7 @@ All objects are named after the `FastMock`, owned by it (deleted with it) and la
 | Secret | `<name>-admin-tokens` | Your token lines plus `fastmock-operator:admin:<hash>`, mounted as `FASTMOCK_ADMIN_TOKENS_FILE`. |
 | ConfigMap | `<name>-config` | Environment: listeners, storage mode, log format, Valkey prefix, plugins, OTLP, `env`. |
 | ServiceAccount | `<name>` | Without token automount. |
-| Deployment | `<name>` | Hardened pod (non-root 65532, read-only root FS, no capabilities, seccomp), probes on `/healthz` and `/readyz`, rolling update with `maxUnavailable: 0`. A checksum of configuration and tokens rolls the pods when they change. |
+| Deployment | `<name>` | Hardened pod (non-root 65532, read-only root FS, no capabilities, seccomp), probes on `/healthz` and `/readyz`, rolling update with `maxUnavailable: 0`. A checksum of configuration, tokens and the access file rolls the pods when they change. With `access`, the ConfigMap is mounted read-only at `/etc/fastmock/access`. |
 | Service | `<name>` (port 8080), `<name>-admin` (port 9090) | Data and admin ports. |
 | PodDisruptionBudget | `<name>` | When `replicas > 1`. |
 | HTTPRoute | `<name>` | When `route` is set (needs Gateway API CRDs). |
@@ -169,7 +204,7 @@ spec:
 | `openapi.pathPrefix` | `""` | Prefix added to every generated path. |
 | `openapi.validateRequests` | `true` | Generated stubs reject requests that violate the document. |
 | `wiremock.inline` or `wiremock.configMapRef` | none | WireMock mappings, JSON or YAML. |
-| `space` | none | [Space](access-control.md#spaces) of the server that the stubs go to; the server's access file must define it. With the operator policy `spaceFromNamespace` the space is always the namespace of the `MockApi`. |
+| `space` | none | [Space](access-control.md#spaces) of the server that the stubs go to; the server's [access file](#access-file) must define it. With the operator policy `spaceFromNamespace` the space is always the namespace of the `MockApi`. |
 
 How it is applied:
 
@@ -217,11 +252,14 @@ billing   payments   14      True
 | `Ready` | False | `EnvNotAllowed` | `spec.env` sets a variable that is reserved for dedicated fields. |
 | `Ready` | False | `SecretNotAllowed` | A referenced Secret lacks the label `fastmock.franshub.io/allow-mount: "true"`. |
 | `Ready` | False | `SecretNotFound` | A referenced Secret does not exist. |
+| `Ready` | False | `ConfigMapNotAllowed` | The access ConfigMap lacks the label `fastmock.franshub.io/allow-mount: "true"`. |
+| `Ready` | False | `ConfigMapNotFound` | The access ConfigMap or its key does not exist. |
 | `RouteReady` | True / False | `Applied` / `ApplyFailed` | Only when `route` is set; `ApplyFailed` usually means Gateway API is not installed. |
 
 When a resource is refused (`InvalidSpec`, `ImageNotAllowed`, `EnvNotAllowed`, `SecretNotAllowed`,
-`SecretNotFound`) **nothing is applied** and an existing Deployment keeps running unchanged. Secret problems are
-re-checked every minute, the others when the resource changes and every 5 minutes.
+`SecretNotFound`, `ConfigMapNotAllowed`, `ConfigMapNotFound`) **nothing is applied** and an existing Deployment
+keeps running unchanged. Secret and ConfigMap problems are re-checked every minute, the others when the resource
+changes and every 5 minutes.
 
 ```sh
 kubectl -n team-payments get fastmock payments -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.reason}: {.message}{"\n"}{end}'
@@ -261,9 +299,11 @@ settings, it enforces three policies:
    prefixes only the repository of the default image is allowed. Otherwise: `ImageNotAllowed`.
 2. **Secret opt-in.** Every Secret named in `storage.database`, `storage.valkey`, `adminTokensSecret`,
    `secretsSecret` and `imagePullSecrets` must have the label `fastmock.franshub.io/allow-mount: "true"`. A Secret owner
-   thereby agrees that FastMock pods may mount it. Otherwise: `SecretNotAllowed`.
+   thereby agrees that FastMock pods may mount it. Otherwise: `SecretNotAllowed`. The same label is required on
+   the ConfigMap named in `access.configMapRef` (otherwise `ConfigMapNotAllowed`), since its content decides who
+   may do what on the server.
 3. **Reserved environment.** `spec.env` must not set `FASTMOCK_AUTH_DISABLED`, `FASTMOCK_ADMIN_TOKENS`,
-   `FASTMOCK_ADMIN_TOKENS_FILE`, `FASTMOCK_ADMIN_ALLOWED_ORIGINS`, `FASTMOCK_SECRETS_DIR`, `FASTMOCK_SECRET_*`,
+   `FASTMOCK_ADMIN_TOKENS_FILE`, `FASTMOCK_ACCESS_FILE`, `FASTMOCK_ADMIN_ALLOWED_ORIGINS`, `FASTMOCK_SECRETS_DIR`, `FASTMOCK_SECRET_*`,
    `FASTMOCK_CALLBACK_DENIED_CIDRS`, `FASTMOCK_CALLBACK_ALLOWED_HOSTS`, `FASTMOCK_DATABASE_URL`,
    `FASTMOCK_VALKEY_URL`, `FASTMOCK_VALKEY_PREFIX`, `FASTMOCK_STORAGE`, `FASTMOCK_LISTEN`,
    `FASTMOCK_ADMIN_LISTEN` or any `LD_*` variable (names are compared case-insensitively). Use the dedicated
@@ -288,8 +328,8 @@ The chart grants the operator (as a ClusterRole, or a Role in `watchNamespace`):
 | `policy` | `poddisruptionbudgets` | get, create, patch, delete |
 | `gateway.networking.k8s.io` | `httproutes` | get, create, patch, delete |
 
-It cannot list Secrets, only read those it is pointed at, and the Secret-label policy limits which of those it
-mounts. Users need RBAC on `fastmocks` and `mockapis` in their namespaces; reading the generated
+It cannot list Secrets or ConfigMaps, only read those it is pointed at, and the label policy limits which of
+those it mounts. Users need RBAC on `fastmocks` and `mockapis` in their namespaces; reading the generated
 `<name>-operator-token` Secret is equivalent to admin access to that FastMock, so do not grant `get secrets` more
 widely than needed.
 

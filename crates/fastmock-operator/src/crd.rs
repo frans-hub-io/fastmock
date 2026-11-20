@@ -40,6 +40,27 @@ fn default_tokens_key() -> String {
     "tokens".into()
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessConfigMapRef {
+    /// ConfigMap in the namespace of the FastMock; it must carry the label `fastmock.franshub.io/allow-mount: "true"`.
+    pub name: String,
+    /// Key holding the access file.
+    #[serde(default = "default_access_key")]
+    pub key: String,
+}
+
+fn default_access_key() -> String {
+    "access.yaml".into()
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessSpec {
+    /// The access file (custom roles, spaces, bindings), mounted read-only and passed as `FASTMOCK_ACCESS_FILE`.
+    pub config_map_ref: AccessConfigMapRef,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageSpec {
@@ -117,6 +138,9 @@ pub struct FastMockSpec {
     pub resources: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<RouteSpec>,
+    /// Access control for the server: a ConfigMap with its access file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<AccessSpec>,
 }
 
 fn one() -> i32 {
@@ -289,6 +313,22 @@ mod tests {
         assert_eq!(next[0].last_transition_time, "t0");
         assert_eq!(next[0].message, "2/2");
         assert_ne!(next[1].last_transition_time, "t0");
+    }
+
+    #[test]
+    fn access_key_defaults_to_access_yaml() {
+        let spec: FastMockSpec = serde_json::from_value(serde_json::json!({
+            "access": {"configMapRef": {"name": "team-access"}}
+        }))
+        .unwrap();
+        let r = spec.access.unwrap().config_map_ref;
+        assert_eq!(
+            (r.name.as_str(), r.key.as_str()),
+            ("team-access", "access.yaml")
+        );
+        let none: FastMockSpec = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(none.access.is_none());
+        assert!(serde_json::to_value(&none).unwrap().get("access").is_none());
     }
 
     #[test]

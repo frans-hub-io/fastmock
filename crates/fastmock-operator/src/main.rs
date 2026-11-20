@@ -111,5 +111,9 @@ mod tests {
         let storage = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
             ["properties"]["storage"];
         assert_eq!(storage["default"]["mode"], "memory");
+        let access = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+            ["properties"]["access"]["properties"]["configMapRef"];
+        assert_eq!(access["properties"]["key"]["default"], "access.yaml");
+        assert_eq!(access["required"], serde_json::json!(["name"]));
     }
 }

@@ -8,6 +8,8 @@ use crate::crd::FastMockSpec;
 
 pub const MANAGER: &str = "fastmock-operator";
 pub const OPERATOR_PRINCIPAL: &str = "fastmock-operator";
+pub const ACCESS_DIR: &str = "/etc/fastmock/access";
+pub const ACCESS_FILE: &str = "access.yaml";
 
 pub fn labels(name: &str) -> BTreeMap<String, String> {
     BTreeMap::from([
@@ -69,6 +71,12 @@ pub fn env_map(name: &str, spec: &FastMockSpec) -> BTreeMap<String, String> {
     } else {
         m.insert("FASTMOCK_VALKEY_PREFIX".into(), format!("fastmock:{name}:"));
     }
+    if spec.access.is_some() {
+        m.insert(
+            "FASTMOCK_ACCESS_FILE".into(),
+            format!("{ACCESS_DIR}/{ACCESS_FILE}"),
+        );
+    }
     if spec.secrets_secret.is_some() {
         m.insert(
             "FASTMOCK_SECRETS_DIR".into(),
@@ -96,6 +104,25 @@ pub fn env_map(name: &str, spec: &FastMockSpec) -> BTreeMap<String, String> {
         m.insert(k.clone(), v.clone());
     }
     m
+}
+
+/// Pod template checksum: the pods roll when the environment, the token file or the access file change.
+/// Without an access file it is the same as before access files existed, so upgrades do not roll pods.
+pub fn config_checksum(
+    env: &BTreeMap<String, String>,
+    tokens: &str,
+    access_file: Option<&str>,
+) -> String {
+    let mut basis = format!(
+        "{}|{}",
+        serde_json::to_string(env).unwrap_or_default(),
+        tokens
+    );
+    if let Some(a) = access_file {
+        basis.push('|');
+        basis.push_str(a);
+    }
+    sha256_hex(&basis)
 }
 
 pub fn config_map(
@@ -176,6 +203,11 @@ pub fn deployment(
             json!({"name": "secrets", "mountPath": "/etc/fastmock/secrets", "readOnly": true}),
         );
         volumes.push(json!({"name": "secrets", "secret": {"secretName": s, "defaultMode": 0o440}}));
+    }
+    if let Some(a) = &spec.access {
+        let r = &a.config_map_ref;
+        mounts.push(json!({"name": "access", "mountPath": ACCESS_DIR, "readOnly": true}));
+        volumes.push(json!({"name": "access", "configMap": {"name": r.name, "items": [{"key": r.key, "path": ACCESS_FILE}], "defaultMode": 0o440}}));
     }
     let resources = spec.resources.clone().unwrap_or_else(|| json!({"requests": {"cpu": "100m", "memory": "64Mi"}, "limits": {"cpu": "2", "memory": "512Mi"}}));
     let pull: Vec<Value> = spec
@@ -284,5 +316,54 @@ mod tests {
         let env = env_map("m", &spec);
         assert_eq!(env["FASTMOCK_PLUGIN_EXAMPLE_CALLBACK_URL"], "http://x");
         assert_eq!(env["FASTMOCK_VALKEY_PREFIX"], "fastmock:m:");
+        assert!(!env.contains_key("FASTMOCK_ACCESS_FILE"));
+        let vols = d["spec"]["template"]["spec"]["volumes"].as_array().unwrap();
+        assert!(vols.iter().all(|v| v["name"] != "access"));
+    }
+
+    #[test]
+    fn access_file_is_mounted_read_only_and_rolls_the_pods() {
+        let spec = FastMockSpec {
+            access: Some(crate::crd::AccessSpec {
+                config_map_ref: crate::crd::AccessConfigMapRef {
+                    name: "team-access".into(),
+                    key: "roles.yaml".into(),
+                },
+            }),
+            ..Default::default()
+        };
+        let env = env_map("m", &spec);
+        assert_eq!(
+            env["FASTMOCK_ACCESS_FILE"],
+            "/etc/fastmock/access/access.yaml"
+        );
+        let d = deployment("m", "ns", &owner(), &spec, "img:1", "abc");
+        let pod = &d["spec"]["template"]["spec"];
+        let vol = pod["volumes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["name"] == "access")
+            .unwrap();
+        assert_eq!(
+            vol["configMap"],
+            json!({"name": "team-access", "items": [{"key": "roles.yaml", "path": "access.yaml"}], "defaultMode": 0o440})
+        );
+        let mount = pod["containers"][0]["volumeMounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["name"] == "access")
+            .unwrap();
+        assert_eq!(mount["mountPath"], "/etc/fastmock/access");
+        assert_eq!(mount["readOnly"], true);
+        let base = config_checksum(&env, "t", None);
+        assert_eq!(
+            base,
+            sha256_hex(&format!("{}|t", serde_json::to_string(&env).unwrap()))
+        );
+        let a = config_checksum(&env, "t", Some("spaces: [{name: a}]"));
+        let b = config_checksum(&env, "t", Some("spaces: [{name: b}]"));
+        assert!(a != b && a != base);
     }
 }

@@ -8,6 +8,7 @@ const DENIED_ENV: &[&str] = &[
     "FASTMOCK_AUTH_DISABLED",
     "FASTMOCK_ADMIN_TOKENS",
     "FASTMOCK_ADMIN_TOKENS_FILE",
+    "FASTMOCK_ACCESS_FILE",
     "FASTMOCK_SECRETS_DIR",
     "FASTMOCK_CALLBACK_DENIED_CIDRS",
     "FASTMOCK_CALLBACK_ALLOWED_HOSTS",
@@ -138,6 +139,7 @@ fn parse_bool(name: &str, v: Option<&str>) -> anyhow::Result<bool> {
     }
 }
 
+/// Mount opt-in of a referenced Secret or ConfigMap: the label `fastmock.franshub.io/allow-mount: "true"`.
 pub fn secret_allowed(labels: Option<&BTreeMap<String, String>>) -> bool {
     labels
         .and_then(|l| l.get(ALLOW_MOUNT_LABEL))
@@ -215,6 +217,10 @@ mod tests {
             ("LD_PRELOAD".to_string(), "/x.so".to_string()),
             ("FASTMOCK_MAX_DELAY".to_string(), "5s".to_string()),
             ("FASTMOCK_PLUGIN_RCS_URL".to_string(), "x".to_string()),
+            (
+                "Fastmock_Access_File".to_string(),
+                "/tmp/a.yaml".to_string(),
+            ),
             ("RUST_LOG".to_string(), "debug".to_string()),
         ]);
         let denied = denied_env_keys(&env);
@@ -224,6 +230,7 @@ mod tests {
                 "FASTMOCK_AUTH_DISABLED",
                 "FASTMOCK_SECRET_DB",
                 "FASTMOCK_VALKEY_PREFIX",
+                "Fastmock_Access_File",
                 "LD_PRELOAD",
                 "fastmock_admin_tokens"
             ]
