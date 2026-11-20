@@ -8,9 +8,10 @@ use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{ConfigMap, Secret, Service, ServiceAccount};
 use k8s_openapi::api::policy::v1::PodDisruptionBudget;
 use kube::api::{Api, DeleteParams, DynamicObject, Patch, PatchParams, Preconditions};
-use kube::core::{ApiResource, GroupVersionKind};
+use kube::core::{ApiResource, GroupVersionKind, PartialObjectMeta};
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer::{Event, finalizer};
+use kube::runtime::reflector::ObjectRef;
 use kube::runtime::{Controller, WatchStreamExt, reflector, watcher};
 use kube::{Client, Resource, ResourceExt};
 use serde::Serialize;
@@ -37,6 +38,8 @@ pub enum Error {
     Kube(#[from] kube::Error),
     #[error("admin api: {0}")]
     Admin(String),
+    #[error("admin api: {0}")]
+    AdminNotFound(String),
     #[error("invalid spec: {0}")]
     Spec(String),
     #[error("finalizer: {0}")]
@@ -270,6 +273,53 @@ async fn check_oidc_ca(
     })
 }
 
+/// The OIDC client secret of a `FastMock`: `Ok(None)` without `spec.oidc`, otherwise a digest of the
+/// configured key's value (it goes into the pod checksum, so a rotated secret rolls the pods).
+async fn oidc_client_secret(
+    secrets: &Api<Secret>,
+    spec: &FastMockSpec,
+) -> Result<Result<Option<String>, (&'static str, String)>, Error> {
+    let Some(r) = spec.oidc.as_ref().map(|o| &o.client_secret_ref) else {
+        return Ok(Ok(None));
+    };
+    let secret = secrets.get_opt(&r.name).await?;
+    Ok(oidc_secret_digest(r, secret.as_ref()).map(Some))
+}
+
+fn oidc_secret_digest(
+    r: &crate::crd::OidcSecretRef,
+    secret: Option<&Secret>,
+) -> Result<String, (&'static str, String)> {
+    let Some(secret) = secret else {
+        return Err((
+            "SecretNotFound",
+            format!(
+                "referenced Secrets not found: oidc.clientSecretRef={}",
+                r.name
+            ),
+        ));
+    };
+    match secret.data.as_ref().and_then(|d| d.get(&r.key)) {
+        Some(v) if !String::from_utf8_lossy(&v.0).trim().is_empty() => {
+            Ok(manifests::sha256_hex_bytes(&v.0))
+        }
+        Some(_) => Err((
+            "SecretKeyNotFound",
+            format!(
+                "Secret {} key {} is empty (oidc.clientSecretRef)",
+                r.name, r.key
+            ),
+        )),
+        None => Err((
+            "SecretKeyNotFound",
+            format!(
+                "Secret {} has no key {} (oidc.clientSecretRef)",
+                r.name, r.key
+            ),
+        )),
+    }
+}
+
 /// The access file of a `FastMock`: `Ok(None)` without `spec.access`, `Err((reason, message))` when the
 /// ConfigMap is missing, lacks the key or is not labelled for mounting.
 async fn access_file(
@@ -333,6 +383,7 @@ async fn reconcile_server_inner(ms: &FastMock, ctx: &Ctx) -> Result<Action, Erro
     let image = ctx.images.resolve(&spec.image);
     let denied_env = denied_env_keys(&spec.env);
     let mut access_doc = None;
+    let mut oidc_digest = None;
     let refusal: Option<(&str, String, Duration)> =
         if let Some(msg) = storage_problem(spec).or_else(|| oidc_problem(spec)) {
             Some(("InvalidSpec", msg.to_string(), RESYNC))
@@ -352,12 +403,18 @@ async fn reconcile_server_inner(ms: &FastMock, ctx: &Ctx) -> Result<Action, Erro
         } else if let Some((r, m)) = check_oidc_ca(&cms, spec).await? {
             Some((r, m, Duration::from_secs(60)))
         } else {
-            match access_file(&cms, spec).await? {
-                Ok(doc) => {
-                    access_doc = doc;
-                    None
-                }
+            match oidc_client_secret(&secrets, spec).await? {
                 Err((r, m)) => Some((r, m, Duration::from_secs(60))),
+                Ok(d) => {
+                    oidc_digest = d;
+                    match access_file(&cms, spec).await? {
+                        Ok(doc) => {
+                            access_doc = doc;
+                            None
+                        }
+                        Err((r, m)) => Some((r, m, Duration::from_secs(60))),
+                    }
+                }
             }
         };
     if let Some((reason, msg, requeue)) = refusal {
@@ -409,7 +466,8 @@ async fn reconcile_server_inner(ms: &FastMock, ctx: &Ctx) -> Result<Action, Erro
     .await?;
     let sas: Api<ServiceAccount> = Api::namespaced(ctx.client.clone(), &ns);
     apply(&sas, &name, &manifests::service_account(&name, &ns, &owner)).await?;
-    let checksum = manifests::config_checksum(&env, &tokens, access_doc.as_deref());
+    let checksum =
+        manifests::config_checksum(&env, &tokens, access_doc.as_deref(), oidc_digest.as_deref());
     let deployments: Api<Deployment> = Api::namespaced(ctx.client.clone(), &ns);
     apply(
         &deployments,
@@ -668,7 +726,7 @@ pub fn count_tagged(listing: &Value, tags: &[String]) -> i64 {
 }
 
 struct Admin<'a> {
-    ctx: &'a Ctx,
+    http: &'a reqwest::Client,
     base: String,
     token: String,
 }
@@ -681,7 +739,6 @@ impl Admin<'_> {
         body: Option<Value>,
     ) -> Result<Value, Error> {
         let mut rb = self
-            .ctx
             .http
             .request(method, format!("{}/__admin/{path}", self.base))
             .bearer_auth(&self.token);
@@ -691,23 +748,44 @@ impl Admin<'_> {
         let r = rb.send().await.map_err(|e| Error::Admin(e.to_string()))?;
         let status = r.status();
         let v: Value = r.json().await.unwrap_or(Value::Null);
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(Error::AdminNotFound(format!("{status}: {v}")));
+        }
         if !status.is_success() {
             return Err(Error::Admin(format!("{status}: {v}")));
         }
         Ok(v)
     }
 
-    async fn delete_tag(&self, tag: &str, space: Option<&str>) -> Result<(), Error> {
+    /// Deletes the stubs with this tag in every space (the operator token is a global admin and the
+    /// tag belongs to one MockApi); 404 counts as done.
+    async fn delete_tag(&self, tag: &str) -> Result<(), Error> {
         let q = tag.replace('/', "%2F").replace(':', "%3A");
-        let s = space_param(space);
-        let sep = if s.is_empty() { "" } else { "&" };
-        self.call(
-            reqwest::Method::DELETE,
-            &format!("stubs?tag={q}{sep}{s}"),
-            None,
-        )
-        .await
-        .map(|_| ())
+        match self
+            .call(reqwest::Method::DELETE, &format!("stubs?tag={q}"), None)
+            .await
+        {
+            Ok(_) | Err(Error::AdminNotFound(_)) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn delete_api_stubs(&self, tag: &str) -> Result<(), Error> {
+        for t in api_tags(tag) {
+            self.delete_tag(&t).await?;
+        }
+        Ok(())
+    }
+
+    /// Whether the server defines the space; a server without `/spaces` has none.
+    async fn space_exists(&self, space: &str) -> Result<bool, Error> {
+        match self.call(reqwest::Method::GET, "spaces", None).await {
+            Ok(v) => Ok(v["spaces"]
+                .as_array()
+                .is_some_and(|l| l.iter().any(|s| s["name"] == space))),
+            Err(Error::AdminNotFound(_)) => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     async fn count_tagged(&self, tags: &[String], space: Option<&str>) -> Result<i64, Error> {
@@ -735,7 +813,17 @@ async fn admin_for<'a>(ctx: &'a Ctx, ns: &str, server: &str) -> Result<Option<Ad
         .admin_url_template
         .replace("{name}", server)
         .replace("{namespace}", ns);
-    Ok(Some(Admin { ctx, base, token }))
+    Ok(Some(Admin {
+        http: &ctx.http,
+        base,
+        token,
+    }))
+}
+
+fn space_not_found_message(space: &str, server: &str) -> String {
+    format!(
+        "space {space} is not defined on FastMock {server}: add it to the server's access file or choose another space; the stubs were left unchanged"
+    )
 }
 
 fn synced(st: &MockApiStatus) -> bool {
@@ -767,7 +855,7 @@ async fn import_all(
         s => format!("?{s}"),
     };
     if spec.stubs.is_empty() {
-        admin.delete_tag(&stub_tag, space).await?;
+        admin.delete_tag(&stub_tag).await?;
     } else {
         let r = admin
             .call(
@@ -790,7 +878,7 @@ async fn import_all(
             *imported += r["imported"].as_i64().unwrap_or(0);
             warnings.extend(warnings_of(&r));
         }
-        None => admin.delete_tag(&openapi_tag, space).await?,
+        None => admin.delete_tag(&openapi_tag).await?,
     }
     match &inputs.wiremock {
         Some(parsed) => {
@@ -804,7 +892,7 @@ async fn import_all(
             *imported += r["imported"].as_i64().unwrap_or(0);
             warnings.extend(warnings_of(&r));
         }
-        None => admin.delete_tag(&wm_tag, space).await?,
+        None => admin.delete_tag(&wm_tag).await?,
     }
     Ok(())
 }
@@ -880,21 +968,43 @@ async fn sync_api(api: Arc<MockApi>, ctx: &Ctx) -> Result<Action, Error> {
         server.metadata.uid.as_deref().unwrap_or_default(),
         &inputs,
     );
+    let mut space_found = true;
     if base.applied_hash == hash && base.observed_generation == generation && synced(&base) {
-        let present = admin
+        match admin
             .count_tagged(&api_tags(&tag), inputs.space.as_deref())
-            .await?;
-        if present >= base.imported_stubs {
-            return Ok(Action::requeue(RESYNC));
+            .await
+        {
+            Ok(present) if present >= base.imported_stubs => return Ok(Action::requeue(RESYNC)),
+            Ok(present) => {
+                tracing::info!(mockapi = %name, namespace = %ns, present, expected = base.imported_stubs, "stubs missing on the server; re-importing")
+            }
+            Err(Error::AdminNotFound(_)) if inputs.space.is_some() => space_found = false,
+            Err(e) => return Err(e),
         }
-        tracing::info!(mockapi = %name, namespace = %ns, present, expected = base.imported_stubs, "stubs missing on the server; re-importing");
+    }
+    if let Some(space) = &inputs.space
+        && !(space_found && admin.space_exists(space).await?)
+    {
+        tracing::warn!(mockapi = %name, namespace = %ns, %space, "space not defined on the server; stubs left unchanged");
+        let st = MockApiStatus {
+            applied_hash: base.applied_hash.clone(),
+            ..make(
+                base.imported_stubs,
+                base.warnings.clone(),
+                String::new(),
+                base.last_sync_time.clone(),
+                false,
+                "SpaceNotFound",
+                &space_not_found_message(space, server_name),
+            )
+        };
+        write_status(&apis, &name, prev, &st).await?;
+        return Ok(Action::requeue(Duration::from_secs(60)));
     }
     let mut imported = 0i64;
     let mut warnings: Vec<String> = vec![];
     if !base.applied_hash.is_empty() && base.space != inputs.space {
-        for t in api_tags(&tag) {
-            admin.delete_tag(&t, base.space.as_deref()).await?;
-        }
+        admin.delete_api_stubs(&tag).await?;
     }
     let outcome = import_all(
         &admin,
@@ -955,14 +1065,7 @@ async fn cleanup_api(api: Arc<MockApi>, ctx: &Ctx) -> Result<Action, Error> {
         tracing::info!(mockapi = %name, namespace = %ns, server = %server_name, "operator token is gone; releasing MockApi without stub cleanup");
         return Ok(Action::await_change());
     };
-    let space = match api.status.as_ref().filter(|s| !s.applied_hash.is_empty()) {
-        Some(st) => st.space.clone(),
-        None => effective_space(ctx.space_from_namespace, &ns, api.spec.space.as_deref())
-            .unwrap_or(None),
-    };
-    for t in api_tags(&tag_of(&api)) {
-        admin.delete_tag(&t, space.as_deref()).await?;
-    }
+    admin.delete_api_stubs(&tag_of(&api)).await?;
     Ok(Action::await_change())
 }
 
@@ -1000,20 +1103,51 @@ fn error_policy<K: Resource<DynamicType = ()>>(obj: Arc<K>, err: &Error, ctx: Ar
     Action::requeue(delay)
 }
 
+/// The FastMocks whose pods depend on this opted-in ConfigMap, so that its edits apply without
+/// waiting for the resync. Secrets are not watched: a rotated Secret is picked up by the next
+/// reconcile (the resync, or any change of the FastMock).
+pub fn servers_using(servers: &[Arc<FastMock>], ns: &str, name: &str) -> Vec<ObjectRef<FastMock>> {
+    servers
+        .iter()
+        .filter(|s| s.namespace().as_deref() == Some(ns))
+        .filter(|s| {
+            let spec = &s.spec;
+            spec.access
+                .as_ref()
+                .is_some_and(|a| a.config_map_ref.name == name)
+                || spec
+                    .oidc
+                    .as_ref()
+                    .and_then(|o| o.ca_config_map_ref.as_ref())
+                    .is_some_and(|c| c.name == name)
+        })
+        .map(|s| ObjectRef::from_obj(s.as_ref()))
+        .collect()
+}
+
+fn api_in<K>(client: &Client, namespace: &Option<String>) -> Api<K>
+where
+    K: Resource<Scope = k8s_openapi::NamespaceResourceScope>,
+    <K as Resource>::DynamicType: Default,
+{
+    match namespace {
+        Some(ns) => Api::namespaced(client.clone(), ns),
+        None => Api::all(client.clone()),
+    }
+}
+
 pub async fn run(ctx: Arc<Ctx>, namespace: Option<String>) {
     let client = ctx.client.clone();
-    let (servers, apis, deps): (Api<FastMock>, Api<MockApi>, Api<Deployment>) = match &namespace {
-        Some(ns) => (
-            Api::namespaced(client.clone(), ns),
-            Api::namespaced(client.clone(), ns),
-            Api::namespaced(client.clone(), ns),
-        ),
-        None => (
-            Api::all(client.clone()),
-            Api::all(client.clone()),
-            Api::all(client.clone()),
-        ),
-    };
+    let servers: Api<FastMock> = api_in(&client, &namespace);
+    let apis: Api<MockApi> = api_in(&client, &namespace);
+    let deps: Api<Deployment> = api_in(&client, &namespace);
+    let mounted = watcher::Config::default().labels(&format!("{ALLOW_MOUNT_LABEL}=true"));
+    let config_maps = watcher(
+        api_in::<PartialObjectMeta<ConfigMap>>(&client, &namespace),
+        mounted,
+    )
+    .default_backoff()
+    .touched_objects();
     let wc = watcher::Config::default();
     let (server_reader, server_writer) = reflector::store();
     let server_events = watcher(servers, wc.clone())
@@ -1021,11 +1155,19 @@ pub async fn run(ctx: Arc<Ctx>, namespace: Option<String>) {
         .reflect(server_writer)
         .applied_objects()
         .predicate_filter(trigger_hash::<FastMock>, Default::default());
+    let cm_refs = server_reader.clone();
     let server_ctrl = Controller::for_stream(server_events, server_reader)
         .owns(
             deps,
             watcher::Config::default().labels("app.kubernetes.io/managed-by=fastmock-operator"),
         )
+        .watches_stream(config_maps, move |cm: PartialObjectMeta<ConfigMap>| {
+            servers_using(
+                &cm_refs.state(),
+                &cm.namespace().unwrap_or_default(),
+                &cm.name_any(),
+            )
+        })
         .shutdown_on_signal()
         .run(reconcile_server, error_policy, ctx.clone())
         .for_each(|r| async move {
@@ -1193,6 +1335,456 @@ mod tests {
         assert!(storage_problem(&spec).is_some());
         spec.storage.mode = "postgres".into();
         assert!(storage_problem(&spec).is_some());
+    }
+
+    type Responder = Arc<dyn Fn(&str, &Value) -> (u16, Value) + Send + Sync>;
+    type Calls = Arc<Mutex<Vec<(String, Value)>>>;
+
+    const NS: &str = "team";
+    const SERVER: &str = "srv";
+
+    async fn mock(respond: Responder) -> (String, Calls) {
+        let calls: Calls = Arc::new(Mutex::new(vec![]));
+        let log = calls.clone();
+        let app = axum::Router::new().fallback(move |req: axum::extract::Request| {
+            let respond = respond.clone();
+            let log = log.clone();
+            async move {
+                let call = format!(
+                    "{} {}",
+                    req.method(),
+                    req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("")
+                );
+                let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
+                    .await
+                    .unwrap_or_default();
+                let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+                let (status, v) = respond(&call, &body);
+                log.lock().unwrap().push((call, body));
+                (
+                    axum::http::StatusCode::from_u16(status).unwrap(),
+                    axum::Json(v),
+                )
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{addr}"), calls)
+    }
+
+    fn test_ctx(base: &str) -> Ctx {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let client = Client::try_from(kube::Config::new(base.parse().unwrap())).unwrap();
+        Ctx {
+            client,
+            http: reqwest::Client::new(),
+            admin_url_template: base.to_string(),
+            images: ImagePolicy::new("fastmock:1", ""),
+            space_from_namespace: false,
+            failures: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn not_found() -> (u16, Value) {
+        (
+            404,
+            json!({"kind": "Status", "apiVersion": "v1", "status": "Failure", "message": "not found", "reason": "NotFound", "code": 404}),
+        )
+    }
+
+    fn server_json() -> Value {
+        json!({"apiVersion": "fastmock.franshub.io/v1alpha1", "kind": "FastMock",
+            "metadata": {"name": SERVER, "namespace": NS, "uid": "srv-uid"},
+            "spec": {}, "status": {"readyReplicas": 1}})
+    }
+
+    fn mockapi_json() -> Value {
+        json!({"apiVersion": "fastmock.franshub.io/v1alpha1", "kind": "MockApi",
+            "metadata": {"name": "a", "namespace": NS}, "spec": {"serverRef": {"name": SERVER}}})
+    }
+
+    fn kube_objects(call: &str) -> Option<(u16, Value)> {
+        let fm = format!("/apis/fastmock.franshub.io/v1alpha1/namespaces/{NS}");
+        if call == format!("GET {fm}/fastmocks/{SERVER}") {
+            Some((200, server_json()))
+        } else if call == format!("GET /api/v1/namespaces/{NS}/secrets/{SERVER}-operator-token") {
+            Some((
+                200,
+                json!({"apiVersion": "v1", "kind": "Secret",
+                    "metadata": {"name": format!("{SERVER}-operator-token"), "namespace": NS},
+                    "data": {"token": "dG9r"}}),
+            ))
+        } else if call.starts_with(&format!("PATCH {fm}/mockapis/a/status")) {
+            Some((200, mockapi_json()))
+        } else if call.starts_with(&format!("PATCH {fm}/fastmocks/{SERVER}/status")) {
+            Some((200, server_json()))
+        } else {
+            None
+        }
+    }
+
+    fn mockapi(space: Option<&str>, status: MockApiStatus) -> MockApi {
+        let mut api = MockApi::new(
+            "a",
+            MockApiSpec {
+                server_ref: crate::crd::ServerRef {
+                    name: SERVER.into(),
+                },
+                stubs: vec![
+                    json!({"request": {"method": "GET", "urlPath": "/x"}, "response": {"status": 200}}),
+                ],
+                space: space.map(String::from),
+                ..Default::default()
+            },
+        );
+        api.metadata.namespace = Some(NS.into());
+        api.metadata.generation = Some(1);
+        api.status = Some(status);
+        api
+    }
+
+    fn synced_status(hash: &str, space: Option<&str>) -> MockApiStatus {
+        MockApiStatus {
+            imported_stubs: 1,
+            observed_generation: 1,
+            last_sync_time: "2026-01-01T00:00:00Z".into(),
+            applied_hash: hash.into(),
+            space: space.map(String::from),
+            conditions: vec![condition("Synced", true, "Synced", "1 stubs applied")],
+            ..Default::default()
+        }
+    }
+
+    fn admin_calls(calls: &Calls) -> Vec<String> {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(c, _)| c.clone())
+            .filter(|c| c.contains("/__admin/"))
+            .collect()
+    }
+
+    fn written_status(calls: &Calls, kind: &str) -> Value {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|(c, _)| {
+                c.starts_with("PATCH") && c.contains(&format!("/{kind}/")) && c.contains("/status")
+            })
+            .map(|(_, b)| b["status"].clone())
+            .unwrap_or(Value::Null)
+    }
+
+    fn condition_of(status: &Value, type_: &str) -> Value {
+        status["conditions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|c| c["type"] == type_)
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+
+    #[tokio::test]
+    async fn cleanup_releases_a_mockapi_whose_space_is_gone() {
+        let (base, calls) = mock(Arc::new(|call: &str, _: &Value| {
+            kube_objects(call).unwrap_or_else(|| {
+                if call.starts_with("DELETE /__admin/stubs") && call.contains("space=") {
+                    (404, json!({"error": "space gone not found"}))
+                } else if call.starts_with("DELETE /__admin/stubs") {
+                    (200, json!({"deleted": 1}))
+                } else {
+                    not_found()
+                }
+            })
+        }))
+        .await;
+        let ctx = test_ctx(&base);
+        let api = mockapi(Some("gone"), synced_status("h", Some("gone")));
+        cleanup_api(Arc::new(api), &ctx).await.unwrap();
+        let deletes = admin_calls(&calls);
+        assert_eq!(deletes.len(), 3, "{deletes:?}");
+        assert!(
+            deletes
+                .iter()
+                .all(|c| c.starts_with("DELETE") && !c.contains("space=")),
+            "{deletes:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_treats_404_from_the_admin_api_as_done() {
+        let (base, _) = mock(Arc::new(|call: &str, _: &Value| {
+            kube_objects(call).unwrap_or_else(|| (404, json!({"error": "not found"})))
+        }))
+        .await;
+        let ctx = test_ctx(&base);
+        let api = mockapi(None, synced_status("h", None));
+        cleanup_api(Arc::new(api), &ctx).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn space_change_to_a_missing_space_keeps_the_old_stubs() {
+        let (base, calls) = mock(Arc::new(|call: &str, _: &Value| {
+            kube_objects(call).unwrap_or_else(|| {
+                if call == "GET /__admin/spaces" {
+                    (200, json!({"spaces": [{"name": "a"}]}))
+                } else if call.contains("space=b") {
+                    (404, json!({"error": "space b not found"}))
+                } else if call.starts_with("DELETE /__admin/stubs") {
+                    (200, json!({"deleted": 1}))
+                } else {
+                    not_found()
+                }
+            })
+        }))
+        .await;
+        let ctx = test_ctx(&base);
+        let api = mockapi(Some("b"), synced_status("old", Some("a")));
+        sync_api(Arc::new(api), &ctx).await.unwrap();
+        let admin = admin_calls(&calls);
+        assert!(
+            admin
+                .iter()
+                .all(|c| !c.starts_with("DELETE") && !c.starts_with("POST")),
+            "{admin:?}"
+        );
+        let st = written_status(&calls, "mockapis");
+        let synced = condition_of(&st, "Synced");
+        assert_eq!(synced["status"], "False", "{st}");
+        assert_eq!(synced["reason"], "SpaceNotFound", "{st}");
+        assert!(
+            synced["message"].as_str().unwrap().contains("space b"),
+            "{st}"
+        );
+        assert_eq!(st["appliedHash"], "old", "{st}");
+        assert_eq!(st["space"], "a", "{st}");
+    }
+
+    #[tokio::test]
+    async fn space_change_deletes_old_stubs_even_when_the_old_space_is_gone() {
+        let (base, calls) = mock(Arc::new(|call: &str, _: &Value| {
+            kube_objects(call).unwrap_or_else(|| {
+                if call == "GET /__admin/spaces" {
+                    (200, json!({"spaces": [{"name": "b"}]}))
+                } else if call.contains("space=a") {
+                    (404, json!({"error": "space a not found"}))
+                } else if call.starts_with("DELETE /__admin/stubs") {
+                    (200, json!({"deleted": 1}))
+                } else if call.starts_with("POST /__admin/stubs/import?space=b") {
+                    (200, json!({"imported": 1}))
+                } else {
+                    not_found()
+                }
+            })
+        }))
+        .await;
+        let ctx = test_ctx(&base);
+        let api = mockapi(Some("b"), synced_status("old", Some("a")));
+        sync_api(Arc::new(api), &ctx).await.unwrap();
+        let admin = admin_calls(&calls);
+        let deletes: Vec<&String> = admin.iter().filter(|c| c.starts_with("DELETE")).collect();
+        assert!(deletes.len() >= 3, "{admin:?}");
+        assert!(deletes.iter().all(|c| !c.contains("space=")), "{admin:?}");
+        let import = admin
+            .iter()
+            .position(|c| c.starts_with("POST /__admin/stubs/import?space=b"))
+            .expect("import into the new space");
+        let first_delete = admin.iter().position(|c| c.starts_with("DELETE")).unwrap();
+        assert!(first_delete < import, "{admin:?}");
+        let st = written_status(&calls, "mockapis");
+        assert_eq!(condition_of(&st, "Synced")["status"], "True", "{st}");
+        assert_eq!(st["space"], "b", "{st}");
+    }
+
+    #[tokio::test]
+    async fn removed_space_is_not_left_synced() {
+        let (base, calls) = mock(Arc::new(|call: &str, _: &Value| {
+            kube_objects(call).unwrap_or_else(|| {
+                if call == "GET /__admin/spaces" {
+                    (200, json!({"spaces": []}))
+                } else if call.contains("space=a") {
+                    (404, json!({"error": "space a not found"}))
+                } else {
+                    not_found()
+                }
+            })
+        }))
+        .await;
+        let ctx = test_ctx(&base);
+        let spec_api = mockapi(Some("a"), MockApiStatus::default());
+        let inputs = ApiInputs {
+            space: Some("a".into()),
+            ..Default::default()
+        };
+        let hash = inputs_hash(&spec_api.spec.stubs, &tag_of(&spec_api), "srv-uid", &inputs);
+        let api = mockapi(Some("a"), synced_status(&hash, Some("a")));
+        sync_api(Arc::new(api), &ctx).await.unwrap();
+        let st = written_status(&calls, "mockapis");
+        let synced = condition_of(&st, "Synced");
+        assert_eq!(synced["status"], "False", "{st}");
+        assert_eq!(synced["reason"], "SpaceNotFound", "{st}");
+        assert!(
+            admin_calls(&calls)
+                .iter()
+                .all(|c| !c.starts_with("DELETE") && !c.starts_with("POST"))
+        );
+    }
+
+    fn oidc_server(secret_key: &str) -> FastMock {
+        let mut fm = FastMock::new(
+            SERVER,
+            FastMockSpec {
+                replicas: 1,
+                storage: crate::crd::StorageSpec {
+                    mode: "memory".into(),
+                    ..Default::default()
+                },
+                oidc: Some(crate::crd::OidcSpec {
+                    issuer: "https://sso.example.com/realms/mocks".into(),
+                    client_id: "fastmock".into(),
+                    client_secret_ref: crate::crd::OidcSecretRef {
+                        name: "sso".into(),
+                        key: secret_key.into(),
+                    },
+                    redirect_url: "https://mock-admin.example.com/__admin/auth/callback".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        fm.metadata.namespace = Some(NS.into());
+        fm.metadata.uid = Some("srv-uid".into());
+        fm.metadata.generation = Some(1);
+        fm
+    }
+
+    fn sso_secret(data: Value) -> Value {
+        json!({"apiVersion": "v1", "kind": "Secret",
+            "metadata": {"name": "sso", "namespace": NS, "labels": {ALLOW_MOUNT_LABEL: "true"}},
+            "data": data})
+    }
+
+    fn echo_kube(call: &str, body: &Value, sso: &Value) -> (u16, Value) {
+        if call == format!("GET /api/v1/namespaces/{NS}/secrets/sso") {
+            return (200, sso.clone());
+        }
+        if let Some(r) = kube_objects(call) {
+            return r;
+        }
+        if call.starts_with("PATCH") {
+            (200, body.clone())
+        } else {
+            not_found()
+        }
+    }
+
+    #[tokio::test]
+    async fn oidc_secret_without_the_key_is_refused_with_a_clear_status() {
+        let sso = sso_secret(json!({"other": "eA=="}));
+        let (base, calls) = mock(Arc::new(move |call: &str, body: &Value| {
+            echo_kube(call, body, &sso)
+        }))
+        .await;
+        let ctx = test_ctx(&base);
+        reconcile_server_inner(&oidc_server("client-secret"), &ctx)
+            .await
+            .unwrap();
+        let st = written_status(&calls, "fastmocks");
+        let ready = condition_of(&st, "Ready");
+        assert_eq!(ready["status"], "False", "{st}");
+        assert_eq!(ready["reason"], "SecretKeyNotFound", "{st}");
+        assert!(
+            ready["message"].as_str().unwrap().contains("client-secret"),
+            "{st}"
+        );
+        assert!(
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(c, _)| !c.contains("/deployments/")),
+            "no Deployment may be applied"
+        );
+    }
+
+    async fn applied_checksum(secret_value_b64: &str) -> String {
+        let sso = sso_secret(json!({"client-secret": secret_value_b64}));
+        let (base, calls) = mock(Arc::new(move |call: &str, body: &Value| {
+            echo_kube(call, body, &sso)
+        }))
+        .await;
+        let ctx = test_ctx(&base);
+        reconcile_server_inner(&oidc_server("client-secret"), &ctx)
+            .await
+            .unwrap();
+        let calls = calls.lock().unwrap();
+        let (_, d) = calls
+            .iter()
+            .find(|(c, _)| c.starts_with("PATCH") && c.contains("/deployments/"))
+            .expect("Deployment applied");
+        d["spec"]["template"]["metadata"]["annotations"]["fastmock.franshub.io/config-checksum"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn rotating_the_oidc_client_secret_rolls_the_pods() {
+        let a = applied_checksum("b25l").await;
+        let b = applied_checksum("dHdv").await;
+        assert_eq!(a, applied_checksum("b25l").await);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn mounted_config_maps_map_to_their_servers() {
+        let mut with_access = oidc_server("client-secret");
+        with_access.spec.access = Some(crate::crd::AccessSpec {
+            config_map_ref: crate::crd::AccessConfigMapRef {
+                name: "team-access".into(),
+                key: "access.yaml".into(),
+            },
+        });
+        let mut other_ns = with_access.clone();
+        other_ns.metadata.namespace = Some("elsewhere".into());
+        let mut plain = FastMock::new("plain", FastMockSpec::default());
+        plain.metadata.namespace = Some(NS.into());
+        let all = [Arc::new(with_access), Arc::new(other_ns), Arc::new(plain)];
+        let names = |name: &str| -> Vec<(String, Option<String>)> {
+            servers_using(&all, NS, name)
+                .into_iter()
+                .map(|r| (r.name, r.namespace))
+                .collect()
+        };
+        let srv = vec![(SERVER.to_string(), Some(NS.to_string()))];
+        assert_eq!(names("team-access"), srv);
+        assert!(names("sso").is_empty());
+        assert!(names("unrelated").is_empty());
+    }
+
+    #[test]
+    fn empty_oidc_client_secret_is_refused() {
+        let r = crate::crd::OidcSecretRef {
+            name: "sso".into(),
+            key: "client-secret".into(),
+        };
+        let secret: Secret =
+            serde_json::from_value(sso_secret(json!({"client-secret": "IA=="}))).unwrap();
+        assert_eq!(
+            oidc_secret_digest(&r, Some(&secret)).unwrap_err().0,
+            "SecretKeyNotFound"
+        );
+        assert_eq!(
+            oidc_secret_digest(&r, None).unwrap_err().0,
+            "SecretNotFound"
+        );
     }
 
     #[test]

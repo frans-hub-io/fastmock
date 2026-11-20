@@ -37,7 +37,11 @@ fn meta(name: &str, ns: &str, owner: &OwnerReference, extra: Option<Value>) -> V
 }
 
 pub fn sha256_hex(s: &str) -> String {
-    hex::encode(Sha256::digest(s.as_bytes()))
+    sha256_hex_bytes(s.as_bytes())
+}
+
+pub fn sha256_hex_bytes(b: &[u8]) -> String {
+    hex::encode(Sha256::digest(b))
 }
 
 pub fn tokens_file(user_lines: &str, operator_token: &str) -> String {
@@ -135,12 +139,14 @@ pub fn env_map(name: &str, spec: &FastMockSpec) -> BTreeMap<String, String> {
     m
 }
 
-/// Pod template checksum: the pods roll when the environment, the token file or the access file change.
-/// Without an access file it is the same as before access files existed, so upgrades do not roll pods.
+/// Pod template checksum: the pods roll when the environment, the token file, the access file or the
+/// OIDC client secret (given as a digest) change. Without an access file and OIDC it is the same as before
+/// they existed, so upgrades do not roll pods.
 pub fn config_checksum(
     env: &BTreeMap<String, String>,
     tokens: &str,
     access_file: Option<&str>,
+    oidc_secret_digest: Option<&str>,
 ) -> String {
     let mut basis = format!(
         "{}|{}",
@@ -150,6 +156,10 @@ pub fn config_checksum(
     if let Some(a) = access_file {
         basis.push('|');
         basis.push_str(a);
+    }
+    if let Some(d) = oidc_secret_digest {
+        basis.push_str("|oidc-client-secret:");
+        basis.push_str(d);
     }
     sha256_hex(&basis)
 }
@@ -395,14 +405,17 @@ mod tests {
             .unwrap();
         assert_eq!(mount["mountPath"], "/etc/fastmock/access");
         assert_eq!(mount["readOnly"], true);
-        let base = config_checksum(&env, "t", None);
+        let base = config_checksum(&env, "t", None, None);
         assert_eq!(
             base,
             sha256_hex(&format!("{}|t", serde_json::to_string(&env).unwrap()))
         );
-        let a = config_checksum(&env, "t", Some("spaces: [{name: a}]"));
-        let b = config_checksum(&env, "t", Some("spaces: [{name: b}]"));
+        let a = config_checksum(&env, "t", Some("spaces: [{name: a}]"), None);
+        let b = config_checksum(&env, "t", Some("spaces: [{name: b}]"), None);
         assert!(a != b && a != base);
+        let s1 = config_checksum(&env, "t", None, Some("d1"));
+        let s2 = config_checksum(&env, "t", None, Some("d2"));
+        assert!(s1 != s2 && s1 != base);
     }
 
     #[test]
