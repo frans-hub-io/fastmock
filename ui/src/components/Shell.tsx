@@ -13,109 +13,35 @@ import {
   useComputedColorScheme,
   useMantineColorScheme,
 } from '@mantine/core';
-import { useDisclosure } from '@mantine/hooks';
+import { useDisclosure, useHotkeys } from '@mantine/hooks';
 import {
-  IconActivity,
-  IconApi,
   IconBolt,
-  IconBox,
-  IconBroadcast,
-  IconChecklist,
-  IconDatabase,
-  IconFileCode,
-  IconFiles,
-  IconFlame,
-  IconGauge,
-  IconHistory,
-  IconKey,
+  IconChevronDown,
+  IconLayoutSidebarLeftCollapse,
+  IconLayoutSidebarLeftExpand,
   IconLogout,
   IconMoon,
-  IconPlayerRecord,
-  IconRoute,
   IconSearch,
-  IconSettings,
-  IconShieldCheck,
-  IconSitemap,
   IconSun,
-  IconUser,
   IconUserShield,
-  IconWebhook,
 } from '@tabler/icons-react';
-import type { ComponentType, ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Link, NavLink as RouterNavLink, useLocation } from 'react-router';
 import lockupDark from '../assets/brand/FransHub_FastMock_dark.svg';
 import lockupLight from '../assets/brand/FransHub_FastMock_light.svg';
 import monogramDark from '../assets/brand/FransHub_monogram_dark.svg';
 import monogramLight from '../assets/brand/FransHub_monogram_light.svg';
 import { useTokensApi } from '../api/features';
-import { accessSummary, can, kindLabel, spaceScoped, summaryLabel, type Permission } from '../auth/permissions';
+import { accessSummary, can, kindLabel, spaceScoped, summaryLabel } from '../auth/permissions';
 import { useAuth, useSpace } from '../auth/useAuth';
+import { readLocal, writeLocal } from '../lib/ui';
+import { CommandPalette } from './CommandPalette';
+import { isActive, navItemOf, visibleNav } from './nav';
 import classes from './Shell.module.css';
 import { SpaceSelect } from './spaces';
 import { NoAccessState } from './States';
 
-interface NavItem {
-  to: string;
-  label: string;
-  icon: ComponentType<{ size?: number; stroke?: number }>;
-  perm?: Permission;
-  /** The permission must be held globally (the screen is not scoped by space). */
-  global?: boolean;
-  /** Shown only when the server offers the managed-token API. */
-  tokensApi?: boolean;
-}
-
-const NAV: { group: string; items: NavItem[] }[] = [
-  { group: 'Overview', items: [{ to: '/', label: 'Dashboard', icon: IconGauge }] },
-  {
-    group: 'Mocks',
-    items: [
-      { to: '/stubs', label: 'Stubs', icon: IconRoute, perm: 'stubs:read' },
-      { to: '/services', label: 'Services', icon: IconSitemap, perm: 'stubs:read', global: true },
-      { to: '/scenarios', label: 'Scenarios', icon: IconChecklist, perm: 'state:read' },
-      { to: '/async', label: 'Async mocks', icon: IconBroadcast, perm: 'stubs:read', global: true },
-      { to: '/grpc', label: 'gRPC', icon: IconFileCode, perm: 'grpc:read' },
-      { to: '/files', label: 'Files', icon: IconFiles, perm: 'files:read' },
-    ],
-  },
-  {
-    group: 'Traffic',
-    items: [
-      { to: '/requests', label: 'Request journal', icon: IconActivity, perm: 'journal:read' },
-      { to: '/near-misses', label: 'Near misses', icon: IconSearch, perm: 'journal:read' },
-      { to: '/verify', label: 'Verify', icon: IconShieldCheck, perm: 'journal:read' },
-      { to: '/callbacks', label: 'Callbacks', icon: IconWebhook, perm: 'callbacks:read' },
-      { to: '/recordings', label: 'Recordings', icon: IconPlayerRecord, perm: 'recordings:read' },
-    ],
-  },
-  {
-    group: 'Testing',
-    items: [
-      { to: '/contract-tests', label: 'Contract tests', icon: IconBox, perm: 'contracts:read' },
-      { to: '/chaos', label: 'Chaos', icon: IconFlame, perm: 'chaos:read' },
-    ],
-  },
-  {
-    group: 'System',
-    items: [
-      { to: '/kv', label: 'KV store', icon: IconDatabase, perm: 'state:read' },
-      { to: '/settings', label: 'Settings', icon: IconSettings, perm: 'chaos:read' },
-      { to: '/tokens', label: 'Admin tokens', icon: IconKey, perm: 'tokens:read', tokensApi: true },
-      { to: '/access', label: 'Access', icon: IconUserShield },
-      { to: '/audit', label: 'Audit log', icon: IconHistory, perm: 'audit:read' },
-      { to: '/api', label: 'API docs', icon: IconApi },
-    ],
-  },
-];
-
 const ROLE_COLOR: Record<string, string> = { viewer: 'gray', editor: 'blue', admin: 'grape' };
-
-/** The navigation entry a path belongs to: the deepest entry that is the path or one of its parents. */
-function navItemOf(pathname: string): NavItem | undefined {
-  return NAV.flatMap((g) => g.items)
-    .filter((i) => i.to !== '/' && (pathname === i.to || pathname.startsWith(`${i.to}/`)))
-    .sort((a, b) => b.to.length - a.to.length)[0];
-}
 
 /** Shows the no-access state instead of a screen whose read permission the principal lacks (opened by URL). */
 function PageGuard({ children }: { children: ReactNode }) {
@@ -128,36 +54,96 @@ function PageGuard({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-function Nav({ onNavigate }: { onNavigate?: () => void }) {
+const CLOSED_KEY = 'fastmock.nav.closed';
+
+function readClosed(): string[] {
+  try {
+    const v = JSON.parse(readLocal(CLOSED_KEY) ?? '[]') as unknown;
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function Nav({ onNavigate, collapsed = false }: { onNavigate?: () => void; collapsed?: boolean }) {
   const { permissions } = useAuth();
   const tokensApi = useTokensApi() === 'available';
   const loc = useLocation();
-  const shown = (i: NavItem) => (!i.perm || can(permissions, i.perm, i.global ? null : undefined)) && (!i.tokensApi || tokensApi);
-  const groups = NAV.map((g) => ({ ...g, items: g.items.filter(shown) })).filter((g) => g.items.length > 0);
+  const [closed, setClosed] = useState<string[]>(readClosed);
+  const groups = visibleNav(permissions, tokensApi);
+  const toggle = (g: string) =>
+    setClosed((c) => {
+      const next = c.includes(g) ? c.filter((x) => x !== g) : [...c, g];
+      writeLocal(CLOSED_KEY, JSON.stringify(next));
+      return next;
+    });
   return (
-    <nav aria-label="Main">
-      {groups.map((g) => (
-        <div key={g.group}>
-          <div className={classes.group}>{g.group}</div>
-          {g.items.map((i) => {
-            const active = i.to === '/' ? loc.pathname === '/' : loc.pathname === i.to || loc.pathname.startsWith(`${i.to}/`);
-            return (
-              <NavLink
-                key={i.to}
-                component={RouterNavLink}
-                to={i.to}
-                label={i.label}
-                leftSection={<i.icon size={18} stroke={1.6} />}
-                active={active}
-                onClick={onNavigate}
-                variant="light"
-                className={classes.navLink}
-              />
-            );
-          })}
-        </div>
-      ))}
+    <nav aria-label="Main" className={classes.nav} data-collapsed={collapsed || undefined}>
+      {groups.map((g) => {
+        const holdsActive = g.items.some((i) => isActive(i, loc.pathname));
+        const open = collapsed || holdsActive || !closed.includes(g.group);
+        const single = g.items.length === 1 && g.group === 'Overview';
+        return (
+          <div key={g.group} className={classes.navGroup}>
+            {collapsed ? (
+              <div className={classes.groupRule} aria-hidden />
+            ) : single ? null : (
+              <UnstyledButton className={classes.group} onClick={() => toggle(g.group)} aria-expanded={open} disabled={holdsActive} aria-label={`${g.group} section`}>
+                <span>{g.group}</span>
+                <IconChevronDown size={14} className={classes.chevron} data-open={open || undefined} aria-hidden />
+              </UnstyledButton>
+            )}
+            {open &&
+              g.items.map((i) => {
+                const active = isActive(i, loc.pathname);
+                const link = (
+                  <NavLink
+                    key={i.to}
+                    component={RouterNavLink}
+                    to={i.to}
+                    label={collapsed ? undefined : i.label}
+                    aria-label={collapsed ? i.label : undefined}
+                    leftSection={<i.icon size={19} stroke={1.6} />}
+                    active={active}
+                    onClick={onNavigate}
+                    variant="light"
+                    className={classes.navLink}
+                  />
+                );
+                return collapsed ? (
+                  <Tooltip key={i.to} label={i.label} position="right" offset={12}>
+                    {link}
+                  </Tooltip>
+                ) : (
+                  link
+                );
+              })}
+          </div>
+        );
+      })}
     </nav>
+  );
+}
+
+function isMac(): boolean {
+  return typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(navigator.userAgent);
+}
+
+function SearchButton({ onOpen }: { onOpen: () => void }) {
+  const mod = isMac() ? '⌘' : 'Ctrl';
+  return (
+    <>
+      <UnstyledButton className={classes.search} onClick={onOpen} aria-label={`Search pages, stubs and requests (${mod}+K)`} data-testid="open-palette" visibleFrom="sm">
+        <IconSearch size={16} aria-hidden />
+        <span className={classes.searchText}>Search or jump to…</span>
+        <span className="fm-kbd" aria-hidden>
+          {mod} K
+        </span>
+      </UnstyledButton>
+      <ActionIcon variant="default" size="lg" onClick={onOpen} aria-label="Search pages, stubs and requests" hiddenFrom="sm">
+        <IconSearch size={18} />
+      </ActionIcon>
+    </>
   );
 }
 
@@ -186,7 +172,9 @@ function Principal() {
       <Menu.Target>
         <UnstyledButton aria-label={`Account: ${who}`} data-testid="principal" className={classes.principal}>
           <Group gap={8} wrap="nowrap">
-            <IconUser size={18} aria-hidden />
+            <span className={classes.avatar} aria-hidden>
+              {(who.trim()[0] ?? '?').toUpperCase()}
+            </span>
             <Text size="sm" fw={500} visibleFrom="sm" className="truncate" maw={160} data-testid="principal-name">
               {who}
             </Text>
@@ -251,12 +239,23 @@ function Principal() {
   );
 }
 
+const COLLAPSED_KEY = 'fastmock.nav.collapsed';
+
 export function Shell({ children }: { children: ReactNode }) {
   const [opened, { toggle, close }] = useDisclosure(false);
+  const [palette, paletteCtl] = useDisclosure(false);
+  const [collapsed, setCollapsed] = useState(() => readLocal(COLLAPSED_KEY) === '1');
   const { info } = useAuth();
   const spaces = useSpace();
+  useHotkeys([['mod+K', () => paletteCtl.toggle()]], []);
+  const flipCollapsed = () => {
+    setCollapsed((c) => {
+      writeLocal(COLLAPSED_KEY, c ? '0' : '1');
+      return !c;
+    });
+  };
   return (
-    <div className={classes.root}>
+    <div className={classes.root} data-collapsed={collapsed || undefined}>
       <a href="#main" className={classes.skip}>
         Skip to content
       </a>
@@ -274,15 +273,16 @@ export function Shell({ children }: { children: ReactNode }) {
             </span>
           </Link>
           {info?.version && (
-            <Badge variant="outline" color="gray" size="sm" visibleFrom="sm">
-              v{info.version}
-            </Badge>
+            <span className={`fm-chip ${classes.version}`}>v{info.version}</span>
           )}
-          <div className={classes.spaceSlot}>
-            <SpaceSelect />
+          <div className={classes.searchSlot}>
+            <SearchButton onOpen={paletteCtl.open} />
           </div>
         </Group>
         <Group gap="xs" wrap="nowrap" className={classes.headerRight}>
+          <div className={classes.spaceSlot}>
+            <SpaceSelect />
+          </div>
           <ThemeToggle />
           <Principal />
         </Group>
@@ -290,18 +290,34 @@ export function Shell({ children }: { children: ReactNode }) {
       <div className={classes.body}>
         <div className={classes.sideCol}>
           <aside className={classes.sidebar}>
-            <Nav />
+            <ScrollArea className={classes.sideScroll} scrollbarSize={6} type="hover">
+              <Nav collapsed={collapsed} />
+            </ScrollArea>
+            <div className={classes.sideFoot}>
+              <Tooltip label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} position="right" disabled={!collapsed}>
+                <UnstyledButton className={classes.collapse} onClick={flipCollapsed} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-pressed={collapsed}>
+                  {collapsed ? <IconLayoutSidebarLeftExpand size={18} /> : <IconLayoutSidebarLeftCollapse size={18} />}
+                  {!collapsed && <span>Collapse</span>}
+                </UnstyledButton>
+              </Tooltip>
+            </div>
           </aside>
         </div>
-        <Drawer opened={opened} onClose={close} size={280} title="FastMock" hiddenFrom="md">
-          <ScrollArea>
-            <Nav onNavigate={close} />
-          </ScrollArea>
+        <Drawer opened={opened} onClose={close} size={288} title={
+            <span className={classes.drawerTitle}>
+              <img src={lockupLight} alt="FastMock" width={163} height={22} className="fm-on-light" />
+              <img src={lockupDark} alt="FastMock" width={163} height={22} className="fm-on-dark" />
+            </span>
+          } hiddenFrom="md" classNames={{ body: classes.drawerBody }}>
+          <Nav onNavigate={close} />
         </Drawer>
         <main id="main" className={classes.main} tabIndex={-1}>
-          <PageGuard>{children}</PageGuard>
+          <div className={classes.mainInner}>
+            <PageGuard>{children}</PageGuard>
+          </div>
         </main>
       </div>
+      <CommandPalette opened={palette} onClose={paletteCtl.close} />
     </div>
   );
 }

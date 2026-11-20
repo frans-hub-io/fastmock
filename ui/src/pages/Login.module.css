@@ -1,0 +1,103 @@
+.page {
+  position: relative;
+  min-height: 100vh;
+  overflow: hidden;
+  background:
+    radial-gradient(60rem 40rem at 10% -10%, color-mix(in srgb, var(--fh-color-brand-frans-gradient-end) 22%, transparent), transparent 70%),
+    radial-gradient(50rem 36rem at 110% 110%, color-mix(in srgb, var(--fh-color-brand-hub-gradient-end) 18%, transparent), transparent 70%),
+    var(--fh-color-canvas);
+}
+
+.backdrop {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.shapeA,
+.shapeB,
+.shapeC {
+  position: absolute;
+  border-radius: 48px;
+  transform: skewX(-14deg);
+}
+
+.shapeA {
+  width: 420px;
+  height: 300px;
+  left: -120px;
+  top: 12%;
+  background: linear-gradient(135deg, var(--fh-color-brand-frans-gradient-start), var(--fh-color-brand-frans-gradient-end));
+  opacity: 0.1;
+}
+
+.shapeB {
+  width: 300px;
+  height: 220px;
+  right: -60px;
+  bottom: 10%;
+  background: linear-gradient(135deg, var(--fh-color-brand-hub-gradient-start), var(--fh-color-brand-hub-gradient-end));
+  opacity: 0.14;
+}
+
+.shapeC {
+  width: 180px;
+  height: 130px;
+  right: 18%;
+  top: 8%;
+  border: 2px solid var(--fm-param-border);
+  opacity: 0.6;
+}
+
+.center {
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--mantine-spacing-xl) var(--mantine-spacing-md);
+}
+
+.card {
+  --paper-radius: 24px !important;
+  box-shadow: var(--fm-shadow-xl), 0 0 0 1px rgba(199, 139, 255, 0.06);
+  background: color-mix(in srgb, var(--fh-color-surface) 94%, transparent);
+  backdrop-filter: blur(6px);
+}
+
+.logo {
+  display: flex;
+  justify-content: center;
+}
+
+.sso {
+  box-shadow: var(--fm-shadow-sm);
+}
+
+.help {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border-radius: var(--mantine-radius-md);
+  background: var(--fm-subtle-bg);
+  border: 1px solid var(--fm-hairline);
+  line-height: 1.55;
+}
+
+.helpIcon {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+@media (max-width: 35.99em) {
+  .shapeA {
+    width: 260px;
+    height: 200px;
+  }
+
+  .shapeC {
+    display: none;
+  }
+}

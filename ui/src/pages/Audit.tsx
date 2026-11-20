@@ -1,4 +1,5 @@
-import { Badge, Drawer, Group, NumberInput, Paper, Select, Stack, Table, Text, TextInput } from '@mantine/core';
+import { Badge, Drawer, Group, NumberInput, Select, Stack, Table, Text, TextInput } from '@mantine/core';
+import { IconHistory, IconSearch } from '@tabler/icons-react';
 import { useDebouncedValue } from '@mantine/hooks';
 import { useQuery } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
@@ -6,7 +7,8 @@ import { client, unwrap } from '../api/client';
 import type { AuditEvent } from '../api/types';
 import { useCan } from '../auth/useAuth';
 import { DiffView } from '../components/DiffView';
-import { PageHeader, Time } from '../components/common';
+import { DataTable, DensityToggle, PageHeader, Time } from '../components/common';
+import { useDensity } from '../lib/ui';
 import { EmptyState, ErrorState, LoadingState, NoAccessState } from '../components/States';
 import { formatAbsolute, pretty } from '../lib/format';
 
@@ -54,6 +56,7 @@ export default function Audit() {
   const [text, setText] = useState('');
   const [dPrincipal] = useDebouncedValue(principal, 300);
   const [selected, setSelected] = useState<AuditEvent | null>(null);
+  const [density, setDensity] = useDensity();
   const query = { limit, principal: dPrincipal || undefined, action: action ?? undefined };
   const q = useQuery({
     queryKey: ['audit', query],
@@ -79,56 +82,77 @@ export default function Audit() {
   return (
     <Stack gap="md">
       <PageHeader title="Audit log" description="Every change made through the admin API, who made it and when." />
-      <Paper withBorder p="sm" radius="md">
-        <Group gap="sm" wrap="wrap">
-          <TextInput placeholder="Principal" value={principal} onChange={(e) => setPrincipal(e.currentTarget.value)} aria-label="Principal" />
-          <Select placeholder="Any action" data={actions} value={action} onChange={setAction} clearable searchable aria-label="Action" w={220} />
-          <TextInput placeholder="Detail contains" value={text} onChange={(e) => setText(e.currentTarget.value)} aria-label="Detail contains" />
-          <NumberInput value={limit} onChange={(v) => setLimit(typeof v === 'number' ? v : 200)} min={1} max={10000} w={110} aria-label="Limit" />
-        </Group>
-      </Paper>
+      <div className="fm-toolbar">
+        <TextInput placeholder="Principal" leftSection={<IconSearch size={16} />} value={principal} onChange={(e) => setPrincipal(e.currentTarget.value)} aria-label="Principal" w={200} />
+        <Select placeholder="Any action" data={actions} value={action} onChange={setAction} clearable searchable aria-label="Action" w={220} />
+        <TextInput placeholder="Detail contains" value={text} onChange={(e) => setText(e.currentTarget.value)} aria-label="Detail contains" className="fm-grow" />
+        <NumberInput value={limit} onChange={(v) => setLimit(typeof v === 'number' ? v : 200)} min={1} max={10000} w={110} aria-label="Limit" />
+        <DensityToggle value={density} onChange={setDensity} />
+      </div>
       {q.isLoading ? (
         <LoadingState />
       ) : q.isError ? (
         <ErrorState error={q.error} onRetry={() => void q.refetch()} />
       ) : !events.length ? (
-        <EmptyState title="No audit events" />
+        <EmptyState title={dPrincipal || action || text ? 'No audit events match the filters' : 'No audit events yet'} icon={<IconHistory size={30} />}>
+          Changes made through the admin API, such as creating a stub or a token, are recorded here.
+        </EmptyState>
       ) : (
-        <Paper withBorder radius="md">
-          <div className="table-scroll">
-            <Table fz="sm" highlightOnHover miw={720}>
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th>When</Table.Th>
-                  <Table.Th>Principal</Table.Th>
-                  <Table.Th>Action</Table.Th>
-                  <Table.Th>Detail</Table.Th>
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                {events.map((e) => (
-                  <Table.Tr key={e.id} className="clickable-row" tabIndex={0} onClick={() => setSelected(e)} onKeyDown={(k) => k.key === 'Enter' && setSelected(e)}>
-                    <Table.Td>
-                      <Time at={e.at} />
-                    </Table.Td>
-                    <Table.Td>
-                      {e.principal}{' '}
-                      <Badge size="xs" variant="light">
-                        {e.role}
-                      </Badge>
-                    </Table.Td>
-                    <Table.Td className="mono">{e.action}</Table.Td>
-                    <Table.Td className="mono" maw={480}>
-                      <Text size="xs" className="truncate">
-                        {summary(e.detail)}
-                      </Text>
-                    </Table.Td>
-                  </Table.Tr>
-                ))}
-              </Table.Tbody>
-            </Table>
-          </div>
-        </Paper>
+        <DataTable
+          miw={760}
+          density={density}
+          testId="audit-table"
+          footer={
+            <Text size="xs" c="dimmed">
+              {events.length} event{events.length === 1 ? '' : 's'}
+            </Text>
+          }
+        >
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>When</Table.Th>
+              <Table.Th>Principal</Table.Th>
+              <Table.Th>Action</Table.Th>
+              <Table.Th>Detail</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {events.map((e) => (
+              <Table.Tr
+                key={e.id}
+                className={`clickable-row ${selected?.id === e.id ? 'fm-row-selected' : ''}`}
+                tabIndex={0}
+                onClick={() => setSelected(e)}
+                onKeyDown={(k) => k.key === 'Enter' && setSelected(e)}
+                data-testid="audit-row"
+              >
+                <Table.Td data-label="When">
+                  <Time at={e.at} />
+                </Table.Td>
+                <Table.Td data-label="Principal">
+                  <Group gap={6} wrap="nowrap">
+                    <Text size="sm" fw={500} className="truncate" maw={200}>
+                      {e.principal}
+                    </Text>
+                    <Badge size="xs" variant="light" tt="none">
+                      {e.role}
+                    </Badge>
+                  </Group>
+                </Table.Td>
+                <Table.Td data-label="Action">
+                  <span className="fm-action" data-kind={e.action.split('.').pop()}>
+                    {e.action}
+                  </span>
+                </Table.Td>
+                <Table.Td maw={480}>
+                  <Text size="xs" c="dimmed" className="truncate mono">
+                    {summary(e.detail)}
+                  </Text>
+                </Table.Td>
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </DataTable>
       )}
       <Drawer opened={!!selected} onClose={() => setSelected(null)} position="right" size="xl" title={selected?.action}>
         {selected && (

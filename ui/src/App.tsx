@@ -102,7 +102,7 @@ export function AppRoutes() {
 export function App() {
   const [client] = useState(makeClient);
   return (
-    <MantineProvider theme={theme} defaultColorScheme="auto" withCssVariables={false} withGlobalClasses={false} getStyleNonce={() => styleNonce() ?? ''}>
+    <MantineProvider theme={theme} defaultColorScheme="dark" withCssVariables={false} withGlobalClasses={false} getStyleNonce={() => styleNonce() ?? ''}>
       <QueryClientProvider client={client}>
         <ModalsProvider>
           <Notifications position="top-right" limit={4} />
