@@ -276,11 +276,13 @@ FASTMOCK_ADMIN_TOKENS=me:admin:$FASTMOCK_TOKEN_HASH
 EOF
 chmod 600 .env
 docker compose up -d
-docker compose logs fastmock | grep -E 'migrations|storage ready|FastMock started'
+docker compose logs fastmock | grep -E 'migration|storage ready|FastMock started'
 ```
 
 ```text
-fastmock-1  | 2026-11-19T06:40:41.867428Z  INFO fastmock_store: applying database migrations
+fastmock-1  | 2026-11-19T06:40:41.867428Z  INFO fastmock_store: applying database migrations target_version=10
+fastmock-1  | 2026-11-19T06:40:41.871102Z  INFO fastmock_store::postgres: applied database migration version=1 name=init duration_ms=3
+fastmock-1  | ...
 fastmock-1  | 2026-11-19T06:40:41.887368Z  INFO fastmock_store: storage ready
 fastmock-1  | 2026-11-19T06:40:41.901674Z  INFO fastmock_server: FastMock started listen=0.0.0.0:8080 admin_listen=0.0.0.0:9090 plugins=[...] otel=false
 ```

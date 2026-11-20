@@ -229,6 +229,28 @@ pub fn pg_connect_options(url: &str, tls: &PgTls) -> anyhow::Result<PgConnectPla
     })
 }
 
+/// A migration applied by [`PgStore::migrate`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppliedMigration {
+    pub version: i64,
+    pub name: String,
+    pub duration: Duration,
+}
+
+async fn applied_versions(conn: &mut sqlx::PgConnection) -> anyhow::Result<Vec<i64>> {
+    let present: bool = sqlx::query_scalar("select to_regclass('_sqlx_migrations') is not null")
+        .fetch_one(&mut *conn)
+        .await?;
+    if !present {
+        return Ok(Vec::new());
+    }
+    Ok(
+        sqlx::query_scalar("select version from _sqlx_migrations where success")
+            .fetch_all(&mut *conn)
+            .await?,
+    )
+}
+
 #[derive(Clone)]
 pub struct PgStore {
     pool: PgPool,
@@ -261,9 +283,10 @@ impl PgStore {
         Ok(Self { pool })
     }
 
-    /// Applies pending migrations under the migration lock. The lock is polled rather than waited
-    /// for: a session blocked on it would hold a snapshot that a concurrent index build waits for.
-    pub async fn migrate(&self) -> anyhow::Result<()> {
+    /// Applies pending migrations under the migration lock and returns the ones this call applied, each
+    /// logged with its version, name and duration. The lock is polled rather than waited for: a session
+    /// blocked on it would hold a snapshot that a concurrent index build waits for.
+    pub async fn migrate(&self) -> anyhow::Result<Vec<AppliedMigration>> {
         let mut conn = self.pool.acquire().await?;
         let database: String = sqlx::query_scalar("select current_database()")
             .fetch_one(&mut *conn)
@@ -276,14 +299,41 @@ impl PgStore {
         {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
-        let result = MIGRATOR.run_direct(&mut *conn).await;
+        let result = async {
+            let before = applied_versions(&mut conn).await?;
+            MIGRATOR.run_direct(&mut *conn).await?;
+            let rows: Vec<(i64, String, i64)> = sqlx::query_as(
+                "select version, description, execution_time from _sqlx_migrations where success order by version",
+            )
+            .fetch_all(&mut *conn)
+            .await?;
+            Ok::<_, anyhow::Error>(
+                rows.into_iter()
+                    .filter(|(v, _, _)| !before.contains(v))
+                    .map(|(version, name, nanos)| AppliedMigration {
+                        version,
+                        name,
+                        duration: Duration::from_nanos(nanos.max(0) as u64),
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        }
+        .await;
         let unlocked = sqlx::query("select pg_advisory_unlock($1)")
             .bind(key)
             .execute(&mut *conn)
             .await;
-        result?;
+        let applied = result?;
         unlocked?;
-        Ok(())
+        for m in &applied {
+            tracing::info!(
+                version = m.version,
+                name = %m.name,
+                duration_ms = m.duration.as_millis() as u64,
+                "applied database migration"
+            );
+        }
+        Ok(applied)
     }
 
     pub fn expected_schema_version() -> i64 {
@@ -575,6 +625,14 @@ fn journal_where<'a>(qb: &mut QueryBuilder<'a, Postgres>, f: &'a JournalFilter) 
     push_spaces(qb, &f.spaces);
 }
 
+/// Columns read back for journal entries. Queries never select `*`: a replica of an earlier release keeps
+/// its prepared statements while a newer one adds columns, and PostgreSQL rejects a cached plan whose
+/// result type changed.
+const JOURNAL_COLUMNS: &str = "id, at, source, method, path, query, headers, body, status, response_body, stub_id, correlation, matched, duration_ms, trace_id, space";
+
+/// Columns read back for callback jobs; see [`JOURNAL_COLUMNS`].
+const OUTBOX_COLUMNS: &str = "id, source, correlation, url, method, headers, body, due_at, attempts, max_attempts, status, last_error, last_status, created_at, sent_at, traceparent, space";
+
 fn row_to_entry(r: &PgRow) -> StoreResult<JournalEntry> {
     let headers: Value = r.try_get("headers")?;
     Ok(JournalEntry {
@@ -656,7 +714,7 @@ impl JournalStore for PgStore {
     }
 
     async fn query(&self, f: &JournalFilter) -> StoreResult<Vec<JournalEntry>> {
-        let mut qb = QueryBuilder::new("select * from fm_journal");
+        let mut qb = QueryBuilder::new(format!("select {JOURNAL_COLUMNS} from fm_journal"));
         journal_where(&mut qb, f);
         qb.push(" order by id desc limit ")
             .push_bind(f.limit.unwrap_or(100).clamp(1, 10_000));
@@ -684,15 +742,17 @@ impl JournalStore for PgStore {
             .rows_affected())
     }
     async fn get(&self, id: i64) -> StoreResult<Option<JournalEntry>> {
-        let row = sqlx::query("select * from fm_journal where id = $1")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?;
+        let row = sqlx::query(&format!(
+            "select {JOURNAL_COLUMNS} from fm_journal where id = $1"
+        ))
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
         row.as_ref().map(row_to_entry).transpose()
     }
 
     async fn query_page(&self, f: &JournalFilter, offset: i64) -> StoreResult<Vec<JournalEntry>> {
-        let mut qb = QueryBuilder::new("select * from fm_journal");
+        let mut qb = QueryBuilder::new(format!("select {JOURNAL_COLUMNS} from fm_journal"));
         journal_where(&mut qb, f);
         qb.push(" order by id desc limit ")
             .push_bind(f.limit.unwrap_or(100).clamp(1, 10_000))
@@ -794,18 +854,18 @@ impl OutboxStore for PgStore {
         .bind(now)
         .execute(&self.pool)
         .await?;
-        let rows = sqlx::query(
+        let rows = sqlx::query(&format!(
             "with due as (
-                select id from fm_outbox
+                select id as due_id from fm_outbox
                 where status = 'pending' and attempts < max_attempts and due_at <= $1 and (lease_until is null or lease_until <= $1)
                 order by due_at
                 limit $2
                 for update skip locked
             )
             update fm_outbox o set lease_until = $3, attempts = o.attempts + 1
-            from due where o.id = due.id
-            returning o.*",
-        )
+            from due where o.id = due.due_id
+            returning {OUTBOX_COLUMNS}"
+        ))
         .bind(now)
         .bind(limit.max(0))
         .bind(lease_until)
@@ -867,7 +927,8 @@ impl OutboxStore for PgStore {
     }
 
     async fn list(&self, f: &CallbackFilter) -> StoreResult<Vec<CallbackJob>> {
-        let mut qb = QueryBuilder::new("select * from fm_outbox where true");
+        let mut qb =
+            QueryBuilder::new(format!("select {OUTBOX_COLUMNS} from fm_outbox where true"));
         if let Some(v) = &f.source {
             qb.push(" and source = ").push_bind(v);
         }

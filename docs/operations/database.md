@@ -39,6 +39,8 @@ Migrations are SQL files compiled into the binary (`crates/fastmock-store/migrat
 3. It applies each pending migration in its own transaction together with its `_sqlx_migrations` row, so a failed
    migration leaves nothing behind.
 4. It releases the lock. If the process dies, PostgreSQL releases the lock with the session.
+5. It logs one `applied database migration` line per migration it applied, with `version`, `name` and
+   `duration_ms`, or `database schema is up to date, no migration applied` when there was nothing to do.
 
 `FASTMOCK_DATABASE_MIGRATION_TIMEOUT` (default `120s`) limits the whole step, including the wait for the lock. A
 replica that runs out of time exits and is restarted; the replica holding the lock carries on. With the Helm
@@ -122,6 +124,8 @@ previous release still running:
   (and `fastmock migrate`) against a database where it was applied. Fix mistakes with a new migration.
 - **Additive changes only** in one release: new tables, new indexes, new nullable columns or columns with a
   constant default. Code must tolerate rows written by the previous release.
+- **Name the columns** in queries and `returning` clauses, never `*`. Running replicas keep prepared statements,
+  and PostgreSQL rejects a cached plan whose result columns changed (`cached plan must not change result type`).
 - **Expand and contract** for anything destructive. To rename or drop a column, or to tighten a constraint: add
   the new structure and write both (release N), switch reads (release N+1), then drop the old structure in a
   later release, once no supported version reads it.
