@@ -52,6 +52,9 @@ pub async fn data_plane_middleware(
     let start = Instant::now();
     let (mut parts, body) = req.into_parts();
     parts.headers.remove(crate::tls::CLIENT_CERT_HEADER);
+    if app.oidc.is_some() {
+        crate::oidc::strip_admin_cookies(&mut parts.headers);
+    }
     if let Some(c) = parts.extensions.get::<crate::tls::ClientCert>()
         && let Ok(v) = HeaderValue::from_str(&c.0)
     {

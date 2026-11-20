@@ -53,6 +53,9 @@ pub struct Principal {
     pub kind: PrincipalKind,
     #[schema(value_type = crate::access::PermissionsView)]
     pub permissions: Grants,
+    /// OIDC users: the group names from the identity provider (`kind: user` only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub groups: Option<Vec<String>>,
     /// Role names of the bindings, for the audit log.
     #[serde(skip)]
     pub role_label: String,
@@ -83,6 +86,7 @@ impl Principal {
                 }),
             role_label: labels.join(","),
             permissions: grants,
+            groups: None,
             token_id: None,
         }
     }
@@ -130,6 +134,7 @@ struct TokenEntry {
 
 pub struct Authenticator {
     tokens: Vec<TokenEntry>,
+    sso: bool,
     disabled: bool,
     allowed_origins: Vec<String>,
     access: Arc<AccessConfig>,
@@ -188,6 +193,7 @@ impl Authenticator {
             disabled,
             allowed_origins,
             Arc::new(AccessConfig::default()),
+            false,
         )
     }
 
@@ -197,6 +203,7 @@ impl Authenticator {
         disabled: bool,
         allowed_origins: Vec<String>,
         access: Arc<AccessConfig>,
+        sso: bool,
     ) -> anyhow::Result<Self> {
         let mut lines: Vec<String> = entries.to_vec();
         if let Some(f) = file {
@@ -215,9 +222,14 @@ impl Authenticator {
             .enumerate()
             .map(|(i, l)| parse_entry(l).with_context(|| format!("admin token entry #{}", i + 1)))
             .collect::<anyhow::Result<Vec<_>>>()?;
-        if raw.is_empty() && !disabled {
+        if raw.is_empty() && !disabled && !sso {
             bail!(
-                "no admin tokens configured: set FASTMOCK_ADMIN_TOKENS or FASTMOCK_ADMIN_TOKENS_FILE (or FASTMOCK_AUTH_DISABLED=true for local development only)"
+                "no admin tokens configured: set FASTMOCK_ADMIN_TOKENS or FASTMOCK_ADMIN_TOKENS_FILE, configure OIDC sign-in (FASTMOCK_OIDC_ISSUER), or set FASTMOCK_AUTH_DISABLED=true for local development only"
+            );
+        }
+        if disabled && sso {
+            bail!(
+                "FASTMOCK_AUTH_DISABLED=true cannot be combined with OIDC sign-in (FASTMOCK_OIDC_ISSUER)"
             );
         }
         let mut tokens = Vec::with_capacity(raw.len());
@@ -254,6 +266,7 @@ impl Authenticator {
         }
         Ok(Self {
             tokens,
+            sso,
             disabled,
             allowed_origins,
             access,
@@ -313,7 +326,11 @@ impl Authenticator {
         found.map(|t| t.principal.clone())
     }
 
-    fn origin_allowed(&self, headers: &HeaderMap) -> bool {
+    pub fn sso(&self) -> bool {
+        self.sso
+    }
+
+    pub fn origin_allowed(&self, headers: &HeaderMap) -> bool {
         match headers.get(header::ORIGIN).and_then(|o| o.to_str().ok()) {
             None => true,
             Some(o) => {
@@ -336,32 +353,66 @@ impl Authenticator {
 
 /// The bearer value of the `Authorization` header (at most 512 bytes).
 pub fn bearer(headers: &HeaderMap) -> Option<&str> {
+    bearer_up_to(headers, 512)
+}
+
+fn bearer_up_to(headers: &HeaderMap, max: usize) -> Option<&str> {
     let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let token = value
         .strip_prefix("Bearer ")
         .or_else(|| value.strip_prefix("bearer "))?
         .trim();
-    (!token.is_empty() && token.len() <= 512).then_some(token)
+    (!token.is_empty() && token.len() <= max).then_some(token)
 }
 
 enum Rejection {
     Token,
     Expired,
-    Unavailable,
+    Unavailable(&'static str),
+    Jwt,
+    Session,
+    Csrf,
+    /// An OIDC user without any binding.
+    NoBinding(String),
 }
 
-/// Static tokens first (constant time over the list), then managed tokens by hash through the cache.
+/// An `Authorization` header decides alone: static tokens first (constant time over the list), then
+/// managed `fm_` tokens by hash through the cache, then OIDC JWTs when `FASTMOCK_OIDC_API_AUDIENCE`
+/// is set. Without the header, the OIDC session cookie; requests other than GET and HEAD then need
+/// the `X-FastMock-Request: 1` header.
 async fn principal_of(
     app: &AppState,
     headers: &HeaderMap,
+    method: &axum::http::Method,
     path: &str,
 ) -> Result<Principal, Rejection> {
     if let Some(p) = app.auth.authenticate(headers) {
         return Ok(p);
     }
-    let Some(value) = bearer(headers).filter(|v| crate::tokens::looks_managed(v)) else {
+    if !headers.contains_key(header::AUTHORIZATION) {
+        return match &app.oidc {
+            Some(o) => session_principal(app, o, headers, method).await,
+            None => Err(Rejection::Token),
+        };
+    }
+    let Some(value) = bearer_up_to(headers, crate::oidc::jwt::MAX_TOKEN_BYTES) else {
         return Err(Rejection::Token);
     };
+    if let Some(o) = app.oidc.as_ref().filter(|o| o.api_enabled())
+        && crate::oidc::jwt::looks_like_jwt(value)
+    {
+        return match o.bearer_principal(&app.auth, value).await {
+            Ok(Ok(p)) => Ok(p),
+            Ok(Err(id)) => Err(Rejection::NoBinding(id.name)),
+            Err(e) => {
+                tracing::warn!(target: "audit", path = %path, reason = %e, "admin request rejected: invalid bearer JWT");
+                Err(Rejection::Jwt)
+            }
+        };
+    }
+    if !crate::tokens::looks_managed(value) {
+        return Err(Rejection::Token);
+    }
     match app.tokens.lookup(value).await {
         Ok(crate::tokens::Lookup::Valid(t)) => match crate::tokens::principal_of(&app.auth, &t) {
             Some(p) => {
@@ -385,9 +436,44 @@ async fn principal_of(
         Err(e) => {
             metrics::counter!("fastmock_store_errors_total", "store" => "tokens").increment(1);
             tracing::error!(error = %e, "looking up a managed token failed");
-            Err(Rejection::Unavailable)
+            Err(Rejection::Unavailable("token store unavailable"))
         }
     }
+}
+
+async fn session_principal(
+    app: &AppState,
+    oidc: &crate::oidc::Oidc,
+    headers: &HeaderMap,
+    method: &axum::http::Method,
+) -> Result<Principal, Rejection> {
+    let Some(id) = oidc.session_id(headers) else {
+        return Err(Rejection::Token);
+    };
+    let sessions = crate::oidc::session::Sessions {
+        hot: app.stores.hot.as_ref(),
+        life: oidc.lifetimes(),
+    };
+    let record = match sessions.get(id).await {
+        Ok(crate::oidc::session::Found::Live(r)) => r,
+        Ok(crate::oidc::session::Found::Missing) => return Err(Rejection::Session),
+        Err(e) => {
+            metrics::counter!("fastmock_store_errors_total", "store" => "sessions").increment(1);
+            tracing::error!(error = %e, "looking up a session failed");
+            return Err(Rejection::Unavailable("session store unavailable"));
+        }
+    };
+    if method != axum::http::Method::GET
+        && method != axum::http::Method::HEAD
+        && !crate::oidc::routes::csrf_header_ok(headers)
+    {
+        return Err(Rejection::Csrf);
+    }
+    let identity = crate::oidc::Identity {
+        name: record.name,
+        groups: record.groups,
+    };
+    crate::oidc::user_principal(&app.auth, identity).map_err(|id| Rejection::NoBinding(id.name))
 }
 
 fn full_path(req: &Request) -> String {
@@ -407,12 +493,65 @@ pub async fn admin_auth(State(app): State<AppState>, mut req: Request, next: Nex
             .into_response();
     }
     let path = full_path(&req);
-    let principal = match principal_of(&app, req.headers(), &path).await {
+    let principal = match principal_of(&app, req.headers(), req.method(), &path).await {
         Ok(p) => p,
-        Err(Rejection::Unavailable) => {
+        Err(Rejection::Unavailable(what)) => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                axum::Json(serde_json::json!({"error": "token store unavailable", "details": []})),
+                axum::Json(serde_json::json!({"error": what, "details": []})),
+            )
+                .into_response();
+        }
+        Err(Rejection::Jwt) => {
+            metrics::counter!("fastmock_admin_auth_failures_total", "reason" => "jwt").increment(1);
+            return (
+                StatusCode::UNAUTHORIZED,
+                [(header::WWW_AUTHENTICATE, "Bearer error=\"invalid_token\"")],
+                axum::Json(serde_json::json!({"error": "unauthorized", "details": ["invalid bearer token"]})),
+            )
+                .into_response();
+        }
+        Err(Rejection::Session) => {
+            metrics::counter!("fastmock_admin_auth_failures_total", "reason" => "session")
+                .increment(1);
+            let mut r = (
+                StatusCode::UNAUTHORIZED,
+                axum::Json(serde_json::json!({"error": "unauthorized", "details": ["session expired or unknown: sign in again"]})),
+            )
+                .into_response();
+            if let Some(o) = &app.oidc
+                && let Ok(v) = header::HeaderValue::from_str(&o.cookie(
+                    o.session_cookie_name(),
+                    "",
+                    std::time::Duration::ZERO,
+                ))
+            {
+                r.headers_mut().insert(header::SET_COOKIE, v);
+            }
+            return r;
+        }
+        Err(Rejection::Csrf) => {
+            metrics::counter!("fastmock_admin_auth_failures_total", "reason" => "csrf")
+                .increment(1);
+            tracing::warn!(target: "audit", path = %path, "admin request rejected: cookie-authenticated change without the X-FastMock-Request header");
+            return (
+                StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({"error": "forbidden", "details": ["missing X-FastMock-Request: 1 header"]})),
+            )
+                .into_response();
+        }
+        Err(Rejection::NoBinding(name)) => {
+            metrics::counter!("fastmock_admin_auth_failures_total", "reason" => "permission")
+                .increment(1);
+            tracing::warn!(target: "audit", principal = %name, kind = "user", path = %path, "admin request rejected: no binding for the user or its groups");
+            let (perm, _) = route_rule(req.method(), &path);
+            return (
+                StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({
+                    "error": "forbidden",
+                    "details": [format!("user {name} has no access: the access file binds neither user:{name} nor any of the user's groups")],
+                    "required": perm.name()
+                })),
             )
                 .into_response();
         }
@@ -519,6 +658,13 @@ mod tests {
             .is_err()
         );
         assert!(Authenticator::new(&[], None, true, vec![]).is_ok());
+        let access = || Arc::new(AccessConfig::default());
+        assert!(Authenticator::with_access(&[], None, false, vec![], access(), true).is_ok());
+        let both = Authenticator::with_access(&[], None, true, vec![], access(), true);
+        assert!(
+            both.err()
+                .is_some_and(|e| e.to_string().contains("cannot be combined"))
+        );
     }
 
     #[test]
@@ -554,6 +700,7 @@ mod tests {
             false,
             vec![],
             Arc::new(access.clone()),
+            false,
         )
         .unwrap();
         let ci = a.authenticate(&headers("Bearer ci-token")).unwrap();
@@ -580,10 +727,17 @@ mod tests {
                 .is_none()
         );
         let err = |entries: &[String]| {
-            Authenticator::with_access(entries, None, false, vec![], Arc::new(access.clone()))
-                .err()
-                .map(|e| format!("{e:#}"))
-                .unwrap_or_default()
+            Authenticator::with_access(
+                entries,
+                None,
+                false,
+                vec![],
+                Arc::new(access.clone()),
+                false,
+            )
+            .err()
+            .map(|e| format!("{e:#}"))
+            .unwrap_or_default()
         };
         assert!(err(&[format!("x::{}", hash_token("x"))]).contains("admin token entry #1 (x)"));
         assert!(err(&[format!("x:nobody:{}", hash_token("x"))]).contains("unknown role `nobody`"));

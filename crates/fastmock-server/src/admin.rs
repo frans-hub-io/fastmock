@@ -2885,6 +2885,7 @@ pub fn router(app: AppState, plugin_admin: Vec<(String, Router)>) -> Router {
                 .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024)),
         )
         .merge(crate::ui::router())
+        .merge(crate::oidc::routes::routes())
         .route("/healthz", get(crate::dataplane::health))
         .route("/readyz", get(crate::dataplane::ready))
         .route("/metrics", get(metrics_handler))

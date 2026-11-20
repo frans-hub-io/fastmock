@@ -12,6 +12,7 @@ pub mod files;
 pub mod grpc;
 pub mod imports;
 pub mod journal_api;
+pub mod oidc;
 pub mod openapi_doc;
 pub mod outbox;
 pub mod proxy;
@@ -145,7 +146,16 @@ pub async fn build(
         cfg.auth_disabled,
         cfg.admin_allowed_origins.clone(),
         Arc::new(access),
+        cfg.oidc.is_some(),
     )?);
+    let oidc = match &cfg.oidc {
+        Some(s) => {
+            let o = oidc::Oidc::new(s.clone())?;
+            o.start().await?;
+            Some(o)
+        }
+        None => None,
+    };
     let redactor = Arc::new(redact::Redactor::new(
         &cfg.redact_headers,
         &cfg.redact_json_keys,
@@ -222,6 +232,7 @@ pub async fn build(
         journal_tx,
         scans: Arc::new(tokio::sync::Semaphore::new(cfg.journal_scan_concurrency)),
         tokens: Arc::new(tokens::TokenService::new(token_store, cfg.token_cache_ttl)),
+        oidc,
     };
     if let Err(e) = app.grpc.reload(&app).await {
         tracing::warn!(error = %e, "loading gRPC descriptors failed");

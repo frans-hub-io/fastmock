@@ -42,6 +42,7 @@ opentelemetry-appender-tracing = "0.33"
 opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "reqwest-blocking-client", "reqwest-rustls", "trace", "logs", "metrics"] }
 opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"] }
 rand.workspace = true
+ring = "0.17"
 rustls.workspace = true
 tokio-rustls.workspace = true
 hyper.workspace = true
@@ -57,6 +58,7 @@ tower-http.workspace = true
 tracing.workspace = true
 tracing-opentelemetry = "0.34"
 tracing-subscriber.workspace = true
+url = "2"
 uuid.workspace = true
 utoipa.workspace = true
 serde_json_path.workspace = true

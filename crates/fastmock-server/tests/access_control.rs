@@ -225,7 +225,7 @@ async fn without_access_file_every_openapi_route_keeps_its_role() {
     let doc = serde_json::to_value(fastmock_server::openapi_doc::spec()).unwrap();
     let mut checked = 0;
     for (path, item) in doc["paths"].as_object().unwrap() {
-        if !path.starts_with("/__admin/") {
+        if !path.starts_with("/__admin/") || path.starts_with("/__admin/auth/") {
             continue;
         }
         for method in ["get", "put", "post", "delete", "patch", "head"] {

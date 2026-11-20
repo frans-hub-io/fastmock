@@ -207,6 +207,8 @@ pub struct Config {
     pub tokens_max_days: u32,
     /// How long a replica trusts its cached view of a managed token; revocation takes effect within it.
     pub token_cache_ttl: Duration,
+    /// OIDC sign-in and bearer JWTs (`FASTMOCK_OIDC_*`); off when `None`.
+    pub oidc: Option<crate::oidc::OidcSettings>,
 }
 
 pub const DEFAULT_TOKEN_DAYS: u32 = 90;
@@ -598,6 +600,7 @@ impl Config {
             journal_scan_concurrency: 2,
             tokens_max_days: 365,
             token_cache_ttl: TOKEN_CACHE_TTL,
+            oidc: None,
         }
     }
 
@@ -730,6 +733,7 @@ impl Config {
             journal_scan_concurrency: parse("JOURNAL_SCAN_CONCURRENCY", 2usize)?.max(1),
             tokens_max_days: parse_tokens_max_days(env("TOKENS_MAX_DAYS").as_deref())?,
             token_cache_ttl: TOKEN_CACHE_TTL,
+            oidc: crate::oidc::settings::from_env(&env)?,
         };
         if cfg.max_inflight_body_bytes < cfg.max_body_bytes {
             bail!("FASTMOCK_MAX_INFLIGHT_BODY_BYTES must be at least FASTMOCK_MAX_BODY_BYTES");

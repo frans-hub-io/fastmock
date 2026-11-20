@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use axum::http::{HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use utoipa::OpenApi;
-use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityScheme};
 
 use crate::{admin, files, imports, journal_api, snapshot};
 
@@ -18,11 +18,14 @@ impl utoipa::Modify for BearerScheme {
                 HttpBuilder::new()
                     .scheme(HttpAuthScheme::Bearer)
                     .description(Some(
-                        "Static admin token from FASTMOCK_ADMIN_TOKENS or a managed token from POST /__admin/tokens. Every route needs a permission (`resource:action`); the built-in roles viewer, editor and admin are permission sets, custom roles and space bindings come from FASTMOCK_ACCESS_FILE. Without an access file: GET/HEAD and read-only POSTs need viewer, other changes editor; deleting all stubs, reset and the audit log need admin.",
+                        "Static admin token from FASTMOCK_ADMIN_TOKENS, a managed token from POST /__admin/tokens or, with FASTMOCK_OIDC_API_AUDIENCE, a JWT from the OIDC provider. The UI may instead use the SSO session cookie (see the `session` scheme). Every route needs a permission (`resource:action`); the built-in roles viewer, editor and admin are permission sets, custom roles and space bindings come from FASTMOCK_ACCESS_FILE. Without an access file: GET/HEAD and read-only POSTs need viewer, other changes editor; deleting all stubs, reset and the audit log need admin.",
                     ))
                     .build(),
             ),
         );
+        let mut cookie = ApiKeyValue::new("__Host-fastmock_session");
+        cookie.description = Some("SSO session cookie set by GET /__admin/auth/callback; accepted by every /__admin route instead of a bearer token when no Authorization header is sent. Requests other than GET and HEAD need the `X-FastMock-Request: 1` header.".into());
+        components.add_security_scheme("session", SecurityScheme::ApiKey(ApiKey::Cookie(cookie)));
     }
 }
 
@@ -94,6 +97,7 @@ impl utoipa::Modify for BearerScheme {
         (name = "chaos", description = "Probabilistic faults and delays"),
         (name = "grpc", description = "gRPC descriptor sets"),
         (name = "audit", description = "Audit log"),
+        (name = "auth", description = "SSO sign-in for the UI (OIDC, backend for frontend)"),
         (name = "system", description = "Server information")
     )
 )]
@@ -110,6 +114,7 @@ pub fn spec() -> utoipa::openapi::OpenApi {
     doc.merge(crate::services::ServicesApi::openapi());
     doc.merge(crate::admin_core::CoreApi::openapi());
     doc.merge(crate::tokens::TokensApi::openapi());
+    doc.merge(crate::oidc::routes::AuthApi::openapi());
     normalize_tags(&mut doc);
     doc
 }
@@ -261,11 +266,12 @@ mod tests {
                 let security = op["security"]
                     .as_array()
                     .unwrap_or_else(|| panic!("{where_}: no security"));
-                if path == "/openapi.json" {
+                if path == "/openapi.json" || path.starts_with("/__admin/auth/") {
                     assert!(
-                        security
-                            .iter()
-                            .all(|s| s.as_object().is_some_and(|o| o.is_empty()))
+                        security.iter().all(|s| s
+                            .as_object()
+                            .is_some_and(|o| o.is_empty() || o.contains_key("session"))),
+                        "{where_}: unexpected security"
                     );
                 } else {
                     assert!(

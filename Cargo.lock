@@ -1201,6 +1201,7 @@ dependencies = [
  "rcgen",
  "regex",
  "reqwest 0.12.28",
+ "ring",
  "rskafka",
  "rust-embed",
  "rustls",
@@ -1219,6 +1220,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "url",
  "utoipa",
  "uuid",
 ]

@@ -359,11 +359,21 @@ impl OutboxStore for MemoryOutbox {
 pub struct MemoryHot {
     data: Mutex<HashMap<String, (String, Option<Instant>)>>,
     zsets: Mutex<HashMap<String, Vec<(f64, String)>>>,
+    writes: std::sync::atomic::AtomicU64,
 }
+
+/// Expired entries are dropped every this many writes, so keys with a TTL do not pile up.
+const SWEEP_EVERY: u64 = 1024;
 
 impl MemoryHot {
     fn live(entry: &(String, Option<Instant>)) -> bool {
         entry.1.is_none_or(|t| t > Instant::now())
+    }
+
+    fn sweep_due(&self) -> bool {
+        self.writes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .is_multiple_of(SWEEP_EVERY)
     }
 }
 
@@ -375,7 +385,11 @@ impl HotStore for MemoryHot {
     }
 
     async fn set(&self, key: &str, value: &str, ttl: Option<Duration>) -> StoreResult<()> {
-        self.data.lock().await.insert(
+        let mut data = self.data.lock().await;
+        if self.sweep_due() {
+            data.retain(|_, e| Self::live(e));
+        }
+        data.insert(
             key.to_string(),
             (value.to_string(), ttl.map(|t| Instant::now() + t)),
         );
@@ -686,5 +700,30 @@ pub fn memory_stores(journal_capacity: usize) -> Stores {
         hot: Arc::new(MemoryHot::default()),
         data: Arc::new(MemoryData::default()),
         audit: Arc::new(MemoryAudit::default()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn expired_hot_entries_are_swept() {
+        let hot = MemoryHot::default();
+        for i in 0..SWEEP_EVERY {
+            hot.set(&format!("k{i}"), "v", Some(Duration::from_millis(1)))
+                .await
+                .unwrap();
+        }
+        hot.set("keep", "v", None).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        for i in 0..SWEEP_EVERY {
+            hot.set(&format!("n{i}"), "v", Some(Duration::from_secs(60)))
+                .await
+                .unwrap();
+        }
+        let n = hot.data.lock().await.len() as u64;
+        assert!(n <= SWEEP_EVERY + 1, "{n} entries");
+        assert_eq!(hot.get("keep").await.unwrap().as_deref(), Some("v"));
     }
 }

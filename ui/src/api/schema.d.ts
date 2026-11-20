@@ -77,6 +77,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/__admin/auth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * SSO sign-in callback
+         * @description The identity provider redirects here. FastMock checks `state` (single use) and the login cookie, exchanges the code with the PKCE verifier, validates the ID token (signature, `iss`, `aud`, `azp`, `exp`, `iat`, `nonce`), reads the username and groups (falling back to userinfo for groups), and creates a session when the user has at least one binding. Success redirects to the `return` path with the session cookie; failure redirects to `/ui/?loginError=<code>` where code is `invalid_state`, `idp_error`, `failed`, `no_access` or `unavailable`.
+         */
+        get: operations["loginCallback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/auth/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Sign-in methods for the login page
+         * @description No authentication. Tells the UI whether SSO sign-in is configured.
+         */
+        get: operations["getAuthConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Start SSO sign-in
+         * @description No authentication. Redirects the browser to the identity provider (authorization code flow with `state`, `nonce` and PKCE S256) and sets a short-lived login cookie that ties the callback to this browser. The pending login is kept for 10 minutes in the shared hot store.
+         */
+        get: operations["login"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * End the SSO session
+         * @description Deletes the session of the cookie and clears the cookie. Needs the `X-FastMock-Request: 1` header. When the provider has an `end_session_endpoint`, `logoutUrl` tells the UI where to send the browser to end the provider session too.
+         */
+        post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/__admin/callbacks": {
         parameters: {
             query?: never;
@@ -1262,6 +1342,12 @@ export interface components {
         AuditList: {
             events: components["schemas"]["AuditEvent"][];
         };
+        AuthConfig: {
+            /** @description SSO sign-in is configured (`FASTMOCK_OIDC_ISSUER`). */
+            oidc: boolean;
+            /** @description Sign-in with an admin token is always available. */
+            tokenLogin: boolean;
+        };
         AutoImportResult: components["schemas"]["ImportResult"] | components["schemas"]["ImportAsyncApiResponse"];
         BasicAuth: {
             username: string;
@@ -1713,6 +1799,12 @@ export interface components {
             /** Format: double */
             sigma: number;
         };
+        LogoutResponse: {
+            /** @description A session was found and deleted. */
+            loggedOut: boolean;
+            /** @description The provider's end-session URL; the UI navigates there to end the IdP session too. */
+            logoutUrl?: string | null;
+        };
         MessageDef: {
             topic: string;
             key?: string | null;
@@ -1867,6 +1959,8 @@ export interface components {
             role: components["schemas"]["Role"];
             kind: components["schemas"]["PrincipalKind"];
             permissions: components["schemas"]["PermissionsView"];
+            /** @description OIDC users: the group names from the identity provider (`kind: user` only). */
+            groups?: string[] | null;
         };
         /** @enum {string} */
         PrincipalKind: "token" | "apiToken" | "user" | "anonymous";
@@ -2657,6 +2751,164 @@ export interface operations {
             };
             /** @description Requires the admin role */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    loginCallback: {
+        parameters: {
+            query?: {
+                code?: string;
+                state?: string;
+                error?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirect to the UI */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description SSO is not configured */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getAuthConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sign-in methods */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthConfig"];
+                };
+            };
+        };
+    };
+    login: {
+        parameters: {
+            query?: {
+                /** @description Where the browser goes after sign-in: a relative path under `/ui/` (default `/ui/`). */
+                return?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirect to the identity provider */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `return` is not a relative path under /ui/ */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description SSO is not configured */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Too many sign-in attempts on this replica */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The identity provider has not been discovered yet, or the session store is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Must be `1` */
+                "X-FastMock-Request": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Logged out */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogoutResponse"];
+                };
+            };
+            /** @description Missing X-FastMock-Request header or origin not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description SSO is not configured */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Session store unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

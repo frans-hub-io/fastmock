@@ -433,6 +433,222 @@
         ]
       }
     },
+    "/__admin/auth/callback": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "SSO sign-in callback",
+        "description": "The identity provider redirects here. FastMock checks `state` (single use) and the login cookie, exchanges the code with the PKCE verifier, validates the ID token (signature, `iss`, `aud`, `azp`, `exp`, `iat`, `nonce`), reads the username and groups (falling back to userinfo for groups), and creates a session when the user has at least one binding. Success redirects to the `return` path with the session cookie; failure redirects to `/ui/?loginError=<code>` where code is `invalid_state`, `idp_error`, `failed`, `no_access` or `unavailable`.",
+        "operationId": "loginCallback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to the UI"
+          },
+          "404": {
+            "description": "SSO is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/__admin/auth/config": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Sign-in methods for the login page",
+        "description": "No authentication. Tells the UI whether SSO sign-in is configured.",
+        "operationId": "getAuthConfig",
+        "responses": {
+          "200": {
+            "description": "Sign-in methods",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthConfig"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/__admin/auth/login": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Start SSO sign-in",
+        "description": "No authentication. Redirects the browser to the identity provider (authorization code flow with `state`, `nonce` and PKCE S256) and sets a short-lived login cookie that ties the callback to this browser. The pending login is kept for 10 minutes in the shared hot store.",
+        "operationId": "login",
+        "parameters": [
+          {
+            "name": "return",
+            "in": "query",
+            "description": "Where the browser goes after sign-in: a relative path under `/ui/` (default `/ui/`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to the identity provider"
+          },
+          "400": {
+            "description": "`return` is not a relative path under /ui/",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SSO is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many sign-in attempts on this replica",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The identity provider has not been discovered yet, or the session store is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/__admin/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "End the SSO session",
+        "description": "Deletes the session of the cookie and clears the cookie. Needs the `X-FastMock-Request: 1` header. When the provider has an `end_session_endpoint`, `logoutUrl` tells the UI where to send the browser to end the provider session too.",
+        "operationId": "logout",
+        "parameters": [
+          {
+            "name": "X-FastMock-Request",
+            "in": "header",
+            "description": "Must be `1`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Logged out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogoutResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing X-FastMock-Request header or origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SSO is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Session store unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/__admin/callbacks": {
       "get": {
         "tags": [
@@ -6593,6 +6809,23 @@
           }
         }
       },
+      "AuthConfig": {
+        "type": "object",
+        "required": [
+          "oidc",
+          "tokenLogin"
+        ],
+        "properties": {
+          "oidc": {
+            "type": "boolean",
+            "description": "SSO sign-in is configured (`FASTMOCK_OIDC_ISSUER`)."
+          },
+          "tokenLogin": {
+            "type": "boolean",
+            "description": "Sign-in with an admin token is always available."
+          }
+        }
+      },
       "AutoImportResult": {
         "oneOf": [
           {
@@ -8291,6 +8524,25 @@
         },
         "additionalProperties": false
       },
+      "LogoutResponse": {
+        "type": "object",
+        "required": [
+          "loggedOut"
+        ],
+        "properties": {
+          "loggedOut": {
+            "type": "boolean",
+            "description": "A session was found and deleted."
+          },
+          "logoutUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The provider's end-session URL; the UI navigates there to end the IdP session too."
+          }
+        }
+      },
       "MessageDef": {
         "type": "object",
         "required": [
@@ -8843,6 +9095,16 @@
           },
           "permissions": {
             "$ref": "#/components/schemas/PermissionsView"
+          },
+          "groups": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "OIDC users: the group names from the identity provider (`kind: user` only)."
           }
         }
       },
@@ -10753,7 +11015,13 @@
       "bearer": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Static admin token from FASTMOCK_ADMIN_TOKENS or a managed token from POST /__admin/tokens. Every route needs a permission (`resource:action`); the built-in roles viewer, editor and admin are permission sets, custom roles and space bindings come from FASTMOCK_ACCESS_FILE. Without an access file: GET/HEAD and read-only POSTs need viewer, other changes editor; deleting all stubs, reset and the audit log need admin."
+        "description": "Static admin token from FASTMOCK_ADMIN_TOKENS, a managed token from POST /__admin/tokens or, with FASTMOCK_OIDC_API_AUDIENCE, a JWT from the OIDC provider. The UI may instead use the SSO session cookie (see the `session` scheme). Every route needs a permission (`resource:action`); the built-in roles viewer, editor and admin are permission sets, custom roles and space bindings come from FASTMOCK_ACCESS_FILE. Without an access file: GET/HEAD and read-only POSTs need viewer, other changes editor; deleting all stubs, reset and the audit log need admin."
+      },
+      "session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-fastmock_session",
+        "description": "SSO session cookie set by GET /__admin/auth/callback; accepted by every /__admin route instead of a bearer token when no Authorization header is sent. Requests other than GET and HEAD need the `X-FastMock-Request: 1` header."
       }
     }
   },
@@ -10805,6 +11073,10 @@
     {
       "name": "audit",
       "description": "Audit log"
+    },
+    {
+      "name": "auth",
+      "description": "SSO sign-in for the UI (OIDC, backend for frontend)"
     },
     {
       "name": "system",
