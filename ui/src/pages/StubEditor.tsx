@@ -15,6 +15,7 @@ import {
   TagsInput,
   Text,
   TextInput,
+  Tooltip,
 } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
 import { IconArrowLeft, IconCheck, IconCode, IconDeviceFloppy, IconForms, IconSend, IconTrash, IconX } from '@tabler/icons-react';
@@ -26,7 +27,8 @@ import { client, unwrap } from '../api/client';
 import { errorMessage } from '../api/http';
 import { confirmAction, notifyError, useApiMutation } from '../api/mutations';
 import { FAULTS, type BodyMatcher, type Delay, type ResponseDef, type Stub } from '../api/types';
-import { useCan } from '../auth/useAuth';
+import { useCan, useSpace, useSpaceChoice } from '../auth/useAuth';
+import { SpaceBadge, SpaceField } from '../components/spaces';
 import { CodeEditor } from '../components/CodeEditor';
 import { PageHeader } from '../components/common';
 import { KeyValueEditor, MatcherList } from '../components/MatcherList';
@@ -81,8 +83,8 @@ export default function StubEditor() {
   const loc = useLocation();
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const canEdit = useCan('editor');
-  const readOnly = !canEdit;
+  const can = useCan();
+  const spaces = useSpace();
   const stubSchema = useStubSchema();
   const bodyMatcherSchema = useComponentSchema('BodyMatcher');
 
@@ -91,6 +93,9 @@ export default function StubEditor() {
     queryFn: () => unwrap(client.GET('/__admin/stubs/{id}', { params: { path: { id: id ?? '' } } })),
     enabled: !isNew,
   });
+  const where = isNew ? undefined : (existing.data?.space ?? null);
+  const canEdit = can('stubs:write', where);
+  const readOnly = !canEdit;
 
   const prefill = (loc.state as { stub?: Stub } | null)?.stub;
   const [draft, setDraft] = useState<Stub | null>(isNew ? structuredClone(prefill ?? NEW_STUB) : null);
@@ -144,6 +149,10 @@ export default function StubEditor() {
   });
 
   const sample = useMemo(() => (draft ? sampleRequest(draft) : null), [draft]);
+  const [newSpace, setNewSpace] = useSpaceChoice('stubs:write', prefill?.space);
+  useEffect(() => {
+    if (isNew) setDraft((d) => (d && (d.space ?? null) !== newSpace ? clean({ ...d, space: newSpace ?? undefined }) : d));
+  }, [isNew, newSpace]);
 
   if (!isNew && existing.isLoading) return <LoadingState />;
   if (!isNew && existing.isError) return <ErrorState error={existing.error} onRetry={() => void existing.refetch()} />;
@@ -228,9 +237,11 @@ export default function StubEditor() {
               </Button>
             </>
           ) : (
-            <Badge color="gray" variant="light">
-              read-only
-            </Badge>
+            <Tooltip label={can.missing('stubs:write', where)} withArrow>
+              <Badge color="gray" variant="light" tabIndex={0}>
+                read-only
+              </Badge>
+            </Tooltip>
           )
         }
       />
@@ -286,6 +297,18 @@ export default function StubEditor() {
           <Stack gap="md">
             <Fieldset legend="General" disabled={readOnly}>
               <Stack gap="sm">
+                {isNew ? (
+                  <SpaceField perm="stubs:write" value={newSpace} onChange={setNewSpace} description="The stub's space; it cannot be moved later" />
+                ) : (
+                  spaces.enabled && (
+                    <Group gap="xs">
+                      <Text size="sm" fw={500}>
+                        Space
+                      </Text>
+                      <SpaceBadge space={draft.space} />
+                    </Group>
+                  )
+                )}
                 <Group grow align="flex-start" wrap="wrap">
                   <TextInput
                     label="Name"

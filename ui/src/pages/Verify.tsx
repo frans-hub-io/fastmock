@@ -2,6 +2,7 @@ import { ActionIcon, Alert, Badge, Button, Group, List, NumberInput, Paper, Segm
 import { IconPlus, IconTrash } from '@tabler/icons-react';
 import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
+import { useSpaceQuery } from '../auth/useAuth';
 import { useComponentSchema } from '../api/features';
 import { client, unwrap, unwrapAllowing } from '../api/client';
 import type { RequestPattern } from '../api/types';
@@ -87,15 +88,16 @@ export default function Verify() {
   const [expect, setExpect] = useState<'count' | 'atLeast' | 'atMost'>('atLeast');
   const [n, setN] = useState<number>(1);
   const [source, setSource] = useState('');
+  const spaceQ = useSpaceQuery();
 
   const find = useMutation({
-    mutationFn: () => unwrap(client.POST('/__admin/requests/find', { body: pattern, params: { query: { limit: 50, source: source || undefined } } })),
+    mutationFn: () => unwrap(client.POST('/__admin/requests/find', { body: pattern, params: { query: { limit: 50, source: source || undefined, ...spaceQ } } })),
   });
   const verify = useMutation({
-    mutationFn: () => unwrapAllowing<VerifyResult>(client.POST('/__admin/verify', { body: { request: pattern, [expect]: n, ...(source ? { source } : {}) } }), 422),
+    mutationFn: () => unwrapAllowing<VerifyResult>(client.POST('/__admin/verify', { body: { request: pattern, [expect]: n, ...(source ? { source } : {}) }, params: { query: spaceQ } }), 422),
   });
   const seq = useMutation({
-    mutationFn: () => unwrapAllowing<VerifyResult>(client.POST('/__admin/verify/sequence', { body: { requests: sequence, ...(source ? { source } : {}) } }), 422),
+    mutationFn: () => unwrapAllowing<VerifyResult>(client.POST('/__admin/verify/sequence', { body: { requests: sequence, ...(source ? { source } : {}) }, params: { query: spaceQ } }), 422),
   });
 
   const run = () => {

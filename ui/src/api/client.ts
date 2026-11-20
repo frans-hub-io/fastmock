@@ -1,5 +1,5 @@
 import createClient, { type Middleware } from 'openapi-fetch';
-import { ApiError, authHeaders, tokenStore } from './http';
+import { ApiError, authHeaders, credentialsFor, tokenStore } from './http';
 import type { paths } from './schema';
 
 const auth: Middleware = {
@@ -18,7 +18,7 @@ export const client = createClient<paths>({
   baseUrl: window.location.origin,
   credentials: 'omit',
   cache: 'no-store',
-  fetch: (req: Request) => globalThis.fetch(req),
+  fetch: (req: Request) => globalThis.fetch(new Request(req, { credentials: credentialsFor() })),
 });
 client.use(auth);
 

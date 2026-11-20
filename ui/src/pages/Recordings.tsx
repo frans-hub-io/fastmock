@@ -8,11 +8,11 @@ import { client, unwrap } from '../api/client';
 import { useApiMutation } from '../api/mutations';
 import type { SnapshotResult } from '../api/types';
 import { useCan } from '../auth/useAuth';
+import { Permitted } from '../components/Permitted';
 import { PageHeader, Time } from '../components/common';
 import { ErrorState, LoadingState, NotAvailable } from '../components/States';
 
 function SnapshotPanel() {
-  const canEdit = useCan('editor');
   const feature = useFeature('/__admin/recordings/snapshot', 'post');
   const [tag, setTag] = useState('snapshot');
   const [since, setSince] = useState('');
@@ -69,9 +69,11 @@ function SnapshotPanel() {
           <Checkbox label="Save stubs" checked={persist} onChange={(e) => setPersist(e.currentTarget.checked)} />
         </Group>
         <Group>
-          <Button leftSection={<IconCamera size={16} />} disabled={!canEdit || !tag} loading={snap.isPending} onClick={() => snap.mutate()}>
-            Take snapshot
-          </Button>
+          <Permitted perm="recordings:write">
+            <Button leftSection={<IconCamera size={16} />} disabled={!tag} loading={snap.isPending} onClick={() => snap.mutate()}>
+              Take snapshot
+            </Button>
+          </Permitted>
         </Group>
         {snap.data && (
           <Alert color="green" title={snap.data.persisted ? 'Snapshot saved' : 'Snapshot preview'}>
@@ -96,7 +98,7 @@ function SnapshotPanel() {
 }
 
 export default function Recordings() {
-  const canEdit = useCan('editor');
+  const canEdit = useCan()('recordings:write');
   const status = useQuery({ queryKey: ['recordings'], queryFn: () => unwrap(client.GET('/__admin/recordings')), refetchInterval: 3000 });
   const [target, setTarget] = useState('');
   const [tag, setTag] = useState('recorded');

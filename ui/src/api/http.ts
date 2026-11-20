@@ -14,6 +14,11 @@ export class ApiError extends Error {
 
 type Listener = () => void;
 
+/** How admin requests authenticate: a bearer token, the SSO session cookie, or nothing (not signed in). */
+export type AuthMode = 'token' | 'session' | 'none';
+
+export const CSRF_HEADER = 'X-FastMock-Request';
+
 function readStored(): string | null {
   try {
     return window.sessionStorage.getItem(TOKEN_KEY);
@@ -23,6 +28,7 @@ function readStored(): string | null {
 }
 
 let current: string | null = readStored();
+let session = false;
 const unauthorizedListeners = new Set<Listener>();
 
 export const tokenStore = {
@@ -31,12 +37,22 @@ export const tokenStore = {
   },
   set(token: string | null): void {
     current = token;
+    if (token) session = false;
     try {
       if (token) window.sessionStorage.setItem(TOKEN_KEY, token);
       else window.sessionStorage.removeItem(TOKEN_KEY);
     } catch {
       /* sessionStorage may be unavailable; the token stays in memory */
     }
+  },
+  /** Cookie session mode: no bearer token, the browser sends the session cookie. */
+  setSession(on: boolean): void {
+    if (on) tokenStore.set(null);
+    session = on;
+  },
+  mode(): AuthMode {
+    if (current) return 'token';
+    return session ? 'session' : 'none';
   },
   onUnauthorized(cb: Listener): () => void {
     unauthorizedListeners.add(cb);
@@ -47,8 +63,18 @@ export const tokenStore = {
   },
 };
 
-export function authHeaders(token = tokenStore.get()): Record<string, string> {
-  return token ? { Authorization: `Bearer ${token}` } : {};
+/**
+ * Headers that authenticate an admin request: the bearer token, or for cookie sessions the CSRF header the
+ * server requires. Passing `null` asks for the cookie variant (used to probe for an existing session).
+ */
+export function authHeaders(token: string | null = tokenStore.get()): Record<string, string> {
+  if (token) return { Authorization: `Bearer ${token}` };
+  return tokenStore.mode() === 'token' ? {} : { [CSRF_HEADER]: '1' };
+}
+
+/** Cookies go only with session-authenticated requests; bearer requests never carry ambient credentials. */
+export function credentialsFor(token: string | null = tokenStore.get()): RequestCredentials {
+  return token ? 'omit' : 'same-origin';
 }
 
 export type Query = Record<string, string | number | boolean | null | undefined>;
@@ -99,8 +125,9 @@ export interface RequestOptions {
 }
 
 export async function rawFetch(method: string, path: string, opts: RequestOptions = {}): Promise<Response> {
+  const token = opts.token === undefined ? tokenStore.get() : opts.token;
   const headers: Record<string, string> = {
-    ...authHeaders(opts.token === undefined ? tokenStore.get() : opts.token),
+    ...authHeaders(token),
     Accept: opts.accept ?? 'application/json',
   };
   let body: BodyInit | undefined;
@@ -116,7 +143,7 @@ export async function rawFetch(method: string, path: string, opts: RequestOption
     headers,
     body: body ?? null,
     signal: opts.signal ?? null,
-    credentials: 'omit',
+    credentials: credentialsFor(token),
     cache: 'no-store',
   });
   if (res.status === 401 && !opts.skipAuthRedirect) tokenStore.notifyUnauthorized();

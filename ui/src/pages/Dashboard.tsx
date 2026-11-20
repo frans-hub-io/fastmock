@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { client, unwrap } from '../api/client';
-import { useAuth } from '../auth/useAuth';
+import { useAuth, useSpaceQuery } from '../auth/useAuth';
 import { MethodBadge, PageHeader, StatusBadge, Time } from '../components/common';
 import { EmptyState, ErrorState, LoadingState } from '../components/States';
 import { formatDuration } from '../lib/format';
@@ -88,17 +88,18 @@ function MetricsCard() {
 export default function Dashboard() {
   const navigate = useNavigate();
   const { refresh } = useAuth();
+  const spaceQ = useSpaceQuery();
   const info = useQuery({ queryKey: ['info'], queryFn: () => unwrap(client.GET('/__admin/info')), refetchInterval: 10_000 });
   const version = useQuery({ queryKey: ['version'], queryFn: () => unwrap(client.GET('/__admin/version')), retry: false });
-  const total = useQuery({ queryKey: ['requests', 'count', 'all'], queryFn: () => unwrap(client.GET('/__admin/requests/count')), refetchInterval: 5_000 });
+  const total = useQuery({ queryKey: ['requests', 'count', 'all', spaceQ], queryFn: () => unwrap(client.GET('/__admin/requests/count', { params: { query: spaceQ } })), refetchInterval: 5_000 });
   const unmatchedCount = useQuery({
     queryKey: ['requests', 'count', 'unmatched'],
     queryFn: () => unwrap(client.GET('/__admin/requests/count', { params: { query: { matched: false } } })),
     refetchInterval: 5_000,
   });
   const pending = useQuery({
-    queryKey: ['callbacks', 'pending-count'],
-    queryFn: () => unwrap(client.GET('/__admin/callbacks', { params: { query: { status: 'pending', limit: 1000 } } })),
+    queryKey: ['callbacks', 'pending-count', spaceQ],
+    queryFn: () => unwrap(client.GET('/__admin/callbacks', { params: { query: { status: 'pending', limit: 1000, ...spaceQ } } })),
     refetchInterval: 5_000,
   });
   const recent = useQuery({

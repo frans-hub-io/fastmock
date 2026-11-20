@@ -5,8 +5,9 @@ import { useState } from 'react';
 import { useFeature } from '../api/features';
 import { api, isNotFound } from '../api/http';
 import { confirmAction, useApiMutation } from '../api/mutations';
-import { useCan } from '../auth/useAuth';
+import { useCan, useSpace, useSpaceChoice } from '../auth/useAuth';
 import { BodyView, PageHeader } from '../components/common';
+import { SpaceField } from '../components/spaces';
 import { EmptyState, ErrorState, LoadingState } from '../components/States';
 
 interface KvEntry {
@@ -50,26 +51,29 @@ function KvList({ onPick }: { onPick: (k: string) => void }) {
 }
 
 export default function Kv() {
-  const canEdit = useCan('editor');
+  const spaces = useSpace();
+  const [area, setArea] = useSpaceChoice('state:read');
+  const canEdit = useCan()('state:write', area);
+  const at = area ? { space: area } : undefined;
   const listFeature = useFeature('/__admin/kv', 'get');
   const [key, setKey] = useState('');
   const [lookup, setLookup] = useState<string | null>(null);
   const [value, setValue] = useState('');
   const [ttl, setTtl] = useState<number | ''>('');
   const entry = useQuery({
-    queryKey: ['kv', 'one', lookup],
-    queryFn: () => api.get<KvEntry>(`/__admin/kv/${encodeURIComponent(lookup ?? '')}`),
+    queryKey: ['kv', 'one', lookup, area],
+    queryFn: () => api.get<KvEntry>(`/__admin/kv/${encodeURIComponent(lookup ?? '')}`, { query: at }),
     enabled: !!lookup,
     retry: false,
   });
   const put = useApiMutation<void>({
-    fn: () => api.put(`/__admin/kv/${encodeURIComponent(key)}`, { value, ...(ttl ? { ttlSeconds: ttl } : {}) }),
+    fn: () => api.put(`/__admin/kv/${encodeURIComponent(key)}`, { value, ...(ttl ? { ttlSeconds: ttl } : {}) }, { query: at }),
     invalidate: [['kv']],
     success: `Saved ${key}`,
     onSuccess: () => setLookup(key),
   });
   const del = useApiMutation<string>({
-    fn: (k) => api.del(`/__admin/kv/${encodeURIComponent(k)}`),
+    fn: (k) => api.del(`/__admin/kv/${encodeURIComponent(k)}`, { query: at }),
     invalidate: [['kv']],
     success: (_d, k) => `Deleted ${k}`,
   });
@@ -84,7 +88,8 @@ export default function Kv() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 'var(--mantine-spacing-lg)', alignItems: 'start' }}>
         <Stack gap="md">
           <Paper withBorder p="md" radius="md">
-            <Group gap="xs" align="flex-end" wrap="nowrap">
+            <SpaceField perm="state:read" value={area} onChange={setArea} label="Space" description="Keys are looked up, stored and deleted in this space" />
+            <Group gap="xs" align="flex-end" wrap="nowrap" mt={spaces.enabled ? 'sm' : 0}>
               <TextInput label="Key" value={key} onChange={(e) => setKey(e.currentTarget.value)} style={{ flex: 1 }} className="mono" maxLength={512} />
               <Button leftSection={<IconSearch size={16} />} variant="light" disabled={!key} onClick={() => setLookup(key)}>
                 Look up

@@ -5,7 +5,9 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api, errorMessage } from '../api/http';
 import { notifySuccess } from '../api/mutations';
+import { useSpaceChoice } from '../auth/useAuth';
 import { readFileText } from '../lib/download';
+import { SpaceField } from './spaces';
 import { detectImportKind, type ImportKind } from '../lib/stubs';
 
 interface ImportResult {
@@ -35,6 +37,7 @@ export function ImportModal({ opened, onClose }: { opened: boolean; onClose: () 
   const [kind, setKind] = useState<ImportKind>('unknown');
   const [tag, setTag] = useState('');
   const [replace, setReplace] = useState(true);
+  const [space, setSpace] = useSpaceChoice('imports:run');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ImportResult | null>(null);
@@ -79,13 +82,13 @@ export function ImportModal({ opened, onClose }: { opened: boolean; onClose: () 
         if (dryRun) {
           r = { imported: 0, removed: 0, dryRun: true, stubs, warnings: [] };
         } else {
-          r = await api.post<ImportResult>('/__admin/stubs/import', { stubs, ...(tag.trim() && replace ? { replaceTag: tag.trim() } : {}) });
+          r = await api.post<ImportResult>('/__admin/stubs/import', { stubs, ...(tag.trim() && replace ? { replaceTag: tag.trim() } : {}) }, { query: { space: space ?? undefined } });
         }
       } else {
         r = await api.post<ImportResult>('/__admin/import', undefined, {
           rawBody: text,
           contentType: text.trimStart().startsWith('{') || text.trimStart().startsWith('[') ? 'application/json' : 'text/plain',
-          query: { tag: tag.trim() || undefined, replace, dryRun: dryRun || undefined },
+          query: { tag: tag.trim() || undefined, replace, dryRun: dryRun || undefined, space: space ?? undefined },
         });
       }
       setResult(r);
@@ -140,6 +143,7 @@ export function ImportModal({ opened, onClose }: { opened: boolean; onClose: () 
             <Badge variant="light">{KIND_LABEL[kind]}</Badge>
           </Group>
         )}
+        <SpaceField perm="imports:run" value={space} onChange={setSpace} description="The imported stubs go to this space" />
         <TextInput
           label="Tag"
           description={kind === 'fastmock' ? 'Optional: stubs carrying this tag are replaced by the import' : 'Defaults to the detected format name'}

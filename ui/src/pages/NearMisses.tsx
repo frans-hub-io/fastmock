@@ -4,6 +4,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { client, unwrap } from '../api/client';
+import { useSpaceQuery } from '../auth/useAuth';
 import type { NearMiss, RequestPattern } from '../api/types';
 import { DiffView } from '../components/DiffView';
 import { MethodBadge, PageHeader, StatusBadge, Time } from '../components/common';
@@ -68,6 +69,7 @@ function NearMissCard({ miss, probe }: { miss: NearMiss; probe: Probe }) {
 export default function NearMisses() {
   const [params, setParams] = useSearchParams();
   const selectedId = params.get('id');
+  const spaceQ = useSpaceQuery();
   const recent = useQuery({
     queryKey: ['requests', 'unmatched'],
     queryFn: () => unwrap(client.GET('/__admin/requests/unmatched', { params: { query: { limit: 50 } } })),
@@ -76,7 +78,7 @@ export default function NearMisses() {
   const [probe, setProbe] = useState<Probe>({ method: 'GET', path: '/', headers: {} });
   const [headersText, setHeadersText] = useState('');
   const run = useMutation({
-    mutationFn: (p: Probe) => unwrap(client.POST('/__admin/requests/near-misses', { body: p })),
+    mutationFn: (p: Probe) => unwrap(client.POST('/__admin/requests/near-misses', { body: p, params: { query: spaceQ } })),
   });
 
   useEffect(() => {

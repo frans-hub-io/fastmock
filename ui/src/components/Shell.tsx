@@ -27,6 +27,7 @@ import {
   IconFlame,
   IconGauge,
   IconHistory,
+  IconKey,
   IconLogout,
   IconMoon,
   IconPlayerRecord,
@@ -41,15 +42,18 @@ import {
 } from '@tabler/icons-react';
 import type { ComponentType, ReactNode } from 'react';
 import { Link, NavLink as RouterNavLink, useLocation } from 'react-router';
-import type { Role } from '../api/types';
-import { hasRole, useAuth } from '../auth/useAuth';
+import { boundSpaces, can, kindLabel, seesAllSpaces, type Permission } from '../auth/permissions';
+import { useAuth, useSpace } from '../auth/useAuth';
 import classes from './Shell.module.css';
+import { SpaceSelect } from './spaces';
 
 interface NavItem {
   to: string;
   label: string;
   icon: ComponentType<{ size?: number; stroke?: number }>;
-  role?: Role;
+  perm?: Permission;
+  /** The permission must be held globally (the screen is not scoped by space). */
+  global?: boolean;
 }
 
 const NAV: { group: string; items: NavItem[] }[] = [
@@ -57,70 +61,72 @@ const NAV: { group: string; items: NavItem[] }[] = [
   {
     group: 'Mocks',
     items: [
-      { to: '/stubs', label: 'Stubs', icon: IconRoute },
-      { to: '/services', label: 'Services', icon: IconSitemap },
-      { to: '/scenarios', label: 'Scenarios', icon: IconChecklist },
-      { to: '/async', label: 'Async mocks', icon: IconBroadcast },
-      { to: '/grpc', label: 'gRPC', icon: IconFileCode },
-      { to: '/files', label: 'Files', icon: IconFiles },
+      { to: '/stubs', label: 'Stubs', icon: IconRoute, perm: 'stubs:read' },
+      { to: '/services', label: 'Services', icon: IconSitemap, perm: 'stubs:read', global: true },
+      { to: '/scenarios', label: 'Scenarios', icon: IconChecklist, perm: 'state:read' },
+      { to: '/async', label: 'Async mocks', icon: IconBroadcast, perm: 'stubs:read', global: true },
+      { to: '/grpc', label: 'gRPC', icon: IconFileCode, perm: 'grpc:read' },
+      { to: '/files', label: 'Files', icon: IconFiles, perm: 'files:read' },
     ],
   },
   {
     group: 'Traffic',
     items: [
-      { to: '/requests', label: 'Request journal', icon: IconActivity },
-      { to: '/near-misses', label: 'Near misses', icon: IconSearch },
-      { to: '/verify', label: 'Verify', icon: IconShieldCheck },
-      { to: '/callbacks', label: 'Callbacks', icon: IconWebhook },
-      { to: '/recordings', label: 'Recordings', icon: IconPlayerRecord },
+      { to: '/requests', label: 'Request journal', icon: IconActivity, perm: 'journal:read' },
+      { to: '/near-misses', label: 'Near misses', icon: IconSearch, perm: 'journal:read' },
+      { to: '/verify', label: 'Verify', icon: IconShieldCheck, perm: 'journal:read' },
+      { to: '/callbacks', label: 'Callbacks', icon: IconWebhook, perm: 'callbacks:read' },
+      { to: '/recordings', label: 'Recordings', icon: IconPlayerRecord, perm: 'recordings:read' },
     ],
   },
   {
     group: 'Testing',
     items: [
-      { to: '/contract-tests', label: 'Contract tests', icon: IconBox },
-      { to: '/chaos', label: 'Chaos', icon: IconFlame },
+      { to: '/contract-tests', label: 'Contract tests', icon: IconBox, perm: 'contracts:read' },
+      { to: '/chaos', label: 'Chaos', icon: IconFlame, perm: 'chaos:read' },
     ],
   },
   {
     group: 'System',
     items: [
-      { to: '/kv', label: 'KV store', icon: IconDatabase },
-      { to: '/settings', label: 'Settings', icon: IconSettings },
-      { to: '/audit', label: 'Audit log', icon: IconHistory, role: 'admin' },
+      { to: '/kv', label: 'KV store', icon: IconDatabase, perm: 'state:read' },
+      { to: '/settings', label: 'Settings', icon: IconSettings, perm: 'chaos:read' },
+      { to: '/tokens', label: 'Admin tokens', icon: IconKey, perm: 'tokens:read' },
+      { to: '/audit', label: 'Audit log', icon: IconHistory, perm: 'audit:read' },
       { to: '/api', label: 'API docs', icon: IconApi },
     ],
   },
 ];
 
-const ROLE_COLOR: Record<Role, string> = { viewer: 'gray', editor: 'blue', admin: 'grape' };
+const ROLE_COLOR: Record<string, string> = { viewer: 'gray', editor: 'blue', admin: 'grape' };
 
 function Nav({ onNavigate }: { onNavigate?: () => void }) {
-  const { role } = useAuth();
+  const { permissions } = useAuth();
   const loc = useLocation();
+  const groups = NAV.map((g) => ({ ...g, items: g.items.filter((i) => !i.perm || can(permissions, i.perm, i.global ? null : undefined)) })).filter(
+    (g) => g.items.length > 0,
+  );
   return (
     <nav aria-label="Main">
-      {NAV.map((g) => (
+      {groups.map((g) => (
         <div key={g.group}>
           <div className={classes.group}>{g.group}</div>
-          {g.items
-            .filter((i) => !i.role || hasRole(role, i.role))
-            .map((i) => {
-              const active = i.to === '/' ? loc.pathname === '/' : loc.pathname === i.to || loc.pathname.startsWith(`${i.to}/`);
-              return (
-                <NavLink
-                  key={i.to}
-                  component={RouterNavLink}
-                  to={i.to}
-                  label={i.label}
-                  leftSection={<i.icon size={18} stroke={1.6} />}
-                  active={active}
-                  onClick={onNavigate}
-                  variant="light"
-                  className={classes.navLink}
-                />
-              );
-            })}
+          {g.items.map((i) => {
+            const active = i.to === '/' ? loc.pathname === '/' : loc.pathname === i.to || loc.pathname.startsWith(`${i.to}/`);
+            return (
+              <NavLink
+                key={i.to}
+                component={RouterNavLink}
+                to={i.to}
+                label={i.label}
+                leftSection={<i.icon size={18} stroke={1.6} />}
+                active={active}
+                onClick={onNavigate}
+                variant="light"
+                className={classes.navLink}
+              />
+            );
+          })}
         </div>
       ))}
     </nav>
@@ -140,60 +146,105 @@ function ThemeToggle() {
   );
 }
 
+/** The role badge: the role for principals that hold it everywhere, else the spaces they are bound to. */
+function scopeLabel(role: string, spaces: string[], global: boolean): string {
+  if (global || !spaces.length) return role;
+  return spaces.length === 1 ? (spaces[0] ?? role) : `${spaces.length} spaces`;
+}
+
+function Principal() {
+  const { name, role, kind, info, permissions, logout } = useAuth();
+  const spaces = boundSpaces(permissions);
+  const global = seesAllSpaces(permissions);
+  const badge = scopeLabel(role, spaces, global);
+  const groups = info?.principal.groups ?? [];
+  const who = name || 'anonymous';
+  return (
+    <Menu position="bottom-end" withArrow width={280}>
+      <Menu.Target>
+        <UnstyledButton aria-label={`Account: ${who}`} data-testid="principal" className={classes.principal}>
+          <Group gap={8} wrap="nowrap">
+            <IconUser size={18} aria-hidden />
+            <Text size="sm" fw={500} visibleFrom="sm" className="truncate" maw={160} data-testid="principal-name">
+              {who}
+            </Text>
+            <span className={classes.kind}>
+              <Badge color="gray" variant="outline" data-testid="kind-badge" tt="none">
+                {kindLabel(kind)}
+              </Badge>
+            </span>
+            <Badge color={ROLE_COLOR[role] ?? 'teal'} variant="light" data-testid="role-badge" className={classes.roleBadge} tt={badge === role ? undefined : 'none'}>
+              {badge}
+            </Badge>
+          </Group>
+        </UnstyledButton>
+      </Menu.Target>
+      <Menu.Dropdown>
+        <Menu.Label>Signed in as</Menu.Label>
+        <div className={classes.who}>
+          <Text size="sm" fw={600} className="truncate" title={who}>
+            {who}
+          </Text>
+          <Text size="xs" c="dimmed">
+            {kindLabel(kind)}
+            {global || !spaces.length ? ` · ${role}` : ''}
+          </Text>
+          {spaces.length > 0 && (
+            <Text size="xs" c="dimmed" data-testid="principal-spaces">
+              Spaces: {spaces.join(', ')}
+            </Text>
+          )}
+          {groups.length > 0 && (
+            <Text size="xs" c="dimmed" lineClamp={3}>
+              Groups: {groups.join(', ')}
+            </Text>
+          )}
+        </div>
+        {info?.authDisabled && <Menu.Label c="orange">Authentication is disabled on this server</Menu.Label>}
+        <Menu.Divider />
+        <Menu.Item leftSection={<IconBolt size={16} />} component={Link} to="/">
+          Dashboard
+        </Menu.Item>
+        {!info?.authDisabled && (
+          <Menu.Item leftSection={<IconLogout size={16} />} color="red" onClick={() => logout()} data-testid="logout">
+            Sign out
+          </Menu.Item>
+        )}
+      </Menu.Dropdown>
+    </Menu>
+  );
+}
+
 export function Shell({ children }: { children: ReactNode }) {
   const [opened, { toggle, close }] = useDisclosure(false);
-  const { name, role, info, logout } = useAuth();
+  const { info } = useAuth();
+  const spaces = useSpace();
   return (
     <div className={classes.root}>
       <a href="#main" className={classes.skip}>
         Skip to content
       </a>
       <header className={classes.header}>
-        <Group gap="sm" wrap="nowrap">
+        <Group gap="sm" wrap="nowrap" className={classes.headerLeft}>
           <Burger opened={opened} onClick={toggle} hiddenFrom="md" size="sm" aria-label="Toggle navigation" />
-          <Link to="/" className={classes.brand}>
+          <Link to="/" className={`${classes.brand} ${spaces.enabled ? classes.brandCompact : ''}`} aria-label="FastMock">
             <span className={classes.logo} aria-hidden>
               F
             </span>
-            <span>FastMock</span>
+            <span className={spaces.enabled ? classes.brandTextCompact : undefined}>FastMock</span>
           </Link>
           {info?.version && (
             <Badge variant="outline" color="gray" size="sm" visibleFrom="sm">
               v{info.version}
             </Badge>
           )}
+          <div className={classes.spaceSlot}>
+            <SpaceSelect />
+          </div>
         </Group>
-        <Group gap="xs" wrap="nowrap">
+        <Group gap="xs" wrap="nowrap" className={classes.headerRight}>
           <ThemeToggle />
-          <Menu position="bottom-end" withArrow>
-            <Menu.Target>
-              <UnstyledButton aria-label="Account" data-testid="principal">
-                <Group gap={8} wrap="nowrap">
-                  <IconUser size={18} />
-                  <Text size="sm" fw={500} visibleFrom="sm" className="truncate" maw={160}>
-                    {name || 'anonymous'}
-                  </Text>
-                  <Badge color={ROLE_COLOR[role]} variant="light" data-testid="role-badge">
-                    {role}
-                  </Badge>
-                </Group>
-              </UnstyledButton>
-            </Menu.Target>
-            <Menu.Dropdown>
-              <Menu.Label>
-                Signed in as {name || 'anonymous'} ({role})
-              </Menu.Label>
-              {info?.authDisabled && <Menu.Label c="orange">Authentication is disabled on this server</Menu.Label>}
-              <Menu.Item leftSection={<IconBolt size={16} />} component={Link} to="/">
-                Dashboard
-              </Menu.Item>
-              {!info?.authDisabled && (
-                <Menu.Item leftSection={<IconLogout size={16} />} color="red" onClick={() => logout()} data-testid="logout">
-                  Sign out
-                </Menu.Item>
-              )}
-            </Menu.Dropdown>
-          </Menu>
+          <Principal />
         </Group>
       </header>
       <div className={classes.body}>

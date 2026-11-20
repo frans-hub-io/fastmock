@@ -1,0 +1,19 @@
+roles:
+  - name: team-lead
+    permissions: [stubs:*, imports:run, journal:read, files:read, callbacks:read, state:read, contracts:read, tokens:read, tokens:write]
+spaces:
+  - name: payments
+    description: Payment provider mocks
+    pathPrefixes: [/payments/]
+  - name: billing
+    description: Billing mocks
+bindings:
+  - subject: token:lead
+    role: team-lead
+    spaces: [payments]
+  - subject: token:pay-viewer
+    role: viewer
+    spaces: [payments]
+  - subject: group:payments-dev
+    role: editor
+    spaces: [payments]

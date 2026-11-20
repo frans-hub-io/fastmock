@@ -1,17 +1,43 @@
-import { Alert, Anchor, Button, Center, Code, Paper, PasswordInput, Stack, Text, Title } from '@mantine/core';
-import { IconKey, IconLock } from '@tabler/icons-react';
+import { Alert, Anchor, Button, Center, Code, Divider, Paper, PasswordInput, Stack, Text, Title } from '@mantine/core';
+import { IconKey, IconLock, IconLogin2 } from '@tabler/icons-react';
+import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Navigate, useLocation } from 'react-router';
 import { errorMessage } from '../api/http';
+import { loginErrorMessage, takeLoginError } from '../auth/sso';
 import { useAuth } from '../auth/useAuth';
 
+interface AuthConfig {
+  oidc: boolean;
+  tokenLogin: boolean;
+}
+
+/** Sign-in methods; servers without the endpoint offer token sign-in only. */
+async function fetchAuthConfig(): Promise<AuthConfig> {
+  try {
+    const res = await fetch('/__admin/auth/config', { headers: { Accept: 'application/json' }, credentials: 'omit', cache: 'no-store' });
+    if (!res.ok) return { oidc: false, tokenLogin: true };
+    const body = (await res.json()) as Partial<AuthConfig>;
+    return { oidc: body.oidc === true, tokenLogin: body.tokenLogin !== false };
+  } catch {
+    return { oidc: false, tokenLogin: true };
+  }
+}
+
 export function LoginPage() {
-  const { status, login, expired } = useAuth();
+  const { status, login, loginSso, expired } = useAuth();
   const loc = useLocation();
   const [token, setToken] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const from = (loc.state as { from?: string } | null)?.from ?? '/';
+  const [redirecting, setRedirecting] = useState(false);
+  const config = useQuery({ queryKey: ['auth-config'], queryFn: fetchAuthConfig, staleTime: Infinity, retry: false });
+  const rawFrom = (loc.state as { from?: string } | null)?.from ?? '/';
+  const fromState = takeLoginError(rawFrom);
+  const own = takeLoginError(`${loc.pathname}${loc.search}`);
+  const loginError = own.code ?? fromState.code;
+  const from = fromState.rest;
+  const sso = config.data?.oidc === true;
 
   if (status === 'authenticated') return <Navigate to={from.startsWith('/login') ? '/' : from} replace />;
 
@@ -28,6 +54,11 @@ export function LoginPage() {
     }
   };
 
+  const startSso = () => {
+    setRedirecting(true);
+    loginSso(from.startsWith('/login') ? '/' : from);
+  };
+
   return (
     <Center mih="100vh" p="md">
       <Paper withBorder shadow="sm" radius="lg" p="xl" w="100%" maw={440}>
@@ -39,13 +70,38 @@ export function LoginPage() {
                 FastMock
               </Title>
               <Text c="dimmed" size="sm" ta="center">
-                Sign in with an admin API token
+                {sso ? 'Sign in with your organization account or an admin API token' : 'Sign in with an admin API token'}
               </Text>
             </Stack>
-            {expired && (
+            {expired === 'session' && (
+              <Alert color="yellow" role="alert" data-testid="session-expired">
+                Your session has ended (it expired or was signed out elsewhere). Sign in again.
+              </Alert>
+            )}
+            {expired === 'token' && (
               <Alert color="yellow" role="alert">
                 Your session ended because the server rejected the token. Sign in again.
               </Alert>
+            )}
+            {loginError && (
+              <Alert color="red" role="alert" title="SSO sign-in failed" data-testid="login-error">
+                {loginErrorMessage(loginError)}
+              </Alert>
+            )}
+            {sso && (
+              <>
+                <Button
+                  size="md"
+                  leftSection={<IconLogin2 size={18} />}
+                  onClick={startSso}
+                  loading={redirecting}
+                  fullWidth
+                  data-testid="sso-login"
+                >
+                  Sign in with SSO
+                </Button>
+                <Divider label="or use an admin token" labelPosition="center" />
+              </>
             )}
             <PasswordInput
               label="Admin token"
@@ -53,14 +109,14 @@ export function LoginPage() {
               value={token}
               onChange={(e) => setToken(e.currentTarget.value)}
               autoComplete="off"
-              autoFocus
+              autoFocus={!sso}
               required
               leftSection={<IconKey size={16} />}
               error={error}
               data-testid="token-input"
             />
-            <Button type="submit" loading={busy} fullWidth data-testid="login-submit">
-              Sign in
+            <Button type="submit" loading={busy} fullWidth variant={sso ? 'default' : 'filled'} data-testid="login-submit">
+              {sso ? 'Sign in with token' : 'Sign in'}
             </Button>
             <Text size="xs" c="dimmed">
               The token stays in memory and in this tab&apos;s session storage only; it is sent as a bearer token to

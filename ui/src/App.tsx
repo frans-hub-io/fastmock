@@ -6,6 +6,7 @@ import { lazy, Suspense, useState } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router';
 import { ApiError } from './api/http';
 import { AuthProvider } from './auth/AuthProvider';
+import { SpaceProvider } from './auth/SpaceProvider';
 import { useAuth } from './auth/useAuth';
 import { Shell } from './components/Shell';
 import { LoadingState } from './components/States';
@@ -31,6 +32,7 @@ const AsyncPage = lazy(() => import('./pages/AsyncMocks'));
 const ServicesPage = lazy(() => import('./pages/Services'));
 const ContractTestsPage = lazy(() => import('./pages/ContractTests'));
 const AuditPage = lazy(() => import('./pages/Audit'));
+const TokensPage = lazy(() => import('./pages/Tokens'));
 const ApiDocsPage = lazy(() => import('./pages/ApiDocs'));
 const NotFoundPage = lazy(() => import('./pages/NotFound'));
 
@@ -77,6 +79,7 @@ function Protected() {
           <Route path="services/:id" element={<ServicesPage />} />
           <Route path="contract-tests" element={<ContractTestsPage />} />
           <Route path="audit" element={<AuditPage />} />
+          <Route path="tokens" element={<TokensPage />} />
           <Route path="api" element={<ApiDocsPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
@@ -103,7 +106,9 @@ export function App() {
           <Notifications position="top-right" limit={4} />
           <BrowserRouter basename="/ui">
             <AuthProvider>
-              <AppRoutes />
+              <SpaceProvider>
+                <AppRoutes />
+              </SpaceProvider>
             </AuthProvider>
           </BrowserRouter>
         </ModalsProvider>

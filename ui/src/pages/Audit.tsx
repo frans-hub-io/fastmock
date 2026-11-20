@@ -46,7 +46,8 @@ function summary(detail: unknown): string {
 }
 
 export default function Audit() {
-  const isAdmin = useCan('admin');
+  const can = useCan();
+  const isAdmin = can('audit:read');
   const [limit, setLimit] = useState(200);
   const [principal, setPrincipal] = useState('');
   const [action, setAction] = useState<string | null>(null);
@@ -71,7 +72,7 @@ export default function Audit() {
   );
   const actions = useMemo(() => [...new Set((q.data?.events ?? []).map((e) => e.action))].sort(), [q.data]);
 
-  if (!isAdmin) return <ErrorState error={new Error('The audit log needs the admin role.')} />;
+  if (!isAdmin) return <ErrorState error={new Error('The audit log needs the audit:read permission.')} />;
   const ba = selected ? beforeAfter(selected.detail) : null;
   const changes = selected ? changesOf(selected.detail) : null;
 

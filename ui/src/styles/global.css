@@ -141,3 +141,26 @@ body,
   white-space: nowrap;
   border: 0;
 }
+
+.permitted {
+  display: inline-flex;
+  border-radius: var(--mantine-radius-sm);
+}
+
+.permitted:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: 2px;
+}
+
+.permitted > [data-disabled],
+.permitted > :disabled {
+  pointer-events: none;
+}
+
+.token-value {
+  flex: 1;
+  min-width: 0;
+  word-break: break-all;
+  white-space: pre-wrap;
+  font-size: 0.85rem;
+}
