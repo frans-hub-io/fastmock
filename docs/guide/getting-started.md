@@ -2,9 +2,15 @@
 
 A ten-minute tour: start FastMock, create a token, add a stub, call it, look at the journal, open the UI, send a
 signed callback and build a small stateful flow. At the end you run the same thing on PostgreSQL and Valkey with
-Docker Compose.
+Docker Compose, Helm or the operator.
 
-You need Docker (or a Rust toolchain), `curl`, and optionally `jq`.
+You need Docker (or a Rust toolchain), `curl`, and optionally `jq`. For Kubernetes you also need `kubectl`, Helm
+and a cluster running Kubernetes 1.30 or newer.
+
+!!! tip "Pick your platform once"
+
+    Steps 3 and 9 have a tab for each way to run FastMock: **Docker**, **Docker Compose**, **Helm** and
+    **Operator**. Choosing a tab switches every tab on the page, and the docs remember your choice.
 
 - [1. Get the image](#1-get-the-image)
 - [2. Create an admin token](#2-create-an-admin-token)
@@ -14,7 +20,7 @@ You need Docker (or a Rust toolchain), `curl`, and optionally `jq`.
 - [6. Open the UI and the API description](#6-open-the-ui-and-the-api-description)
 - [7. Your first callback](#7-your-first-callback)
 - [8. Your first scenario](#8-your-first-scenario)
-- [9. Shared storage with Docker Compose](#9-shared-storage-with-docker-compose)
+- [9. Shared storage](#9-shared-storage-with-docker-compose)
 - [Next steps](#next-steps)
 
 ## 1. Get the image
@@ -35,6 +41,8 @@ docker build -t fastmock:0.1.0 .
 The image is distroless, runs as user 65532 and starts `fastmock serve`. Without Docker, build the binary
 instead: `cargo build --release -p fastmock-server` (the binary is `target/release/fastmock`; build the UI first
 with `npm ci && npm run build` in `ui/` if you want it embedded).
+
+In Kubernetes the cluster pulls the image itself; you still need it locally for `hash-token` in the next step.
 
 ## 2. Create an admin token
 
@@ -67,19 +75,108 @@ export FASTMOCK_TOKEN_HASH=$(docker run --rm fastmock:0.1.0 hash-token "$FASTMOC
 
 Memory mode keeps everything in the process: ideal for a laptop or a CI job.
 
-```sh
-docker run --rm --name fastmock --hostname fastmock \
-  -p 127.0.0.1:8080:8080 -p 127.0.0.1:9090:9090 \
-  -e FASTMOCK_STORAGE=memory \
-  -e FASTMOCK_ADMIN_TOKENS="me:admin:$FASTMOCK_TOKEN_HASH" \
-  -e FASTMOCK_SECRET_DELIVERY_HOOK=change-me-to-a-long-random-key \
-  -e FASTMOCK_STUB_SECRETS=delivery-hook \
-  -e FASTMOCK_LOG_FORMAT=text \
-  fastmock:0.1.0
-```
+=== "Docker"
 
-Port 8080 is the **data plane** (the mocks), port 9090 the **control plane** (admin API, UI, metrics). The two
-`SECRET` variables prepare step 7. Check that it is up:
+    ```sh
+    docker run --rm --name fastmock --hostname fastmock \
+      -p 127.0.0.1:8080:8080 -p 127.0.0.1:9090:9090 \
+      -e FASTMOCK_STORAGE=memory \
+      -e FASTMOCK_ADMIN_TOKENS="me:admin:$FASTMOCK_TOKEN_HASH" \
+      -e FASTMOCK_SECRET_DELIVERY_HOOK=change-me-to-a-long-random-key \
+      -e FASTMOCK_STUB_SECRETS=delivery-hook \
+      -e FASTMOCK_LOG_FORMAT=text \
+      fastmock:0.1.0
+    ```
+
+=== "Docker Compose"
+
+    The Compose file always runs FastMock on PostgreSQL and Valkey, so there is no memory mode here. Start it as
+    described in [step 9](#9-shared-storage-with-docker-compose), then come back and continue with
+    [step 4](#4-your-first-stub).
+
+=== "Helm"
+
+    From a checkout of the repository, fetch the chart dependencies, put the token hash and the callback key into
+    Secrets and install one replica in memory mode with the published image:
+
+    ```sh
+    helm repo add cnpg https://cloudnative-pg.github.io/charts
+    helm repo add valkey https://valkey.io/valkey-helm/
+    helm dependency build deploy/helm/fastmock
+
+    kubectl create namespace mocks
+    kubectl -n mocks create secret generic fastmock-admin-tokens \
+      --from-literal=tokens="me:admin:$FASTMOCK_TOKEN_HASH"
+    kubectl -n mocks create secret generic fastmock-secrets \
+      --from-literal=delivery-hook=change-me-to-a-long-random-key
+
+    helm upgrade --install fastmock deploy/helm/fastmock -n mocks \
+      --set image.repository=franshub/fastmock --set image.tag=0.1.0-dev11 \
+      --set admin.tokensSecret.name=fastmock-admin-tokens \
+      --set secrets.existingSecret=fastmock-secrets --set 'secrets.stubSecrets={delivery-hook}' \
+      --set storage.mode=memory --set replicaCount=1 --set pdb.enabled=false
+    kubectl -n mocks rollout status deploy/fastmock
+    ```
+
+    Forward both Services to your machine so the commands on this page work unchanged:
+
+    ```sh
+    kubectl -n mocks port-forward svc/fastmock 8080:8080 &
+    kubectl -n mocks port-forward svc/fastmock-admin 9090:9090 &
+    ```
+
+    Every value is described in [Helm chart](../operations/helm.md).
+
+=== "Operator"
+
+    Install the operator once per cluster, with the FastMock and operator images in a registry the cluster can
+    pull from:
+
+    ```sh
+    helm upgrade --install fastmock-operator deploy/helm/fastmock-operator -n fastmock-system --create-namespace \
+      --set image.repository=franshub/fastmock-operator --set image.tag=0.1.0-dev11 \
+      --set server.image.repository=franshub/fastmock --set server.image.tag=0.1.0-dev11
+    ```
+
+    Put the token hash and the callback key into Secrets, label them so that the operator may mount them, and
+    create a `FastMock` (without a `storage` block it runs in memory mode with one replica):
+
+    ```sh
+    kubectl create namespace mocks
+    kubectl -n mocks create secret generic fastmock-admin-tokens \
+      --from-literal=tokens="me:admin:$FASTMOCK_TOKEN_HASH"
+    kubectl -n mocks create secret generic fastmock-secrets \
+      --from-literal=delivery-hook=change-me-to-a-long-random-key
+    kubectl -n mocks label secret fastmock-admin-tokens fastmock-secrets \
+      fastmock.franshub.io/allow-mount=true
+
+    kubectl apply -f - <<'EOF'
+    apiVersion: fastmock.franshub.io/v1alpha1
+    kind: FastMock
+    metadata:
+      name: fastmock
+      namespace: mocks
+    spec:
+      adminTokensSecret: {name: fastmock-admin-tokens}
+      secretsSecret: fastmock-secrets
+      env:
+        FASTMOCK_STUB_SECRETS: delivery-hook
+    EOF
+    kubectl -n mocks get fastmocks
+    ```
+
+    The operator names the Services after the `FastMock`. Forward both to your machine:
+
+    ```sh
+    kubectl -n mocks port-forward svc/fastmock 8080:8080 &
+    kubectl -n mocks port-forward svc/fastmock-admin 9090:9090 &
+    ```
+
+    Fields, policies and status conditions are described in [Operator](../operations/operator.md).
+
+Port 8080 is the **data plane** (the mocks), port 9090 the **control plane** (admin API, UI, metrics). The
+callback key (the two `SECRET` variables, or the `fastmock-secrets` Secret in Kubernetes) prepares step 7. Check
+that it is up:
 
 ```sh
 curl -s localhost:9090/readyz
@@ -209,7 +306,8 @@ curl -s -X POST localhost:8080/payments -H 'content-type: application/json' -d '
 ```
 
 The callback URL uses the container's host name `fastmock` (set with `--hostname`), because FastMock never sends
-callbacks to loopback addresses such as `localhost`. One second later the callback has been delivered:
+callbacks to loopback addresses such as `localhost`. With Docker Compose, Helm or the operator, `fastmock` is the
+name of the FastMock service, so the same URL works. One second later the callback has been delivered:
 
 ```sh
 curl -s "localhost:9090/__admin/callbacks?correlation=ord-1001" -H "Authorization: Bearer $FASTMOCK_TOKEN" | jq '.callbacks[0] | {status, attempts, lastStatus, headers, body}'
@@ -265,33 +363,100 @@ Each order has its own state because the scenario name is a template. Reset all 
 
 Stop the container with Ctrl-C; in memory mode everything is gone.
 
-## 9. Shared storage with Docker Compose
+## 9. Shared storage {#9-shared-storage-with-docker-compose}
 
 For a shared test environment FastMock keeps its data in PostgreSQL 18 and Valkey 9, so it survives restarts and
 any number of replicas share stubs, scenarios, the journal and the callback queue.
-[`docs/examples/docker-compose.yaml`](../examples/docker-compose.yaml) starts all three. Create a `.env` file next
-to it:
 
-```sh
-cd docs/examples
-cat > .env <<EOF
-POSTGRES_PASSWORD=$(openssl rand -hex 24)
-VALKEY_PASSWORD=$(openssl rand -hex 24)
-DELIVERY_HOOK_SECRET=$(openssl rand -hex 32)
-FASTMOCK_ADMIN_TOKENS=me:admin:$FASTMOCK_TOKEN_HASH
-EOF
-chmod 600 .env
-docker compose up -d
-docker compose logs fastmock | grep -E 'migration|storage ready|FastMock started'
-```
+=== "Docker Compose"
 
-```text
-fastmock-1  | 2026-11-19T06:40:41.867428Z  INFO fastmock_store: applying database migrations target_version=10
-fastmock-1  | 2026-11-19T06:40:41.871102Z  INFO fastmock_store::postgres: applied database migration version=1 name=init duration_ms=3
-fastmock-1  | ...
-fastmock-1  | 2026-11-19T06:40:41.887368Z  INFO fastmock_store: storage ready
-fastmock-1  | 2026-11-19T06:40:41.901674Z  INFO fastmock_server: FastMock started listen=0.0.0.0:8080 admin_listen=0.0.0.0:9090 plugins=[...] otel=false
-```
+    [`docs/examples/docker-compose.yaml`](../examples/docker-compose.yaml) starts all three. Create a `.env` file
+    next to it:
+
+    ```sh
+    cd docs/examples
+    cat > .env <<EOF
+    POSTGRES_PASSWORD=$(openssl rand -hex 24)
+    VALKEY_PASSWORD=$(openssl rand -hex 24)
+    DELIVERY_HOOK_SECRET=$(openssl rand -hex 32)
+    FASTMOCK_ADMIN_TOKENS=me:admin:$FASTMOCK_TOKEN_HASH
+    EOF
+    chmod 600 .env
+    docker compose up -d
+    docker compose logs fastmock | grep -E 'migration|storage ready|FastMock started'
+    ```
+
+    ```text
+    fastmock-1  | 2026-11-19T06:40:41.867428Z  INFO fastmock_store: applying database migrations target_version=10
+    fastmock-1  | 2026-11-19T06:40:41.871102Z  INFO fastmock_store::postgres: applied database migration version=1 name=init duration_ms=3
+    fastmock-1  | ...
+    fastmock-1  | 2026-11-19T06:40:41.887368Z  INFO fastmock_store: storage ready
+    fastmock-1  | 2026-11-19T06:40:41.901674Z  INFO fastmock_server: FastMock started listen=0.0.0.0:8080 admin_listen=0.0.0.0:9090 plugins=[...] otel=false
+    ```
+
+    The ports are bound to `127.0.0.1` only; the databases are not published at all. Stop and remove everything,
+    including the data, with `docker compose down -v`.
+
+=== "Helm"
+
+    The chart can run single PostgreSQL 18 and Valkey 9 instances next to FastMock, which is enough for a test
+    environment. Create their passwords and upgrade the release from step 3:
+
+    ```sh
+    kubectl -n mocks create secret generic fastmock-postgresql \
+      --from-literal=postgres-password="$(openssl rand -hex 24)" --from-literal=password="$(openssl rand -hex 24)"
+    kubectl -n mocks create secret generic fastmock-valkey --from-literal=password="$(openssl rand -hex 24)"
+
+    helm upgrade --install fastmock deploy/helm/fastmock -n mocks \
+      --set image.repository=franshub/fastmock --set image.tag=0.1.0-dev11 \
+      --set admin.tokensSecret.name=fastmock-admin-tokens \
+      --set secrets.existingSecret=fastmock-secrets --set 'secrets.stubSecrets={delivery-hook}' \
+      --set postgresql.enabled=true \
+      --set postgresql.auth.existingSecret=fastmock-postgresql \
+      --set postgresql.customUser.existingSecret=fastmock-postgresql \
+      --set valkey.enabled=true --set valkey.auth.usersExistingSecret=fastmock-valkey
+    kubectl -n mocks rollout status deploy/fastmock
+    ```
+
+    Restart the two port-forwards from step 3 once the rollout is done. For an external or managed PostgreSQL,
+    or a CloudNativePG cluster, see [Helm chart: Install](../operations/helm.md#install). Remove everything,
+    including the data, with `kubectl delete namespace mocks`.
+
+=== "Operator"
+
+    The operator connects FastMock to an existing PostgreSQL and Valkey. Put their URLs into a labelled Secret
+    and switch the `FastMock` from step 3 to `postgres` with two replicas:
+
+    ```sh
+    kubectl -n mocks create secret generic fastmock-storage \
+      --from-literal=database-url='postgres://fastmock:<password>@db.example.com:5432/fastmock?sslmode=verify-full' \
+      --from-literal=valkey-url='redis://:<password>@valkey.example.com:6379/'
+    kubectl -n mocks label secret fastmock-storage fastmock.franshub.io/allow-mount=true
+
+    kubectl apply -f - <<'EOF'
+    apiVersion: fastmock.franshub.io/v1alpha1
+    kind: FastMock
+    metadata:
+      name: fastmock
+      namespace: mocks
+    spec:
+      replicas: 2
+      storage:
+        mode: postgres
+        database: {name: fastmock-storage, key: database-url}
+        valkey: {name: fastmock-storage, key: valkey-url}
+      adminTokensSecret: {name: fastmock-admin-tokens}
+      secretsSecret: fastmock-secrets
+      env:
+        FASTMOCK_STUB_SECRETS: delivery-hook
+    EOF
+    kubectl -n mocks rollout status deploy/fastmock
+    ```
+
+    Restart the two port-forwards from step 3 once the rollout is done. Remove everything with
+    `kubectl delete namespace mocks`; the databases keep their data.
+
+Check that FastMock now uses shared storage:
 
 ```sh
 curl -s localhost:9090/readyz
@@ -306,12 +471,9 @@ curl -s localhost:9090/__admin/info -H "Authorization: Bearer $FASTMOCK_TOKEN" |
 "postgres+valkey"
 ```
 
-Steps 4 to 8 work unchanged (in Compose the service name `fastmock` resolves to the FastMock container, so the
-callback URL stays the same). Now stubs and scenario states survive `docker compose restart fastmock`, and you
-could run more FastMock containers against the same databases. The ports are bound to `127.0.0.1` only; the
-databases are not published at all.
-
-Stop and remove everything, including the data, with `docker compose down -v`.
+Steps 4 to 8 work unchanged (the service name `fastmock` resolves to FastMock, so the callback URL stays the
+same). Now stubs and scenario states survive a restart of FastMock (`docker compose restart fastmock`, or a new
+rollout in Kubernetes), and you could run more FastMock replicas against the same databases.
 
 ## Next steps
 
