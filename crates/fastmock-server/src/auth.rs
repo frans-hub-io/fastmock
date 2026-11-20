@@ -256,10 +256,11 @@ impl Authenticator {
             });
         }
         if !disabled {
-            for name in access.token_subjects() {
+            for (i, name) in access.token_subjects() {
                 if !tokens.iter().any(|t| t.principal.name == name) {
                     bail!(
-                        "access file: the binding for token:{name} names no token of FASTMOCK_ADMIN_TOKENS or FASTMOCK_ADMIN_TOKENS_FILE"
+                        "{}: bindings[{i}] (token:{name}): no token named {name} in FASTMOCK_ADMIN_TOKENS or FASTMOCK_ADMIN_TOKENS_FILE",
+                        access.origin()
                     );
                 }
             }
@@ -351,9 +352,12 @@ impl Authenticator {
     }
 }
 
+/// Longest static or managed token accepted, in bytes; longer values are rejected without hashing.
+const MAX_STATIC_TOKEN_BYTES: usize = 512;
+
 /// The bearer value of the `Authorization` header (at most 512 bytes).
 pub fn bearer(headers: &HeaderMap) -> Option<&str> {
-    bearer_up_to(headers, 512)
+    bearer_up_to(headers, MAX_STATIC_TOKEN_BYTES)
 }
 
 fn bearer_up_to(headers: &HeaderMap, max: usize) -> Option<&str> {
@@ -395,11 +399,11 @@ async fn principal_of(
             None => Err(Rejection::Token),
         };
     }
-    let Some(value) = bearer_up_to(headers, crate::oidc::jwt::MAX_TOKEN_BYTES) else {
+    let Some(value) = bearer_up_to(headers, usize::MAX) else {
         return Err(Rejection::Token);
     };
     if let Some(o) = app.oidc.as_ref().filter(|o| o.api_enabled())
-        && crate::oidc::jwt::looks_like_jwt(value)
+        && crate::oidc::jwt::jwt_shaped(value)
     {
         return match o.bearer_principal(&app.auth, value).await {
             Ok(Ok(p)) => Ok(p),
@@ -410,7 +414,7 @@ async fn principal_of(
             }
         };
     }
-    if !crate::tokens::looks_managed(value) {
+    if value.len() > MAX_STATIC_TOKEN_BYTES || !crate::tokens::looks_managed(value) {
         return Err(Rejection::Token);
     }
     match app.tokens.lookup(value).await {
@@ -486,11 +490,12 @@ fn full_path(req: &Request) -> String {
 pub async fn admin_auth(State(app): State<AppState>, mut req: Request, next: Next) -> Response {
     if !app.auth.origin_allowed(req.headers()) {
         metrics::counter!("fastmock_admin_auth_failures_total", "reason" => "origin").increment(1);
-        return (
-            StatusCode::FORBIDDEN,
-            axum::Json(serde_json::json!({"error": "origin not allowed", "details": []})),
-        )
-            .into_response();
+        let body = if app.legacy_setup() {
+            serde_json::json!({"error": "origin not allowed", "details": []})
+        } else {
+            serde_json::json!({"error": "forbidden", "details": ["origin not allowed"]})
+        };
+        return (StatusCode::FORBIDDEN, axum::Json(body)).into_response();
     }
     let path = full_path(&req);
     let principal = match principal_of(&app, req.headers(), req.method(), &path).await {
@@ -579,10 +584,16 @@ pub async fn admin_auth(State(app): State<AppState>, mut req: Request, next: Nex
                 .into_response();
         }
     };
-    let legacy_setup = app.cfg.access_file.is_none() && app.oidc.is_none();
-    let rule = route_rule(req.method(), &path)
-        .or_else(|| legacy_setup.then(|| legacy_fallback(req.method())))
-        .map(|r| if principal.legacy { legacy_gate(r) } else { r });
+    let legacy_setup = app.legacy_setup();
+    let rule = if legacy_setup {
+        route_rule(req.method(), &path)
+            .or_else(|| Some(legacy_fallback(req.method())))
+            .map(legacy_gate)
+    } else if purges_stubs(&req, &path) {
+        Some((Permission::StubsPurge, ScopeKind::Global))
+    } else {
+        route_rule(req.method(), &path)
+    };
     let ok = match rule {
         Some((perm, ScopeKind::Space)) => principal.permissions.anywhere(perm),
         Some((perm, ScopeKind::Global)) => principal.permissions.global_has(perm),
@@ -607,7 +618,31 @@ pub async fn admin_auth(State(app): State<AppState>, mut req: Request, next: Nex
             .into_response();
     }
     req.extensions_mut().insert(principal);
-    next.run(req).await
+    let mut res = next.run(req).await;
+    if !legacy_setup
+        && res.status() == StatusCode::FORBIDDEN
+        && let Some(d) = res.extensions_mut().remove::<crate::admin::Denial>()
+    {
+        return crate::admin::forbidden(d.message, d.required);
+    }
+    res
+}
+
+/// `DELETE /stubs` without `tag` deletes every stub and needs `stubs:purge`.
+fn purges_stubs(req: &Request, path: &str) -> bool {
+    req.method() == axum::http::Method::DELETE
+        && matches!(
+            path.strip_prefix("/__admin")
+                .unwrap_or(path)
+                .trim_end_matches('/'),
+            "/stubs"
+        )
+        && !req
+            .uri()
+            .query()
+            .unwrap_or_default()
+            .split('&')
+            .any(|kv| kv.split('=').next() == Some("tag"))
 }
 
 #[cfg(test)]
@@ -749,7 +784,10 @@ mod tests {
         };
         assert!(err(&[format!("x::{}", hash_token("x"))]).contains("admin token entry #1 (x)"));
         assert!(err(&[format!("x:nobody:{}", hash_token("x"))]).contains("unknown role `nobody`"));
-        assert!(err(&[format!("y:viewer:{}", hash_token("y"))]).contains("token:ci"));
+        assert_eq!(
+            err(&[format!("y:viewer:{}", hash_token("y"))]),
+            "access file: bindings[0] (token:ci): no token named ci in FASTMOCK_ADMIN_TOKENS or FASTMOCK_ADMIN_TOKENS_FILE"
+        );
     }
 
     #[test]

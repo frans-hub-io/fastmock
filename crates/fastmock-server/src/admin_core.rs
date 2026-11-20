@@ -212,6 +212,9 @@ pub struct MockServerImportQuery {
     pub dry_run: Option<bool>,
     /// Space the stubs go to.
     pub space: Option<String>,
+    /// `request.host` for every imported stub that has none. For a space that owns hosts it must be one
+    /// of them; it defaults to the space's only host and is required when the space owns several.
+    pub host: Option<String>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -260,6 +263,7 @@ pub async fn import_mockserver(
     Json(body): Json<Value>,
 ) -> ApiResult<Json<ImportResult>> {
     let space = spaces::target(&app, &p, Permission::ImportsRun, q.space.as_deref())?;
+    let host = spaces::import_host(&app, space.as_deref(), q.host.as_deref())?;
     let (doc, w_tag, w_replace, w_dry) = match body {
         Value::Object(mut o)
             if o.contains_key("expectations") && !o.contains_key("httpRequest") =>
@@ -307,6 +311,7 @@ pub async fn import_mockserver(
             replace,
             dry_run,
             space: space.as_deref(),
+            host: host.as_deref(),
         },
         stubs,
         warnings,

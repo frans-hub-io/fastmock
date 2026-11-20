@@ -516,16 +516,25 @@ async fn no_escalation_through_tokens() {
             )
             .await;
         assert_eq!(h.status_of(&lead_editor).await, 200, "{name}");
-        for (body, required) in [
-            (
+        let (space_admin, _) = h
+            .create(
+                LEAD,
                 json!({"name": "a1", "role": "admin", "spaces": ["alpha"]}),
-                "contracts:secrets",
-            ),
-            (
-                json!({"name": "a4", "role": "viewer", "global": true}),
-                "tokens:write",
-            ),
-        ] {
+            )
+            .await;
+        let info = h.ok(Method::GET, "/info", &space_admin, None).await;
+        let alpha = info["principal"]["permissions"]["spaces"]["alpha"]
+            .as_array()
+            .cloned()
+            .unwrap();
+        assert!(
+            alpha.contains(&json!("tokens:write")) && !alpha.contains(&json!("contracts:secrets")),
+            "{name}: admin bound in a space holds the space permissions only, and contracts:secrets is global: {info}"
+        );
+        for (body, required) in [(
+            json!({"name": "a4", "role": "viewer", "global": true}),
+            "tokens:write",
+        )] {
             let (st, v) = h
                 .call(Method::POST, "/tokens", LEAD, Some(body.clone()))
                 .await;
@@ -563,7 +572,7 @@ async fn no_escalation_through_tokens() {
                 Method::POST,
                 "/tokens",
                 &deputy,
-                Some(json!({"name": "d1", "role": "admin", "spaces": ["alpha"]})),
+                Some(json!({"name": "d1", "role": "editor", "global": true})),
             )
             .await;
         assert_eq!(st, 403, "{name}: {v}");
@@ -593,11 +602,23 @@ async fn no_escalation_through_tokens() {
             .await;
 
         let mine = h.ok(Method::GET, "/tokens", LEAD, None).await;
-        assert_eq!(names(&mine), vec!["alpha-ci", "d2", "deputy"], "{name}");
+        assert_eq!(
+            names(&mine),
+            vec!["a1", "alpha-ci", "d2", "deputy"],
+            "{name}"
+        );
         let all = h.ok(Method::GET, "/tokens", ADMIN, None).await;
         assert_eq!(
             names(&all),
-            vec!["alpha-ci", "beta-admin", "both", "d2", "deputy", "root"],
+            vec![
+                "a1",
+                "alpha-ci",
+                "beta-admin",
+                "both",
+                "d2",
+                "deputy",
+                "root"
+            ],
             "{name}"
         );
         let beta = h.ok(Method::GET, "/tokens?space=beta", ADMIN, None).await;
@@ -716,7 +737,7 @@ async fn token_options_follow_the_escalation_rule() {
         vec![
             ("viewer".to_string(), false, alpha.clone()),
             ("editor".to_string(), false, alpha.clone()),
-            ("admin".to_string(), false, vec![]),
+            ("admin".to_string(), false, alpha.clone()),
             ("team-lead".to_string(), false, alpha.clone()),
         ]
     );
@@ -732,7 +753,7 @@ async fn token_options_follow_the_escalation_rule() {
             Method::POST,
             "/tokens",
             LEAD,
-            Some(json!({"name": "opt-admin", "role": "admin", "spaces": ["alpha"]})),
+            Some(json!({"name": "opt-admin", "role": "admin", "global": true})),
         )
         .await;
     assert_eq!(st, 403);

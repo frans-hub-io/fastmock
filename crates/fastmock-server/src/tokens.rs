@@ -252,7 +252,7 @@ pub struct CreateToken {
     /// Grant the role everywhere.
     #[serde(default)]
     pub global: Option<bool>,
-    /// Lifetime in days: 1 to `FASTMOCK_TOKENS_MAX_DAYS` (default 365); 90 when omitted.
+    /// Lifetime in days: 1 to `FASTMOCK_TOKENS_MAX_DAYS` (default 365); when omitted, 90 or `FASTMOCK_TOKENS_MAX_DAYS` when that is lower.
     #[serde(default)]
     #[schema(minimum = 1, example = 30)]
     pub expires_in_days: Option<u32>,
@@ -389,6 +389,20 @@ fn place(space: Option<&str>) -> String {
     }
 }
 
+/// Managed tokens need authentication: with `FASTMOCK_AUTH_DISABLED=true` every caller is an anonymous
+/// admin, and tokens minted then would stay valid once authentication is enabled again.
+fn auth_enabled(app: &AppState, what: &str) -> ApiResult<()> {
+    if app.auth.disabled() {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            format!(
+                "managed tokens cannot be {what} while authentication is disabled (FASTMOCK_AUTH_DISABLED=true)"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn deny(p: &Principal, msg: String) -> ApiError {
     p.count_denial();
     tracing::warn!(target: "audit", principal = %p.name, kind = p.kind.as_str(), reason = %msg, "admin request rejected: token escalation");
@@ -457,7 +471,7 @@ fn audit_space(t: &ApiToken) -> Option<&str> {
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
         (status = 403, description = "The caller cannot grant this role in these scopes", body = ErrorBody),
         (status = 404, description = "Unknown space", body = ErrorBody),
-        (status = 409, description = "An active token or a static token has this name", body = ErrorBody),
+        (status = 409, description = "An active token or a static token has this name, or authentication is disabled (`FASTMOCK_AUTH_DISABLED=true`)", body = ErrorBody),
     ),
     security(("bearer" = []))
 )]
@@ -466,6 +480,7 @@ pub async fn create_token(
     Extension(p): Extension<Principal>,
     Json(body): Json<CreateToken>,
 ) -> ApiResult<(StatusCode, Json<CreatedToken>)> {
+    auth_enabled(&app, "created")?;
     let name = body.name.trim().to_string();
     if !valid_name(&name) {
         return Err(bad(format!(
@@ -697,6 +712,7 @@ pub async fn get_token(
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
         (status = 403, description = "Requires tokens:write in every scope of the token", body = ErrorBody),
         (status = 404, description = "Not found", body = ErrorBody),
+        (status = 409, description = "Authentication is disabled (`FASTMOCK_AUTH_DISABLED=true`)", body = ErrorBody),
     ),
     security(("bearer" = []))
 )]
@@ -705,6 +721,7 @@ pub async fn revoke_token(
     Extension(p): Extension<Principal>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<TokenInfo>> {
+    auth_enabled(&app, "revoked")?;
     let own = p.token_id == Some(id);
     if !own && !p.permissions.anywhere(Permission::TokensWrite) {
         require(&p, Permission::TokensWrite, None)?;

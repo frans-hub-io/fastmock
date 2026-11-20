@@ -82,6 +82,11 @@ impl H {
         cfg.plugins = Some(vec![]);
         let file = access.map(access_file);
         cfg.access_file = file.clone();
+        Self::start_cfg(cfg).await
+    }
+
+    async fn start_cfg(cfg: Config) -> H {
+        let file = cfg.access_file.clone();
         let (app, data, admin, _policy) = fastmock_server::build(cfg, prom()).await.unwrap();
         let (tx, rx) = watch::channel(false);
         let dl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -279,7 +284,8 @@ async fn without_access_file_every_openapi_route_keeps_its_role() {
     assert_eq!(st, 403);
     assert_eq!(
         v,
-        json!({"error": "requires role admin", "details": [], "required": "admin"})
+        json!({"error": "requires role admin", "details": []}),
+        "the handler denial of earlier versions"
     );
 }
 
@@ -1750,4 +1756,581 @@ async fn info_reports_stored_stubs_that_break_their_space_rules() {
             "{name}: new on every start"
         );
     }
+}
+
+/// With an access file every 403 has the `forbidden` shape, and `required` names what the operation
+/// really needs (admin-only operations name admin, not the editor role of the route).
+#[tokio::test]
+async fn every_forbidden_answer_has_one_shape_with_an_access_file() {
+    let h = H::start(StorageKind::Memory, access_tokens(), Some(ACCESS)).await;
+    let forbidden = |detail: &str, required: &str| json!({"error": "forbidden", "details": [detail], "required": required});
+    let admin_needed = forbidden("requires role admin", "admin");
+    let secret = json!({"spec": {"openapi": "3.0.3", "info": {"title": "t", "version": "1"}, "paths": {}},
+        "targetUrl": "http://127.0.0.1:9/", "secretHeaders": {"x-api-key": "k"}});
+    let token_id = uuid::Uuid::now_v7();
+    for (m, path, token, body, want) in [
+        (
+            Method::GET,
+            "/audit".to_string(),
+            EDITOR,
+            None,
+            admin_needed.clone(),
+        ),
+        (
+            Method::POST,
+            "/reset".to_string(),
+            EDITOR,
+            None,
+            admin_needed.clone(),
+        ),
+        (
+            Method::POST,
+            "/reset".to_string(),
+            VIEWER,
+            None,
+            admin_needed.clone(),
+        ),
+        (
+            Method::DELETE,
+            "/stubs".to_string(),
+            VIEWER,
+            None,
+            admin_needed.clone(),
+        ),
+        (
+            Method::DELETE,
+            "/stubs".to_string(),
+            EDITOR,
+            None,
+            admin_needed.clone(),
+        ),
+        (
+            Method::DELETE,
+            "/stubs?tag=x".to_string(),
+            VIEWER,
+            None,
+            forbidden("requires role editor", "editor"),
+        ),
+        (
+            Method::DELETE,
+            "/stubs".to_string(),
+            AUTHOR,
+            None,
+            forbidden("requires permission stubs:purge", "stubs:purge"),
+        ),
+        (
+            Method::DELETE,
+            format!("/tokens/{token_id}"),
+            PAY,
+            None,
+            forbidden("requires permission tokens:write", "tokens:write"),
+        ),
+        (
+            Method::DELETE,
+            format!("/tokens/{token_id}"),
+            VIEWER,
+            None,
+            forbidden("requires role admin", "admin"),
+        ),
+        (
+            Method::POST,
+            "/contract-tests".to_string(),
+            EDITOR,
+            Some(secret.clone()),
+            admin_needed.clone(),
+        ),
+        (
+            Method::POST,
+            "/contract-tests?space=payments".to_string(),
+            PAY,
+            Some(secret.clone()),
+            forbidden("requires permission contracts:secrets", "contracts:secrets"),
+        ),
+    ] {
+        let (st, v) = h.call(m.clone(), &path, token, body).await;
+        assert_eq!((st, &v), (403, &want), "{m} {path}");
+    }
+    let r = h
+        .http
+        .get(format!("{}/__admin/stubs", h.admin))
+        .bearer_auth(ADMIN)
+        .header("origin", "https://evil.example.com")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+    assert_eq!(
+        r.json::<Value>().await.unwrap(),
+        json!({"error": "forbidden", "details": ["origin not allowed"]})
+    );
+
+    let legacy = H::start(StorageKind::Memory, legacy_tokens(), None).await;
+    let r = legacy
+        .http
+        .get(format!("{}/__admin/stubs", legacy.admin))
+        .bearer_auth(ADMIN)
+        .header("origin", "https://evil.example.com")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.json::<Value>().await.unwrap(),
+        json!({"error": "origin not allowed", "details": []}),
+        "the body of earlier versions without an access file"
+    );
+}
+
+/// `contracts:secrets` is global: `admin` bound in a space lacks it, a custom role holding it must be
+/// bound globally, and the access file refuses it in a space binding.
+#[tokio::test]
+async fn contract_secrets_need_the_permission_globally() {
+    const DOC: &str = r#"
+roles:
+  - name: secret-runner
+    permissions: [contracts:read, contracts:write, contracts:secrets]
+spaces:
+  - name: payments
+bindings:
+  - subject: token:spadmin
+    role: admin
+    spaces: [payments]
+  - subject: token:runner
+    role: secret-runner
+    global: true
+"#;
+    const SPADMIN: &str = "fm_space_admin_token_for_access_tests_0123";
+    const RUNNER: &str = "fm_secret_runner_token_for_access_tests_012";
+    let mut tokens = legacy_tokens();
+    tokens.push(format!("spadmin::{}", hash_token(SPADMIN)));
+    tokens.push(format!("runner::{}", hash_token(RUNNER)));
+    let h = H::start(StorageKind::Memory, tokens.clone(), Some(DOC)).await;
+    let body = json!({"spec": {"openapi": "3.0.3", "info": {"title": "t", "version": "1"}, "paths": {}},
+        "targetUrl": "http://127.0.0.1:9/", "secretHeaders": {"x-api-key": "k"}});
+    let (st, v) = h
+        .call(
+            Method::POST,
+            "/contract-tests?space=payments",
+            SPADMIN,
+            Some(body.clone()),
+        )
+        .await;
+    assert_eq!(
+        (st, v),
+        (
+            403,
+            json!({"error": "forbidden", "details": ["requires permission contracts:secrets"], "required": "contracts:secrets"})
+        )
+    );
+    let info = h.ok(Method::GET, "/info", SPADMIN, None).await;
+    let perms = info["principal"]["permissions"]["spaces"]["payments"]
+        .as_array()
+        .cloned()
+        .unwrap();
+    assert!(perms.contains(&json!("contracts:write")), "{info}");
+    assert!(!perms.contains(&json!("contracts:secrets")), "{info}");
+    for token in [RUNNER, ADMIN] {
+        let (st, v) = h
+            .call(Method::POST, "/contract-tests", token, Some(body.clone()))
+            .await;
+        assert_eq!(st, 400, "past the permission check: {v}");
+    }
+
+    let mut cfg = Config::for_tests(StorageKind::Memory, tokens);
+    cfg.plugins = Some(vec![]);
+    cfg.access_file = Some(access_file(&DOC.replace(
+        "role: secret-runner\n    global: true",
+        "role: secret-runner\n    spaces: [payments]",
+    )));
+    let e = match fastmock_server::build(cfg, prom()).await {
+        Ok(_) => panic!("a space binding of contracts:secrets was accepted"),
+        Err(e) => format!("{e:#}"),
+    };
+    assert!(
+        e.contains("bindings[1] (token:runner): role `secret-runner` lists contracts:secrets, a global permission"),
+        "{e}"
+    );
+    assert_eq!(e.lines().count(), 1, "{e}");
+}
+
+/// An id taken by a stub the caller cannot see (or in another area) is "already in use"; only an id of a
+/// visible stub in the same area suggests PUT.
+#[tokio::test]
+async fn cross_space_id_conflicts_do_not_suggest_put() {
+    for (name, storage) in storages().await {
+        let h = H::start(storage, space_tokens(), Some(SPACES)).await;
+        let id = uuid::Uuid::now_v7();
+        h.ok(
+            Method::POST,
+            "/stubs",
+            PAY_T,
+            Some(json!({"id": id, "request": {"urlPath": "/pay/a"}, "response": {"status": 200}})),
+        )
+        .await;
+        for (token, stub) in [
+            (
+                BILL_T,
+                json!({"id": id, "request": {"urlPath": "/bill/a", "host": {"equalTo": "bill.example.com"}}, "response": {"status": 200}}),
+            ),
+            (
+                ADMIN,
+                json!({"id": id, "request": {"urlPath": "/g"}, "response": {"status": 200}}),
+            ),
+        ] {
+            let (st, v) = h.call(Method::POST, "/stubs", token, Some(stub)).await;
+            assert_eq!(
+                (st, v),
+                (409, json!({"error": "id is already in use", "details": []})),
+                "{name}"
+            );
+        }
+        let (st, v) = h
+            .call(
+                Method::POST,
+                "/stubs",
+                PAY_T,
+                Some(json!({"id": id, "request": {"urlPath": "/pay/b"}, "response": {"status": 200}})),
+            )
+            .await;
+        assert_eq!(
+            (st, v["error"].clone()),
+            (409, json!("stub with this id exists; use PUT")),
+            "{name}"
+        );
+    }
+}
+
+const HOSTS: &str = r#"
+spaces:
+  - name: one
+    pathPrefixes: [/one/]
+    hosts: [one.example.com]
+  - name: many
+    hosts: [a.example.com, b.example.com]
+  - name: plain
+    pathPrefixes: [/plain/]
+"#;
+
+/// Every importer takes `host`; imports into a space with one host default to it, a space with several
+/// hosts needs it, and the stubs get `request.host`.
+#[tokio::test]
+async fn imports_into_spaces_that_own_hosts_set_request_host() {
+    let h = H::start(StorageKind::Memory, legacy_tokens(), Some(HOSTS)).await;
+    let openapi = |path: &str| {
+        json!({"spec": {"openapi": "3.0.3", "info": {"title": "t", "version": "1"},
+            "paths": {path: {"get": {"responses": {"200": {"description": "ok"}}}}}}, "tag": "oa"})
+    };
+    h.ok(
+        Method::POST,
+        "/import/openapi?space=one",
+        ADMIN,
+        Some(openapi("/one/pets")),
+    )
+    .await;
+    h.ok(
+        Method::POST,
+        "/import/wiremock?space=one",
+        ADMIN,
+        Some(json!({"mappings": {"mappings": [{"request": {"method": "GET", "url": "/one/wm"}, "response": {"status": 200, "body": "wm"}}]}})),
+    )
+    .await;
+    h.ok(
+        Method::POST,
+        "/import/mockserver?space=one",
+        ADMIN,
+        Some(json!([{"httpRequest": {"method": "GET", "path": "/one/ms"}, "httpResponse": {"statusCode": 200}}])),
+    )
+    .await;
+    h.ok(
+        Method::POST,
+        "/import/postman?space=one",
+        ADMIN,
+        Some(json!({"collection": {"info": {"name": "Shop", "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+            "item": [{"name": "Get", "request": {"method": "GET", "url": "https://api.example.com/one/pm"},
+                "response": [{"name": "ok", "code": 200, "body": "pm"}]}]}})),
+    )
+    .await;
+    h.ok(
+        Method::POST,
+        "/import/har?space=one",
+        ADMIN,
+        Some(json!({"har": {"log": {"version": "1.2", "entries": [{"request": {"method": "GET", "url": "https://api.example.com/one/har", "headers": []},
+            "response": {"status": 200, "headers": [], "content": {"mimeType": "text/plain", "text": "har"}}}]}}})),
+    )
+    .await;
+    let r = h
+        .http
+        .post(format!("{}/__admin/import?space=one&tag=auto", h.admin))
+        .bearer_auth(ADMIN)
+        .body(r#"{"mappings": [{"request": {"method": "GET", "url": "/one/auto"}, "response": {"status": 200}}]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    h.ok(
+        Method::POST,
+        "/stubs/import?space=one",
+        ADMIN,
+        Some(
+            json!({"stubs": [{"request": {"urlPath": "/one/bulk"}, "response": {"status": 200}}]}),
+        ),
+    )
+    .await;
+    let v = h.ok(Method::GET, "/stubs?space=one", ADMIN, None).await;
+    let stubs = v["stubs"].as_array().unwrap();
+    assert_eq!(stubs.len(), 7, "{v}");
+    for s in stubs {
+        assert_eq!(
+            s["request"]["host"],
+            json!({"equalTo": "one.example.com"}),
+            "{s}"
+        );
+    }
+    assert_eq!(h.hit_host("/one/wm", "one.example.com").await.0, 200);
+
+    let (st, v) = h
+        .call(
+            Method::POST,
+            "/import/openapi?space=many",
+            ADMIN,
+            Some(openapi("/m")),
+        )
+        .await;
+    assert_eq!(st, 400, "{v}");
+    assert_eq!(
+        v["error"],
+        "space many owns several hosts (a.example.com, b.example.com): set the host parameter to the one the imported stubs answer"
+    );
+    let (st, v) = h
+        .call(
+            Method::POST,
+            "/import/openapi?space=many&host=c.example.com",
+            ADMIN,
+            Some(openapi("/m")),
+        )
+        .await;
+    assert_eq!(st, 400, "{v}");
+    assert!(
+        v["error"]
+            .as_str()
+            .unwrap()
+            .contains("is not a host of space many"),
+        "{v}"
+    );
+    h.ok(
+        Method::POST,
+        "/import/openapi?space=many&host=B.example.com",
+        ADMIN,
+        Some(openapi("/m")),
+    )
+    .await;
+    let v = h.ok(Method::GET, "/stubs?space=many", ADMIN, None).await;
+    assert_eq!(
+        v["stubs"][0]["request"]["host"],
+        json!({"equalTo": "b.example.com"})
+    );
+
+    h.ok(
+        Method::POST,
+        "/import/openapi?space=plain",
+        ADMIN,
+        Some(openapi("/plain/x")),
+    )
+    .await;
+    let v = h.ok(Method::GET, "/stubs?space=plain", ADMIN, None).await;
+    assert!(v["stubs"][0]["request"].get("host").is_none(), "{v}");
+    let r = h
+        .http
+        .post(format!(
+            "{}/__admin/import?format=graphql&host=a.example.com",
+            h.admin
+        ))
+        .bearer_auth(ADMIN)
+        .body("type Query { a: Int }")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+}
+
+/// With authentication disabled every caller is an anonymous admin: managed tokens minted then would
+/// outlive the mode, so they cannot be created or revoked.
+#[tokio::test]
+async fn managed_tokens_need_authentication() {
+    let mut cfg = Config::for_tests(StorageKind::Memory, vec![]);
+    cfg.plugins = Some(vec![]);
+    cfg.auth_disabled = true;
+    let h = H::start_cfg(cfg).await;
+    let (st, v) = h
+        .call(
+            Method::POST,
+            "/tokens",
+            "anything",
+            Some(json!({"name": "ci", "role": "admin", "global": true})),
+        )
+        .await;
+    assert_eq!(
+        (st, v),
+        (
+            409,
+            json!({"error": "managed tokens cannot be created while authentication is disabled (FASTMOCK_AUTH_DISABLED=true)", "details": []})
+        )
+    );
+    let (st, v) = h
+        .call(
+            Method::DELETE,
+            &format!("/tokens/{}", uuid::Uuid::now_v7()),
+            "anything",
+            None,
+        )
+        .await;
+    assert_eq!(st, 409, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("cannot be revoked"));
+    assert_eq!(
+        h.ok(Method::GET, "/tokens", "anything", None).await["tokens"],
+        json!([])
+    );
+}
+
+/// Runs `fastmock` with only the given `FASTMOCK_*` variables; a server that does not exit within 30
+/// seconds is killed. Returns whether it succeeded and its output.
+fn run_fastmock(args: &[&str], env: &[(&str, String)], stdin: Option<&str>) -> (bool, String) {
+    use std::io::Write;
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_fastmock"));
+    for (k, _) in std::env::vars() {
+        if k.starts_with("FASTMOCK_") {
+            cmd.env_remove(k);
+        }
+    }
+    cmd.args(args)
+        .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    if let Some(input) = stdin {
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+    }
+    drop(child.stdin.take());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() > deadline {
+            child.kill().unwrap();
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let o = child.wait_with_output().unwrap();
+    (
+        o.status.success(),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        ),
+    )
+}
+
+fn serve_env(extra: &[(&'static str, String)]) -> Vec<(&'static str, String)> {
+    let mut env = vec![
+        ("FASTMOCK_STORAGE", "memory".to_string()),
+        ("FASTMOCK_LISTEN", "127.0.0.1:0".to_string()),
+        ("FASTMOCK_ADMIN_LISTEN", "127.0.0.1:1".to_string()),
+        ("FASTMOCK_LOG_FORMAT", "text".to_string()),
+        (
+            "FASTMOCK_ADMIN_TOKENS",
+            format!("ci:viewer:{}", hash_token("x")),
+        ),
+    ];
+    env.extend_from_slice(extra);
+    env
+}
+
+#[test]
+fn serve_refuses_a_blank_api_audience() {
+    for blank in ["", "  "] {
+        let (ok, text) = run_fastmock(
+            &["serve"],
+            &serve_env(&[
+                ("FASTMOCK_OIDC_ISSUER", "http://127.0.0.1:9/realms/x".into()),
+                ("FASTMOCK_OIDC_CLIENT_ID", "fastmock".into()),
+                ("FASTMOCK_OIDC_CLIENT_SECRET", "s3cret".into()),
+                (
+                    "FASTMOCK_OIDC_REDIRECT_URL",
+                    "http://127.0.0.1:9/__admin/auth/callback".into(),
+                ),
+                ("FASTMOCK_OIDC_API_AUDIENCE", blank.into()),
+            ]),
+            None,
+        );
+        assert!(!ok, "{text}");
+        assert!(
+            text.contains("FASTMOCK_OIDC_API_AUDIENCE is set but empty"),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn serve_names_the_binding_of_an_unknown_token_on_one_line() {
+    let f = access_file(
+        "bindings:\n  - {subject: 'user:a', role: viewer, global: true}\n  - {subject: 'token:nosuch', role: viewer, global: true}\n",
+    );
+    let (ok, text) = run_fastmock(
+        &["serve"],
+        &serve_env(&[("FASTMOCK_ACCESS_FILE", f.display().to_string())]),
+        None,
+    );
+    assert!(!ok, "{text}");
+    let want = format!(
+        "access file {}: bindings[1] (token:nosuch): no token named nosuch in FASTMOCK_ADMIN_TOKENS or FASTMOCK_ADMIN_TOKENS_FILE",
+        f.display()
+    );
+    let line = text
+        .lines()
+        .find(|l| l.contains("bindings[1]"))
+        .unwrap_or_default();
+    assert_eq!(line, format!("Error: {want}"), "{text}");
+    assert!(!text.contains("Caused by"), "{text}");
+
+    let f = access_file("roles: [{name: stub-author, permissions: [stubs:wrte]}]\n");
+    let (ok, text) = run_fastmock(
+        &["serve"],
+        &serve_env(&[("FASTMOCK_ACCESS_FILE", f.display().to_string())]),
+        None,
+    );
+    assert!(!ok, "{text}");
+    assert!(
+        text.contains(&format!(
+            "Error: access file {}: roles[0] (stub-author): unknown permission `stubs:wrte`",
+            f.display()
+        )),
+        "{text}"
+    );
+    assert!(!text.contains("Caused by"), "{text}");
+}
+
+#[test]
+fn hash_token_prints_only_the_hex_hash() {
+    let want = format!("{}\n", hash_token("my-dev-token"));
+    let (ok, out) = run_fastmock(&["hash-token", "my-dev-token"], &[], None);
+    assert!(ok);
+    assert_eq!(out, want);
+    let (ok, out) = run_fastmock(&["hash-token"], &[], Some("my-dev-token\n"));
+    assert!(ok);
+    assert_eq!(out, want);
+    let (ok, out) = run_fastmock(&["hash-token", "--generate"], &[], None);
+    assert!(ok);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 2, "{out}");
+    let token = lines[0].strip_prefix("token: fm_").unwrap();
+    assert_eq!(token.len(), 64);
+    assert_eq!(
+        lines[1],
+        format!("hash:  {}", hash_token(&format!("fm_{token}")))
+    );
 }

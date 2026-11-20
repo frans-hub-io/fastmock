@@ -14,7 +14,7 @@ use crate::admin::{
     ApiError, ApiResult, ErrorBody, ImportResult, ImportTarget, bad, finish_import, valid_tag, yes,
 };
 use crate::auth::Principal;
-use crate::spaces::{self, SpaceQuery};
+use crate::spaces::{self, ImportQuery};
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
@@ -125,6 +125,7 @@ async fn run_postman(
     post, path = "/__admin/import/postman", tag = "imports", operation_id = "importPostman",
     summary = "Generate stubs from a Postman collection",
     description = "Every saved example response becomes a stub: method, path (`:id` and unresolved `{{var}}` segments become path parameters), enabled query parameters and, when a request has several examples, its raw body. `{{var}}` is resolved from collection and folder variables; folders become tags. Requests without saved examples are skipped with a warning. Response bodies are not templated.",
+    params(ImportQuery),
     request_body(content = PostmanImport, example = json!({"collection": {"info": {"name": "Shop", "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"}, "variable": [{"key": "baseUrl", "value": "https://api.example.com"}], "item": [{"name": "Get user", "request": {"method": "GET", "url": "{{baseUrl}}/users/:id"}, "response": [{"name": "ok", "code": 200, "header": [{"key": "Content-Type", "value": "application/json"}], "body": "{\"id\": 1}"}]}]}, "tag": "shop"})),
     responses(
         (status = 200, description = "Import result", body = ImportResult),
@@ -138,10 +139,11 @@ async fn run_postman(
 pub async fn import_postman(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
-    Query(q): Query<SpaceQuery>,
+    Query(q): Query<ImportQuery>,
     Json(b): Json<PostmanImport>,
 ) -> ApiResult<Json<ImportResult>> {
     let space = spaces::target(&app, &p, Permission::ImportsRun, q.space.as_deref())?;
+    let host = spaces::import_host(&app, space.as_deref(), q.host.as_deref())?;
     let doc = document(b.collection, "collection")?;
     run_postman(
         &app,
@@ -153,6 +155,7 @@ pub async fn import_postman(
             replace: b.replace,
             dry_run: b.dry_run,
             space: space.as_deref(),
+            host: host.as_deref(),
         },
     )
     .await
@@ -233,6 +236,7 @@ async fn run_har(
     post, path = "/__admin/import/har", tag = "imports", operation_id = "importHar",
     summary = "Generate stubs from a HAR 1.2 capture",
     description = "Each distinct request (method, path, query, body) becomes a stub replaying the first recorded response. Failed entries are skipped; sensitive headers, query parameters and body fields never reach the stubs.",
+    params(ImportQuery),
     request_body(content = HarImport, example = json!({"har": {"log": {"version": "1.2", "entries": [{"request": {"method": "GET", "url": "https://api.example.com/users/7"}, "response": {"status": 200, "headers": [], "content": {"mimeType": "application/json", "text": "{\"id\":7}"}}}]}}, "tag": "browser", "mimeTypes": ["application/json"]})),
     responses(
         (status = 200, description = "Import result", body = ImportResult),
@@ -246,10 +250,11 @@ async fn run_har(
 pub async fn import_har(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
-    Query(q): Query<SpaceQuery>,
+    Query(q): Query<ImportQuery>,
     Json(b): Json<HarImport>,
 ) -> ApiResult<Json<ImportResult>> {
     let space = spaces::target(&app, &p, Permission::ImportsRun, q.space.as_deref())?;
+    let host = spaces::import_host(&app, space.as_deref(), q.host.as_deref())?;
     let doc = document(b.har, "har")?;
     run_har(
         &app,
@@ -261,6 +266,7 @@ pub async fn import_har(
             replace: b.replace,
             dry_run: b.dry_run,
             space: space.as_deref(),
+            host: host.as_deref(),
         },
         HarFilters {
             mime_types: b.mime_types,
@@ -441,6 +447,10 @@ pub struct AutoImportQuery {
     format: Option<String>,
     /// Space the stubs go to (OpenAPI, WireMock, MockServer, Postman and HAR only).
     space: Option<String>,
+    /// `request.host` for every imported stub that has none (OpenAPI, WireMock, MockServer, Postman and HAR
+    /// only). For a space that owns hosts it must be one of them; it defaults to the space's only host and
+    /// is required when the space owns several.
+    host: Option<String>,
 }
 
 fn unsupported(format: Format, hint: &str) -> ApiError {
@@ -518,17 +528,19 @@ pub async fn import_auto(
         format,
         Format::GraphQl | Format::Wsdl | Format::SoapUi | Format::Microcks | Format::AsyncApi
     );
-    let space = if global_only {
-        if q.space.is_some() {
+    let (space, host) = if global_only {
+        if q.space.is_some() || q.host.is_some() {
             return Err(bad(format!(
-                "{} documents import into the global area only; remove space",
+                "{} documents import into the global area only; remove space and host",
                 format.name()
             )));
         }
         require(&p, Permission::ImportsRun, None)?;
-        None
+        (None, None)
     } else {
-        spaces::target(&app, &p, Permission::ImportsRun, q.space.as_deref())?
+        let space = spaces::target(&app, &p, Permission::ImportsRun, q.space.as_deref())?;
+        let host = spaces::import_host(&app, space.as_deref(), q.host.as_deref())?;
+        (space, host)
     };
     if matches!(
         format,
@@ -555,6 +567,7 @@ pub async fn import_auto(
         replace,
         dry_run,
         space: space.as_deref(),
+        host: host.as_deref(),
     };
     let doc = match &parsed {
         Parsed::Doc(v) => Some(v),

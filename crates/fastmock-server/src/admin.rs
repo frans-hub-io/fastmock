@@ -39,18 +39,46 @@ fn required_of(status: StatusCode, msg: &str) -> Option<String> {
         .map(String::from)
 }
 
+/// A `403` answered by a handler. Its body is `{"error": <message>, "details": []}` as in earlier
+/// versions; with an access file or OIDC, [`admin_auth`] rewrites it to [`forbidden`].
+#[derive(Clone, Debug)]
+pub struct Denial {
+    pub message: String,
+    pub required: Option<String>,
+}
+
+/// The `403` body used whenever an access file or OIDC is configured.
+pub fn forbidden(message: String, required: Option<String>) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(ErrorBody {
+            error: "forbidden".into(),
+            details: vec![message],
+            required,
+        }),
+    )
+        .into_response()
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let required = required_of(self.0, &self.1);
-        (
+        let denial = (self.0 == StatusCode::FORBIDDEN).then(|| Denial {
+            required: required_of(self.0, &self.1),
+            message: self.1.clone(),
+        });
+        let mut r = (
             self.0,
             Json(ErrorBody {
                 error: self.1,
                 details: vec![],
-                required,
+                required: None,
             }),
         )
-            .into_response()
+            .into_response();
+        if let Some(d) = denial {
+            r.extensions_mut().insert(d);
+        }
+        r
     }
 }
 
@@ -104,21 +132,14 @@ pub fn require(p: &Principal, perm: Permission, space: Option<&str>) -> ApiResul
         return Ok(());
     }
     p.count_denial();
-    tracing::warn!(target: "audit", principal = %p.name, kind = p.kind.as_str(), permission = %perm, space = space.unwrap_or_default(), "admin request rejected: permission missing");
+    tracing::warn!(target: "audit", principal = %p.name, kind = p.kind.as_str(), permission = %perm, space, "admin request rejected: permission missing");
     Err(ApiError(StatusCode::FORBIDDEN, p.denial(perm, space).0))
 }
 
-/// Handler check of the admin-only `/audit` and `/reset`: principals holding only global built-in
-/// roles get the denial body of earlier versions.
+/// Handler check of the admin-only `/audit` and `/reset`. Without an access file and OIDC the
+/// middleware lets viewers (`/audit`) and editors (`/reset`) through, as earlier versions did, and
+/// this check answers with the earlier denial body.
 fn admin_route_denial(p: &Principal, perm: Permission) -> Option<Response> {
-    if p.legacy && !p.allowed(perm, None) {
-        p.count_denial();
-        tracing::warn!(target: "audit", principal = %p.name, kind = p.kind.as_str(), permission = %perm, "admin request rejected: permission missing");
-        return Some(
-            DetailedError(StatusCode::FORBIDDEN, "requires role admin".into(), vec![])
-                .into_response(),
-        );
-    }
     require(p, perm, None)
         .err()
         .map(IntoResponse::into_response)
@@ -136,7 +157,7 @@ pub async fn audit_event_in(
     detail: Value,
 ) {
     metrics::counter!("fastmock_admin_changes_total", "action" => action.to_string()).increment(1);
-    tracing::info!(target: "audit", principal = %p.name, kind = p.kind.as_str(), role = %p.role_label, space = space.unwrap_or_default(), action, detail = %detail, "admin change");
+    tracing::info!(target: "audit", principal = %p.name, kind = p.kind.as_str(), role = %p.role_label, space, action, detail = %detail, "admin change");
     let e = fastmock_core::AuditEvent {
         id: 0,
         at: chrono::Utc::now(),
@@ -510,10 +531,17 @@ pub async fn create_stub(
     stub.space = spaces::target(&app, &p, Permission::StubsWrite, requested.as_deref())?;
     spaces::check_stub(&app, &stub).map_err(bad)?;
     if !app.stores.stubs.insert(&stub).await? {
-        return Err(ApiError(
-            StatusCode::CONFLICT,
-            "stub with this id exists; use PUT".into(),
-        ));
+        let existing = app.stores.stubs.get(stub.id).await?;
+        let msg = match existing {
+            Some(e)
+                if e.space == stub.space
+                    && p.allowed(Permission::StubsRead, e.space.as_deref()) =>
+            {
+                "stub with this id exists; use PUT"
+            }
+            _ => "id is already in use",
+        };
+        return Err(ApiError(StatusCode::CONFLICT, msg.into()));
     }
     refresh(&app).await?;
     audit_event_in(
@@ -1105,7 +1133,7 @@ pub struct BulkImportResult {
     post, path = "/__admin/stubs/import", tag = "stubs", operation_id = "importStubs",
     summary = "Bulk import FastMock stubs",
     description = "With `replaceTag`, stubs carrying that tag (in the target space) are deleted first and the tag is added to every imported stub, in one transaction. At most 10000 stubs. Every stub goes to the target space (`space` parameter; without it the global area or the caller's only space).",
-    params(SpaceQuery),
+    params(spaces::ImportQuery),
     request_body = ImportBody,
     responses(
         (status = 200, description = "Imported", body = BulkImportResult),
@@ -1119,10 +1147,11 @@ pub struct BulkImportResult {
 pub async fn import_stubs(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
-    Query(q): Query<SpaceQuery>,
+    Query(q): Query<spaces::ImportQuery>,
     Json(body): Json<ImportBody>,
 ) -> ApiResult<Json<BulkImportResult>> {
     let target = spaces::target(&app, &p, Permission::ImportsRun, q.space.as_deref())?;
+    let host = spaces::import_host(&app, target.as_deref(), q.host.as_deref())?;
     if body.stubs.len() > 10_000 {
         return Err(bad("at most 10000 stubs per import"));
     }
@@ -1136,6 +1165,7 @@ pub async fn import_stubs(
             )));
         }
         s.space = target.clone();
+        spaces::set_import_host(&mut s, host.as_deref());
         spaces::check_stub(&app, &s).map_err(|e| bad(format!("stubs[{i}]: {e}")))?;
         if let Some(tag) = &body.replace_tag
             && !s.tags.contains(tag)
@@ -2126,6 +2156,8 @@ pub struct ImportTarget<'a> {
     pub dry_run: bool,
     /// Space the stubs go to; `None` for the global area.
     pub space: Option<&'a str>,
+    /// `request.host` for stubs without one ([`spaces::import_host`]).
+    pub host: Option<&'a str>,
 }
 
 pub async fn finish_import(
@@ -2141,6 +2173,7 @@ pub async fn finish_import(
         replace,
         dry_run,
         space,
+        host,
     } = t;
     if stubs.len() > 10_000 {
         return Err(bad(format!(
@@ -2153,6 +2186,7 @@ pub async fn finish_import(
     let mut valid = Vec::with_capacity(stubs.len());
     for mut s in stubs {
         s.space = space.map(String::from);
+        spaces::set_import_host(&mut s, host);
         match app.engine.validate(&s) {
             Ok(()) => {
                 if let Err(e) = spaces::check_stub(app, &s) {
@@ -2281,7 +2315,7 @@ pub fn valid_tag(tag: &str) -> ApiResult<()> {
     post, path = "/__admin/import/openapi", tag = "imports", operation_id = "importOpenApi",
     summary = "Generate stubs from an OpenAPI 3 document",
     description = "The stubs go to the target space (`space` parameter); only imports into the global area are recorded in the service catalog.",
-    params(SpaceQuery),
+    params(spaces::ImportQuery),
     request_body(content = OpenApiImport, example = json!({"spec": "openapi: 3.0.3\ninfo: {title: Pets, version: '1'}\npaths: {}", "tag": "petstore"})),
     responses(
         (status = 200, description = "Import result", body = ImportResult),
@@ -2295,10 +2329,11 @@ pub fn valid_tag(tag: &str) -> ApiResult<()> {
 pub async fn import_openapi(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
-    Query(q): Query<SpaceQuery>,
+    Query(q): Query<spaces::ImportQuery>,
     Json(b): Json<OpenApiImport>,
 ) -> ApiResult<Json<ImportResult>> {
     let space = spaces::target(&app, &p, Permission::ImportsRun, q.space.as_deref())?;
+    let host = spaces::import_host(&app, space.as_deref(), q.host.as_deref())?;
     valid_tag(&b.tag)?;
     let doc = match &b.spec {
         Value::String(text) => fastmock_core::openapi::parse_document(text)
@@ -2320,6 +2355,7 @@ pub async fn import_openapi(
             replace: b.replace,
             dry_run: b.dry_run,
             space: space.as_deref(),
+            host: host.as_deref(),
         },
         r.stubs,
         r.warnings,
@@ -2358,7 +2394,7 @@ fn wiremock_tag() -> String {
     post, path = "/__admin/import/wiremock", tag = "imports", operation_id = "importWireMock",
     summary = "Convert WireMock mappings into stubs",
     description = "Unsupported parts come back as warnings. The stubs go to the target space (`space` parameter).",
-    params(SpaceQuery),
+    params(spaces::ImportQuery),
     request_body(content = WireMockImport, example = json!({"mappings": {"mappings": [{"request": {"method": "GET", "url": "/ping"}, "response": {"status": 200, "body": "pong"}}]}, "tag": "legacy"})),
     responses(
         (status = 200, description = "Import result", body = ImportResult),
@@ -2372,10 +2408,11 @@ fn wiremock_tag() -> String {
 pub async fn import_wiremock(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
-    Query(q): Query<SpaceQuery>,
+    Query(q): Query<spaces::ImportQuery>,
     Json(b): Json<WireMockImport>,
 ) -> ApiResult<Json<ImportResult>> {
     let space = spaces::target(&app, &p, Permission::ImportsRun, q.space.as_deref())?;
+    let host = spaces::import_host(&app, space.as_deref(), q.host.as_deref())?;
     valid_tag(&b.tag)?;
     let mut c = fastmock_core::wiremock::convert(&b.mappings);
     for s in &mut c.stubs {
@@ -2390,6 +2427,7 @@ pub async fn import_wiremock(
             replace: b.replace,
             dry_run: b.dry_run,
             space: space.as_deref(),
+            host: host.as_deref(),
         },
         c.stubs,
         c.warnings,

@@ -89,6 +89,61 @@ pub fn target(
     }
 }
 
+#[derive(Deserialize, Default, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ImportQuery {
+    /// Space the stubs go to. Without it, the global area, or the caller's only space when it is bound to
+    /// spaces.
+    pub space: Option<String>,
+    /// `request.host` for every imported stub that has none. For a space that owns hosts it must be one of
+    /// them; it defaults to the space's only host and is required when the space owns several.
+    pub host: Option<String>,
+}
+
+/// The host that imported stubs without a `request.host` matcher get: the `host` parameter (one of the
+/// space's hosts when the space owns hosts), else the only host of the space.
+pub fn import_host(
+    app: &AppState,
+    space: Option<&str>,
+    host: Option<&str>,
+) -> ApiResult<Option<String>> {
+    let owned: &[String] = space
+        .and_then(|s| app.auth.access().space(s))
+        .map(|d| d.hosts.as_slice())
+        .unwrap_or_default();
+    let name = space.unwrap_or_default();
+    let Some(raw) = host.map(str::trim).filter(|h| !h.is_empty()) else {
+        return match owned {
+            [] => Ok(None),
+            [one] => Ok(Some(one.clone())),
+            many => Err(bad(format!(
+                "space {name} owns several hosts ({}): set the host parameter to the one the imported stubs answer",
+                many.join(", ")
+            ))),
+        };
+    };
+    let h = crate::access::check_host(raw).map_err(|e| bad(e.to_string()))?;
+    if !owned.is_empty() && !owned.contains(&h) {
+        return Err(bad(format!(
+            "host {raw} is not a host of space {name}; use one of {}",
+            owned.join(", ")
+        )));
+    }
+    Ok(Some(h))
+}
+
+/// Gives a stub without a `request.host` matcher the import host.
+pub fn set_import_host(stub: &mut Stub, host: Option<&str>) {
+    if let Some(h) = host
+        && stub.request.host.is_none()
+    {
+        stub.request.host = Some(fastmock_core::model::StringMatcher {
+            equal_to: Some(h.to_string()),
+            ..Default::default()
+        });
+    }
+}
+
 /// Access to one existing item that lives in `space`: 404 when the caller cannot even read there, 403
 /// when it can read but lacks `perm`.
 pub fn item(

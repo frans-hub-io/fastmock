@@ -101,6 +101,11 @@ export async function errorFromResponse(res: Response): Promise<ApiError> {
         if (body && typeof body === 'object' && 'error' in body) {
           const e = (body).error;
           if (typeof e === 'string') message = e;
+          const details = 'details' in body ? (body).details : undefined;
+          if (e === 'forbidden' && Array.isArray(details)) {
+            const texts = details.filter((d): d is string => typeof d === 'string' && d !== '');
+            if (texts.length > 0) message = texts.join('; ');
+          }
         }
       } catch {
         body = text;

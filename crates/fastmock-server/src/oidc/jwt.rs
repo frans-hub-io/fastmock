@@ -7,8 +7,8 @@ use ring::signature::{self, RsaPublicKeyComponents, UnparsedPublicKey};
 use serde_json::{Map, Value};
 use subtle::ConstantTimeEq;
 
-/// Longest token accepted, in bytes.
-pub const MAX_TOKEN_BYTES: usize = 16 * 1024;
+/// Longest token accepted, in bytes: ID tokens of users with many groups exceed 16 KiB.
+pub const MAX_TOKEN_BYTES: usize = 64 * 1024;
 /// Allowed clock difference for `exp`, `nbf` and `iat`, in seconds.
 pub const SKEW_SECS: i64 = 60;
 const MAX_KEYS: usize = 64;
@@ -217,6 +217,12 @@ pub struct Expect<'a> {
     pub require_iat: bool,
     /// Unix time in seconds.
     pub now: i64,
+}
+
+/// Three dot-separated parts of any content and length: a bearer value meant as a JWT, valid or
+/// not (`alg: none` tokens have an empty signature part).
+pub fn jwt_shaped(value: &str) -> bool {
+    value.bytes().filter(|b| *b == b'.').count() == 2
 }
 
 /// A compact JWS: three base64url parts separated by dots.
@@ -444,6 +450,34 @@ pub mod tests {
 
     fn set(keys: &[Value]) -> JwkSet {
         JwkSet::parse(&serde_json::to_vec(&json!({ "keys": keys })).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn tokens_up_to_64_kib_are_accepted() {
+        let k = Ec::new("k1");
+        let keys = set(&[k.jwk()]);
+        let sized = |bytes: usize| {
+            let mut n = bytes / 60;
+            loop {
+                let mut c = claims();
+                let groups: Vec<String> = (0..n)
+                    .map(|i| format!("group-with-a-long-name-{i:010}"))
+                    .collect();
+                c["groups"] = json!(groups);
+                let t = k.sign(&c);
+                if t.len() >= bytes {
+                    return t;
+                }
+                n += 8;
+            }
+        };
+        let t17 = sized(17 * 1000);
+        assert!(t17.len() < 17 * 1000 + 500, "{}", t17.len());
+        assert!(t17.len() > 16 * 1024, "{}", t17.len());
+        assert!(verify(&t17, &keys, &expect()).is_ok());
+        let t70 = sized(70 * 1000);
+        assert!(t70.len() > MAX_TOKEN_BYTES, "{}", t70.len());
+        assert_eq!(verify(&t70, &keys, &expect()), Err(JwtError::Malformed));
     }
 
     #[test]
@@ -694,6 +728,10 @@ pub mod tests {
             assert!(verify(t, &keys, &expect()).is_err(), "{t}");
         }
         assert!(!looks_like_jwt(&"a".repeat(MAX_TOKEN_BYTES + 1)));
+        assert!(jwt_shaped("eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0."));
+        assert!(jwt_shaped(&format!("a.{}.c", "b".repeat(MAX_TOKEN_BYTES))));
+        assert!(!jwt_shaped("fm_0123"));
+        assert!(!jwt_shaped("a.b"));
         assert!(!looks_like_jwt("fm_0123"));
         assert!(JwkSet::parse(b"{}").is_err());
         assert!(JwkSet::parse(b"{\"keys\": [{\"kty\": \"oct\", \"k\": \"c2VjcmV0\"}]}").is_err());

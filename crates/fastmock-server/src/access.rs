@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use anyhow::{Context, bail};
+use anyhow::bail;
 use axum::http::Method;
 use serde::{Deserialize, Serialize};
 
@@ -119,7 +119,9 @@ impl Permission {
     pub fn scope(self) -> ScopeKind {
         match self {
             StubsPurge | RecordingsRead | RecordingsWrite | ChaosRead | ChaosWrite | GrpcRead
-            | GrpcWrite | InfoRead | AuditRead | SystemReset => ScopeKind::Global,
+            | GrpcWrite | ContractsSecrets | InfoRead | AuditRead | SystemReset => {
+                ScopeKind::Global
+            }
             _ => ScopeKind::Space,
         }
     }
@@ -387,15 +389,21 @@ struct BindingDoc {
 #[derive(Clone, Debug, Default)]
 pub struct AccessConfig {
     roles: BTreeMap<String, PermSet>,
+    /// Permissions each custom role names one by one (not through a `resource:*` wildcard).
+    explicit: BTreeMap<String, PermSet>,
     spaces: BTreeMap<String, SpaceDef>,
     bindings: Vec<(Subject, Binding)>,
+    /// `access file <path>`: the prefix of start-up errors about the file.
+    origin: Option<String>,
 }
 
-fn parse_permissions(list: &[String]) -> anyhow::Result<PermSet> {
+/// The permissions of a role and those of them it names explicitly.
+fn parse_permissions(list: &[String]) -> anyhow::Result<(PermSet, PermSet)> {
     if list.is_empty() {
         bail!("permissions must not be empty");
     }
     let mut set = PermSet::default();
+    let mut explicit = PermSet::default();
     for raw in list {
         let p = raw.trim();
         if let Some(resource) = p.strip_suffix(":*") {
@@ -410,12 +418,13 @@ fn parse_permissions(list: &[String]) -> anyhow::Result<PermSet> {
                 set.insert(m);
             }
         } else {
-            set.insert(
-                Permission::parse(p).ok_or_else(|| anyhow::anyhow!("unknown permission `{p}`"))?,
-            );
+            let one =
+                Permission::parse(p).ok_or_else(|| anyhow::anyhow!("unknown permission `{p}`"))?;
+            set.insert(one);
+            explicit.insert(one);
         }
     }
-    Ok(set)
+    Ok((set, explicit))
 }
 
 fn check_prefix(p: &str) -> anyhow::Result<()> {
@@ -437,7 +446,7 @@ fn check_prefix(p: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn check_host(h: &str) -> anyhow::Result<String> {
+pub(crate) fn check_host(h: &str) -> anyhow::Result<String> {
     let host = h.trim().trim_end_matches('.').to_ascii_lowercase();
     if host.is_empty()
         || host.len() > 253
@@ -451,10 +460,19 @@ fn check_host(h: &str) -> anyhow::Result<String> {
 }
 
 impl AccessConfig {
+    /// Reads and checks the access file; errors are one line that names the file and the entry.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading the access file {}", path.display()))?;
-        Self::parse(&text).with_context(|| format!("access file {}", path.display()))
+            .map_err(|e| anyhow::anyhow!("reading the access file {}: {e}", path.display()))?;
+        let origin = format!("access file {}", path.display());
+        let mut cfg = Self::parse(&text).map_err(|e| anyhow::anyhow!("{origin}: {e:#}"))?;
+        cfg.origin = Some(origin);
+        Ok(cfg)
+    }
+
+    /// `access file <path>` (or `access file` for a document not read from a file), for error messages.
+    pub fn origin(&self) -> &str {
+        self.origin.as_deref().unwrap_or("access file")
     }
 
     pub fn parse(text: &str) -> anyhow::Result<Self> {
@@ -479,9 +497,10 @@ impl AccessConfig {
             if cfg.roles.contains_key(&r.name) {
                 bail!("{at}: role defined twice");
             }
-            let perms =
+            let (perms, explicit) =
                 parse_permissions(&r.permissions).map_err(|e| anyhow::anyhow!("{at}: {e}"))?;
             cfg.roles.insert(r.name.clone(), perms);
+            cfg.explicit.insert(r.name.clone(), explicit);
         }
         for (i, s) in doc.spaces.into_iter().enumerate() {
             let at = format!("spaces[{i}] ({})", s.name);
@@ -531,6 +550,16 @@ impl AccessConfig {
                         if !seen.insert(s.clone()) {
                             bail!("{at}: space `{s}` listed twice");
                         }
+                    }
+                    if cfg
+                        .explicit
+                        .get(&b.role)
+                        .is_some_and(|e| e.contains(ContractsSecrets))
+                    {
+                        bail!(
+                            "{at}: role `{}` lists contracts:secrets, a global permission that a binding limited to spaces cannot grant (contract secrets are server-wide); bind the role with global: true or remove contracts:secrets from it",
+                            b.role
+                        );
                     }
                     BindingScope::Spaces(list)
                 }
@@ -622,11 +651,15 @@ impl AccessConfig {
         !self.spaces.is_empty()
     }
 
-    pub fn token_subjects(&self) -> impl Iterator<Item = &str> {
-        self.bindings.iter().filter_map(|(s, _)| match s {
-            Subject::Token(n) => Some(n.as_str()),
-            _ => None,
-        })
+    /// `token:` subjects with the index of their binding in the file.
+    pub fn token_subjects(&self) -> impl Iterator<Item = (usize, &str)> {
+        self.bindings
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (s, _))| match s {
+                Subject::Token(n) => Some((i, n.as_str())),
+                _ => None,
+            })
     }
 
     /// Bindings of the access file that apply to a principal. Static and managed tokens match
@@ -1058,6 +1091,75 @@ bindings:
             assert!(e.contains(want), "{doc}: {e}");
         }
         assert!(AccessConfig::parse("").unwrap().spaces().next().is_none());
+    }
+
+    #[test]
+    fn contract_secrets_are_global_only() {
+        assert_eq!(ContractsSecrets.scope(), ScopeKind::Global);
+        let e = format!(
+            "{:#}",
+            AccessConfig::parse(
+                "roles: [{name: secret-runner, permissions: [contracts:write, contracts:secrets]}]\nspaces: [{name: billing}]\nbindings: [{subject: 'user:x', role: viewer, global: true}, {subject: 'group:qa', role: secret-runner, spaces: [billing]}]",
+            )
+            .unwrap_err()
+        );
+        assert!(
+            e.starts_with(
+                "bindings[1] (group:qa): role `secret-runner` lists contracts:secrets, a global permission"
+            ),
+            "{e}"
+        );
+        let c = AccessConfig::parse(
+            "roles: [{name: secret-runner, permissions: [contracts:write, contracts:secrets]}, {name: tester, permissions: [\"contracts:*\"]}]\nspaces: [{name: billing}]\nbindings: [{subject: 'group:ops', role: secret-runner, global: true}, {subject: 'group:qa', role: tester, spaces: [billing]}, {subject: 'group:pay', role: admin, spaces: [billing]}]",
+        )
+        .unwrap();
+        let ops = Grants::from_bindings(&c.bindings_for(PrincipalKind::User, "a", &["ops".into()]));
+        assert!(ops.allowed(ContractsSecrets, None));
+        assert!(ops.allowed(ContractsSecrets, Some("billing")));
+        for group in ["qa", "pay"] {
+            let g =
+                Grants::from_bindings(&c.bindings_for(PrincipalKind::User, "a", &[group.into()]));
+            assert!(g.allowed(ContractsWrite, Some("billing")), "{group}");
+            assert!(!g.allowed(ContractsSecrets, Some("billing")), "{group}");
+            assert!(!g.anywhere(ContractsSecrets), "{group}");
+            let v = serde_json::to_value(&g).unwrap();
+            assert!(
+                !v["spaces"]["billing"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::json!("contracts:secrets")),
+                "{group}: {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn load_errors_are_one_line_with_the_file_and_the_entry() {
+        let f = std::env::temp_dir().join(format!("fm-access-{}.yaml", uuid::Uuid::new_v4()));
+        std::fs::write(
+            &f,
+            "roles: [{name: stub-author, permissions: [stubs:wrte]}]\n",
+        )
+        .unwrap();
+        let e = AccessConfig::load(&f).unwrap_err();
+        assert_eq!(e.chain().count(), 1, "{e:?}");
+        assert_eq!(
+            format!("{e:?}"),
+            format!(
+                "access file {}: roles[0] (stub-author): unknown permission `stubs:wrte`",
+                f.display()
+            )
+        );
+        std::fs::write(&f, "spaces: [{name: billing}]\n").unwrap();
+        let ok = AccessConfig::load(&f).unwrap();
+        assert_eq!(ok.origin(), format!("access file {}", f.display()));
+        std::fs::remove_file(&f).unwrap();
+        let missing = AccessConfig::load(&f).unwrap_err();
+        assert_eq!(missing.chain().count(), 1);
+        assert!(
+            format!("{missing:?}").starts_with("reading the access file "),
+            "{missing:?}"
+        );
     }
 
     #[test]

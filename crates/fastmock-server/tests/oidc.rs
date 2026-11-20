@@ -1403,3 +1403,116 @@ async fn the_token_request_follows_no_redirect() {
     assert!(r.session.is_none(), "{}", r.location);
     assert_eq!(idp.with(|s| s.moved_token_requests), 0);
 }
+
+fn many_groups(n: usize) -> Vec<String> {
+    let mut g = vec!["payments-dev".to_string()];
+    g.extend((0..n).map(|i| format!("filler-group-{i:010}")));
+    g
+}
+
+/// ID tokens up to 64 KiB sign in (users with many groups); those over 16 KiB are not kept in the
+/// session, so the logout goes without `id_token_hint`. Bearer JWTs have the same 64 KiB limit, and an
+/// oversize, `alg: none` or malformed JWT answers like every other invalid JWT.
+#[tokio::test]
+async fn large_id_tokens_sign_in_and_invalid_bearer_jwts_answer_alike() {
+    let idp = Idp::start().await;
+    let h = H::start(StorageKind::Memory, &idp, &Opts::default()).await;
+    let big = |n: usize| User {
+        sub: "sub-big".into(),
+        name: "big".into(),
+        groups: Some(many_groups(n)),
+        userinfo_groups: vec![],
+    };
+    let res = h.login(&idp, Some(big(485)), "/ui/").await;
+    let id_token = idp.with(|s| s.issued_id_tokens.last().cloned().unwrap());
+    assert!(
+        id_token.len() > 17_000 && id_token.len() < 18_000,
+        "{}",
+        id_token.len()
+    );
+    assert_eq!((res.status, res.location.as_str()), (302, "/ui/"));
+    let session = res.session.expect("a session for a 17 KB ID token");
+    let (st, v) = h
+        .with_session(Method::GET, "/info", &session, false, None)
+        .await;
+    assert_eq!((st, v["principal"]["name"].as_str()), (200, Some("big")));
+    let r = h.logout(&session, true, None).await;
+    assert_eq!(r.status(), 200);
+    let v: Value = r.json().await.unwrap();
+    let lu = reqwest::Url::parse(v["logoutUrl"].as_str().unwrap()).unwrap();
+    assert!(
+        !lu.query_pairs().any(|(k, _)| k == "id_token_hint"),
+        "an ID token over 16 KiB is not kept: {lu}"
+    );
+
+    let res = h.login(&idp, Some(big(2020)), "/ui/").await;
+    let id_token = idp.with(|s| s.issued_id_tokens.last().cloned().unwrap());
+    assert!(
+        id_token.len() > 70_000 && id_token.len() < 72_000,
+        "{}",
+        id_token.len()
+    );
+    assert_eq!(res.location, "/ui/?loginError=failed");
+    assert!(res.session.is_none());
+
+    let api = |n: usize| {
+        idp.jwt(&json!({
+            "iss": idp.issuer(), "aud": API_AUDIENCE, "sub": "sub-big", "preferred_username": "big",
+            "groups": many_groups(n), "iat": now(), "exp": now() + 300
+        }))
+    };
+    let t17 = api(485);
+    assert!(t17.len() > 17_000 && t17.len() < 18_000, "{}", t17.len());
+    let (st, v) = h.bearer(Method::GET, "/info", &t17, None).await;
+    assert_eq!((st, v["principal"]["name"].as_str()), (200, Some("big")));
+
+    let none = format!(
+        "{}.{}.",
+        b64(&json!({"alg": "none", "typ": "JWT"})),
+        b64(&json!({"iss": idp.issuer(), "aud": API_AUDIENCE, "sub": "x", "exp": now() + 60}))
+    );
+    let t70 = api(2020);
+    assert!(t70.len() > 70_000 && t70.len() < 72_000, "{}", t70.len());
+    for (what, bad) in [
+        ("70 KB", t70),
+        ("alg none", none),
+        ("malformed", "abc.def.ghi".to_string()),
+        ("empty parts", "..".to_string()),
+    ] {
+        let r = h
+            .http
+            .get(format!("{}/__admin/info", h.admin))
+            .bearer_auth(&bad)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 401, "{what}");
+        assert_eq!(
+            r.headers()[header::WWW_AUTHENTICATE],
+            "Bearer error=\"invalid_token\"",
+            "{what}"
+        );
+        assert_eq!(
+            r.json::<Value>().await.unwrap(),
+            json!({"error": "unauthorized", "details": ["invalid bearer token"]}),
+            "{what}"
+        );
+    }
+}
+
+/// `auth.login` has no space: its audit log line leaves the field out instead of writing it empty.
+#[tokio::test]
+async fn the_login_audit_line_has_no_empty_space() {
+    let idp = Idp::start().await;
+    let h = H::start(StorageKind::Memory, &idp, &Opts::default()).await;
+    let res = h
+        .login(&idp, Some(user("spaceless", &["payments-dev"])), "/ui/")
+        .await;
+    assert_eq!(res.location, "/ui/");
+    let text = logs().text();
+    let line = text
+        .lines()
+        .find(|l| l.contains("principal=spaceless") && l.contains("auth.login"))
+        .unwrap_or_else(|| panic!("no auth.login line in {text}"));
+    assert!(!line.contains("space="), "{line}");
+}

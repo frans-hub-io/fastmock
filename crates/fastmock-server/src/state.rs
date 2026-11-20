@@ -60,6 +60,11 @@ impl SecretProvider for StubSecrets {
 }
 
 impl AppState {
+    /// Neither an access file nor OIDC is configured: denials keep the bodies of earlier versions.
+    pub fn legacy_setup(&self) -> bool {
+        self.cfg.access_file.is_none() && self.oidc.is_none()
+    }
+
     pub fn source_for(&self, path: &str) -> String {
         for p in self.plugins.iter() {
             if path == p.mount || path.starts_with(&format!("{}/", p.mount)) {

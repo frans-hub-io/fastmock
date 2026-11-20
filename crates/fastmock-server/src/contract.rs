@@ -1271,7 +1271,7 @@ pub struct RunListQuery {
         (status = 404, description = "specRef not found", body = ErrorBody),
         (status = 429, description = "Too many runs in progress", body = ErrorBody),
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
-        (status = 403, description = "The token lacks the editor role, or the admin role when secretHeaders is set", body = ErrorBody),
+        (status = 403, description = "The token lacks the editor role, or the global permission contracts:secrets (admin role bound globally) when secretHeaders is set", body = ErrorBody),
     ),
     security(("bearer" = []))
 )]
@@ -1286,8 +1286,8 @@ pub async fn start(
         require(&p, Permission::StubsRead, None)?;
     }
     if !req.secret_headers.is_empty() {
-        require(&p, Permission::ContractsSecrets, space.as_deref()).map_err(|e| {
-            if p.legacy {
+        require(&p, Permission::ContractsSecrets, None).map_err(|e| {
+            if app.legacy_setup() {
                 ApiError(
                     StatusCode::FORBIDDEN,
                     "secretHeaders require the admin role".into(),
@@ -1777,10 +1777,10 @@ components:
             "startedAt": Utc::now(), "startedBy": "ci",
             "summary": {"total": 1, "passed": 0, "failed": 1, "errors": 0},
             "results": [{"operation": "getPet", "verdict": "failed", "durationMs": 3,
-                "errors": ["body /card: \"4111111111111111\" is not of type integer"],
+                "errors": ["body /card: \"card-secret-marker-errors\" is not of type integer"],
                 "request": {"method": "GET", "url": "http://a.example.com/p", "headers": {}},
-                "response": {"status": 200, "contentType": "application/json", "bodyExcerpt": "{\"card\":\"4111\"}", "bodyBytes": 20},
-                "topic": "t", "messages": [{"partition": 0, "offset": 1, "key": "k", "excerpt": "secret", "errors": ["x"]}]}]
+                "response": {"status": 200, "contentType": "application/json", "bodyExcerpt": "{\"card\":\"card-secret-marker-body\"}", "bodyBytes": 20},
+                "topic": "t", "messages": [{"partition": 0, "offset": 1, "key": "k", "excerpt": "card-secret-marker-message", "errors": ["x"]}]}]
         }))
         .unwrap();
         viewer_view(&mut run);
@@ -1793,7 +1793,7 @@ components:
         assert!(r.get("request").is_none());
         assert_eq!(r["errors"], json!([]));
         assert_eq!(r["messages"][0]["excerpt"], "");
-        assert!(!v.to_string().contains("4111"));
+        assert!(!v.to_string().contains("card-secret-marker"), "{v}");
     }
 
     #[test]

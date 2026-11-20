@@ -47,6 +47,16 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -88,6 +98,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -734,6 +754,26 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -790,6 +830,16 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -819,6 +869,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -995,6 +1055,26 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1063,7 +1143,7 @@
             }
           },
           "403": {
-            "description": "The token lacks the editor role, or the admin role when secretHeaders is set",
+            "description": "The token lacks the editor role, or the global permission contracts:secrets (admin role bound globally) when secretHeaders is set",
             "content": {
               "application/json": {
                 "schema": {
@@ -1132,6 +1212,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -1263,6 +1353,26 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1303,6 +1413,26 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -1375,6 +1505,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -1485,6 +1625,16 @@
           },
           "403": {
             "description": "Requires the editor role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -1611,6 +1761,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -1834,6 +1994,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "host",
+            "in": "query",
+            "description": "`request.host` for every imported stub that has none (OpenAPI, WireMock, MockServer, Postman and HAR\nonly). For a space that owns hosts it must be one of them; it defaults to the space's only host and\nis required when the space owns several.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -1905,6 +2074,16 @@
           },
           "403": {
             "description": "Requires the editor role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -2096,6 +2275,26 @@
         "summary": "Generate stubs from a HAR 1.2 capture",
         "description": "Each distinct request (method, path, query, body) becomes a stub replaying the first recorded response. Failed entries are skipped; sensitive headers, query parameters and body fields never reach the stubs.",
         "operationId": "importHar",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space the stubs go to. Without it, the global area, or the caller's only space when it is bound to\nspaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "host",
+            "in": "query",
+            "description": "`request.host` for every imported stub that has none. For a space that owns hosts it must be one of\nthem; it defaults to the space's only host and is required when the space owns several.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2166,6 +2365,16 @@
           },
           "403": {
             "description": "Requires the editor role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -2316,6 +2525,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "host",
+            "in": "query",
+            "description": "`request.host` for every imported stub that has none. For a space that owns hosts it must be one\nof them; it defaults to the space's only host and is required when the space owns several.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -2387,6 +2605,16 @@
               }
             }
           },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "413": {
             "description": "Body too large",
             "content": {
@@ -2417,7 +2645,16 @@
           {
             "name": "space",
             "in": "query",
-            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "description": "Space the stubs go to. Without it, the global area, or the caller's only space when it is bound to\nspaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "host",
+            "in": "query",
+            "description": "`request.host` for every imported stub that has none. For a space that owns hosts it must be one of\nthem; it defaults to the space's only host and is required when the space owns several.",
             "required": false,
             "schema": {
               "type": "string"
@@ -2479,6 +2716,16 @@
               }
             }
           },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "413": {
             "description": "Body too large",
             "content": {
@@ -2505,6 +2752,26 @@
         "summary": "Generate stubs from a Postman collection",
         "description": "Every saved example response becomes a stub: method, path (`:id` and unresolved `{{var}}` segments become path parameters), enabled query parameters and, when a request has several examples, its raw body. `{{var}}` is resolved from collection and folder variables; folders become tags. Requests without saved examples are skipped with a warning. Response bodies are not templated.",
         "operationId": "importPostman",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space the stubs go to. Without it, the global area, or the caller's only space when it is bound to\nspaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "host",
+            "in": "query",
+            "description": "`request.host` for every imported stub that has none. For a space that owns hosts it must be one of\nthem; it defaults to the space's only host and is required when the space owns several.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2585,6 +2852,16 @@
           },
           "403": {
             "description": "Requires the editor role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -2693,7 +2970,16 @@
           {
             "name": "space",
             "in": "query",
-            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "description": "Space the stubs go to. Without it, the global area, or the caller's only space when it is bound to\nspaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "host",
+            "in": "query",
+            "description": "`request.host` for every imported stub that has none. For a space that owns hosts it must be one of\nthem; it defaults to the space's only host and is required when the space owns several.",
             "required": false,
             "schema": {
               "type": "string"
@@ -2760,6 +3046,16 @@
           },
           "403": {
             "description": "Requires the editor role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -2884,6 +3180,16 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2943,6 +3249,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -3030,6 +3346,16 @@
           },
           "403": {
             "description": "Requires the editor role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -3143,6 +3469,16 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3172,6 +3508,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -3519,6 +3865,26 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3568,6 +3934,16 @@
           },
           "403": {
             "description": "Requires the editor role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -3711,6 +4087,26 @@
               }
             }
           },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Too many journal scans are running, or the scan exceeded FASTMOCK_JOURNAL_SCAN_TIMEOUT",
             "content": {
@@ -3778,6 +4174,26 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -3907,6 +4323,26 @@
               }
             }
           },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The scan exceeds FASTMOCK_JOURNAL_SCAN_MAX_WORK",
             "content": {
@@ -3994,6 +4430,26 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -4133,6 +4589,16 @@
               }
             }
           },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The scan exceeds FASTMOCK_JOURNAL_SCAN_MAX_WORK",
             "content": {
@@ -4239,6 +4705,16 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4290,6 +4766,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -4401,6 +4887,26 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4450,6 +4956,16 @@
           },
           "403": {
             "description": "Requires the editor role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -4536,6 +5052,16 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4601,6 +5127,16 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4641,6 +5177,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -4771,6 +5317,16 @@
               }
             }
           },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown service or no stored document",
             "content": {
@@ -4810,6 +5366,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -4929,6 +5495,16 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5030,6 +5606,26 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5112,6 +5708,16 @@
           },
           "403": {
             "description": "Requires the editor role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -5203,6 +5809,16 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5244,6 +5860,26 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -5303,6 +5939,16 @@
           },
           "403": {
             "description": "Requires the editor role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -5381,6 +6027,26 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5402,7 +6068,16 @@
           {
             "name": "space",
             "in": "query",
-            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "description": "Space the stubs go to. Without it, the global area, or the caller's only space when it is bound to\nspaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "host",
+            "in": "query",
+            "description": "`request.host` for every imported stub that has none. For a space that owns hosts it must be one of\nthem; it defaults to the space's only host and is required when the space owns several.",
             "required": false,
             "schema": {
               "type": "string"
@@ -5452,6 +6127,16 @@
           },
           "403": {
             "description": "Requires the editor role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -5550,6 +6235,16 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5601,6 +6296,26 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -5664,6 +6379,16 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5705,6 +6430,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -5801,6 +6536,16 @@
           },
           "403": {
             "description": "Requires the editor role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -6134,7 +6879,7 @@
             }
           },
           "409": {
-            "description": "An active token or a static token has this name",
+            "description": "An active token or a static token has this name, or authentication is disabled (`FASTMOCK_AUTH_DISABLED=true`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -6219,6 +6964,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -6372,6 +7127,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Authentication is disabled (`FASTMOCK_AUTH_DISABLED=true`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6440,6 +7205,26 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -6552,6 +7337,26 @@
               }
             }
           },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Sequence not found (`SequenceResult`), or the scan exceeds FASTMOCK_JOURNAL_SCAN_MAX_WORK (`ErrorBody`)",
             "content": {
@@ -6600,6 +7405,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -7625,7 +8440,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "Lifetime in days: 1 to `FASTMOCK_TOKENS_MAX_DAYS` (default 365); 90 when omitted.",
+            "description": "Lifetime in days: 1 to `FASTMOCK_TOKENS_MAX_DAYS` (default 365); when omitted, 90 or `FASTMOCK_TOKENS_MAX_DAYS` when that is lower.",
             "example": 30,
             "minimum": 1
           },

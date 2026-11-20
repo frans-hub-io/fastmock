@@ -396,7 +396,11 @@ pub async fn logout(State(app): State<AppState>, headers: HeaderMap) -> Response
     };
     if !app.auth.origin_allowed(&headers) {
         metrics::counter!("fastmock_admin_auth_failures_total", "reason" => "origin").increment(1);
-        return error(StatusCode::FORBIDDEN, "origin not allowed");
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "forbidden", "details": ["origin not allowed"]})),
+        )
+            .into_response();
     }
     if !csrf_header_ok(&headers) {
         metrics::counter!("fastmock_admin_auth_failures_total", "reason" => "csrf").increment(1);
