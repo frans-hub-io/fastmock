@@ -117,6 +117,54 @@ start-up with a message naming the entry (`Ready=False Progressing`, see the pod
 running. `token:` bindings must name entries of `adminTokensSecret`; the operator's own token
 (`fastmock-operator`) is always a global admin.
 
+### OIDC sign-in
+
+`spec.oidc` turns on [OIDC sign-in](access-control.md#oidc-sign-in-and-bearer-jwts) for the server's UI and,
+with `apiAudience`, bearer JWTs on its admin API. The client secret comes from a Secret in the same namespace
+(labelled like every other referenced Secret); the operator mounts it read-only at
+`/etc/fastmock/oidc/client-secret`. Bind the provider's groups in the [access file](#access-file).
+
+```yaml
+spec:
+  access:
+    configMapRef: {name: payments-mock-access}
+  oidc:
+    issuer: https://sso.example.com/realms/mocks
+    clientId: payments-mock
+    clientSecretRef: {name: payments-mock-oidc, key: client-secret}
+    redirectUrl: https://payments-mock-admin.example.com/__admin/auth/callback
+    groupsClaim: groups
+    apiAudience: fastmock-api
+    sessionIdle: 30m
+    caConfigMapRef: {name: corporate-ca, key: ca.crt}
+```
+
+```sh
+kubectl -n team-payments create secret generic payments-mock-oidc --from-literal=client-secret="$CLIENT_SECRET"
+kubectl -n team-payments label secret payments-mock-oidc fastmock.franshub.io/allow-mount=true
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `issuer` | required | `FASTMOCK_OIDC_ISSUER`; must start with `https://`. |
+| `clientId` | required | `FASTMOCK_OIDC_CLIENT_ID`. |
+| `clientSecretRef` | required | `{name, key}` of the Secret with the client secret; `key` defaults to `client-secret`. |
+| `redirectUrl` | required | Public https admin URL followed by `/__admin/auth/callback`. |
+| `scopes` | `openid profile email` | `FASTMOCK_OIDC_SCOPES`. |
+| `usernameClaim`, `groupsClaim` | `preferred_username`, `groups` | Claims for `user:` and `group:` bindings. |
+| `apiAudience` | none | Accept the provider's JWTs with this audience on the admin API. |
+| `sessionTtl`, `sessionIdle` | `8h`, `1h` | Session lifetimes. |
+| `allowedHosts` | `[]` | Hosts besides the issuer's that discovery endpoints may use. |
+| `caConfigMapRef` | none | `{name, key}` of a labelled ConfigMap with extra CA certificates for the provider (`key` defaults to `ca.crt`), mounted at `/etc/fastmock/oidc-ca`. |
+
+An `issuer` or `redirectUrl` that is not https, a missing `clientId` or a redirect URL not ending in
+`/__admin/auth/callback` refuse the spec (`InvalidSpec`); a missing or unlabelled Secret or CA ConfigMap gives
+`SecretNotFound`, `SecretNotAllowed`, `ConfigMapNotFound` or `ConfigMapNotAllowed`. The server checks the rest at
+start-up. `FASTMOCK_OIDC_*` cannot be set through `spec.env`. The admin port is not published by `spec.route`,
+which serves the data port; expose the admin Service with your own HTTPRoute on the host of `redirectUrl`. The
+client secret is read when the pods start: after rotating it, restart them
+(`kubectl rollout restart deploy/<name>`). With `storage.mode: memory` sessions live in the single pod.
+
 ### Fields
 
 | Field | Default | Meaning |
@@ -131,6 +179,7 @@ running. `token:` bindings must name entries of `adminTokensSecret`; the operato
 | `adminTokensSecret` | none | `{name, key}` of a Secret with your `name:role:sha256hex` token lines. `key` defaults to `tokens`. |
 | `secretsSecret` | none | Secret mounted at `/etc/fastmock/secrets` (HMAC keys, plugin secrets). |
 | `access.configMapRef` | none | `{name, key}` of a ConfigMap holding the [access file](#access-file); `key` defaults to `access.yaml`. |
+| `oidc` | none | [OIDC sign-in](#oidc-sign-in) for the UI and bearer JWTs for the admin API. |
 | `plugins` | `[]` (all) | Plugins to enable. |
 | `pluginSettings` | `{}` | `plugin → {key: value}`, rendered as `FASTMOCK_PLUGIN_<PLUGIN>_<KEY>`. |
 | `env` | `{}` | Extra [settings](configuration.md); security-relevant variables are refused (see [Policies](#policies)). |
@@ -298,15 +347,15 @@ settings, it enforces three policies:
    `registry.example.com/fastmock@sha256:...` but not `registry.example.com/fastmock-other`. Without explicit
    prefixes only the repository of the default image is allowed. Otherwise: `ImageNotAllowed`.
 2. **Secret opt-in.** Every Secret named in `storage.database`, `storage.valkey`, `adminTokensSecret`,
-   `secretsSecret` and `imagePullSecrets` must have the label `fastmock.franshub.io/allow-mount: "true"`. A Secret owner
+   `secretsSecret`, `oidc.clientSecretRef` and `imagePullSecrets` must have the label `fastmock.franshub.io/allow-mount: "true"`. A Secret owner
    thereby agrees that FastMock pods may mount it. Otherwise: `SecretNotAllowed`. The same label is required on
-   the ConfigMap named in `access.configMapRef` (otherwise `ConfigMapNotAllowed`), since its content decides who
-   may do what on the server.
+   the ConfigMaps named in `access.configMapRef` and `oidc.caConfigMapRef` (otherwise `ConfigMapNotAllowed`),
+   since their content decides who may do what on the server and which identity provider it trusts.
 3. **Reserved environment.** `spec.env` must not set `FASTMOCK_AUTH_DISABLED`, `FASTMOCK_ADMIN_TOKENS`,
    `FASTMOCK_ADMIN_TOKENS_FILE`, `FASTMOCK_ACCESS_FILE`, `FASTMOCK_ADMIN_ALLOWED_ORIGINS`, `FASTMOCK_SECRETS_DIR`, `FASTMOCK_SECRET_*`,
    `FASTMOCK_CALLBACK_DENIED_CIDRS`, `FASTMOCK_CALLBACK_ALLOWED_HOSTS`, `FASTMOCK_DATABASE_URL`,
    `FASTMOCK_VALKEY_URL`, `FASTMOCK_VALKEY_PREFIX`, `FASTMOCK_STORAGE`, `FASTMOCK_LISTEN`,
-   `FASTMOCK_ADMIN_LISTEN` or any `LD_*` variable (names are compared case-insensitively). Use the dedicated
+   `FASTMOCK_ADMIN_LISTEN`, any `FASTMOCK_OIDC_*` or any `LD_*` variable (names are compared case-insensitively). Use the dedicated
    fields instead. Otherwise: `EnvNotAllowed`.
 
 Combine these with a namespace-level policy engine (Kyverno, Gatekeeper) or `watchNamespace` if only some

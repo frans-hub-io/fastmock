@@ -96,9 +96,33 @@ shows host, port, database, SSL mode, Valkey address and ACL user only.
 | `FASTMOCK_UI_ENABLED` | boolean | `true` | `false`, `0`, `no` or `off` switches the web UI off: `/ui` and everything below it answer 404. The admin API, `/openapi.json` and `/metrics` are not affected. See [Web UI](../guide/ui.md). |
 | `FASTMOCK_UI_DATA_PLANE_URL` | list | none | Exact origins (`scheme://host[:port]`, no path, no wildcard) of the data plane as browsers reach it, for example `https://mock.example.com`. The UI's `Content-Security-Policy` allows `connect-src` to `'self'` and these origins only, and the first one is the default target of the test-request panel. Without it, `connect-src` allows `'self'` and the data port on the host name the browser used for the UI (`http(s)://<ui host>:<FASTMOCK_LISTEN port>`). An invalid entry is a start-up error. |
 
-The server does not start without at least one token unless `FASTMOCK_AUTH_DISABLED=true`. Roles and token
-handling are described in [Security](security.md#admin-tokens-and-roles), permissions, custom roles and spaces in
+The server does not start without at least one token unless OIDC sign-in is configured or
+`FASTMOCK_AUTH_DISABLED=true`. Roles and token handling are described in
+[Security](security.md#admin-tokens-and-roles), permissions, custom roles and spaces in
 [Access control](access-control.md).
+
+### OIDC sign-in
+
+OIDC is off unless `FASTMOCK_OIDC_ISSUER` is set; setting any other `FASTMOCK_OIDC_*` variable without it is a
+start-up error, and so is combining it with `FASTMOCK_AUTH_DISABLED=true`. See
+[Access control: OIDC](access-control.md#oidc-sign-in-and-bearer-jwts) for the flow and provider setup.
+
+| Variable | Type | Default | Effect |
+|---|---|---|---|
+| `FASTMOCK_OIDC_ISSUER` | URL | none | Issuer; must equal the `issuer` of `<issuer>/.well-known/openid-configuration` exactly. https; plain http only for `localhost`, `127.0.0.1` and `::1` (tests and local development). |
+| `FASTMOCK_OIDC_CLIENT_ID` | string | none | Client id of the confidential client (required with the issuer). |
+| `FASTMOCK_OIDC_CLIENT_SECRET` | string | none | Client secret. Set this or `FASTMOCK_OIDC_CLIENT_SECRET_FILE`. |
+| `FASTMOCK_OIDC_CLIENT_SECRET_FILE` | path | none | File with the client secret (trailing newline ignored). |
+| `FASTMOCK_OIDC_REDIRECT_URL` | URL | none | Public admin URL plus `/__admin/auth/callback`, no query (required). https except on localhost. |
+| `FASTMOCK_OIDC_SCOPES` | list | `openid profile email` | Space- or comma-separated scopes; must include `openid`. |
+| `FASTMOCK_OIDC_USERNAME_CLAIM` | string | `preferred_username` | Claim with the user name for `user:` bindings; a dotted path reaches into objects. API JWTs without it use `sub`. |
+| `FASTMOCK_OIDC_GROUPS_CLAIM` | string | `groups` | Claim with the groups for `group:` bindings (array of strings or one string); a dotted path such as `realm_access.roles` reaches into objects. Falls back to userinfo at sign-in when the ID token lacks it. |
+| `FASTMOCK_OIDC_API_AUDIENCE` | string | none | Accept JWTs of the provider with this `aud` as bearer tokens on the admin API. |
+| `FASTMOCK_OIDC_CA_FILE` | path | none | PEM bundle of extra trusted roots for the provider connections (discovery, JWKS, token, userinfo). |
+| `FASTMOCK_OIDC_SESSION_TTL` | duration | `8h` | Absolute lifetime of a UI session. |
+| `FASTMOCK_OIDC_SESSION_IDLE` | duration | `1h` | A session unused for this long ends. |
+| `FASTMOCK_OIDC_ALLOWED_HOSTS` | list | none | Host names besides the issuer's that discovery endpoints (token, JWKS, userinfo, authorization, end session) may use; others stop the start. |
+| `FASTMOCK_OIDC_INSECURE_COOKIE` | boolean | `false` | Session and login cookies without `Secure` and without the `__Host-` prefix, for local development over plain http. Accepted only with a `localhost`, `127.0.0.1` or `::1` redirect URL. |
 
 ## Data-plane TLS and mTLS
 

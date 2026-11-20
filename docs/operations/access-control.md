@@ -13,6 +13,7 @@ data-plane URL space.
 - [Custom roles](#custom-roles)
 - [Bindings](#bindings)
 - [Managed tokens](#managed-tokens)
+- [OIDC sign-in and bearer JWTs](#oidc-sign-in-and-bearer-jwts)
 - [Spaces](#spaces)
 - [Selecting a space in the API](#selecting-a-space-in-the-api)
 - [Ownership of the data plane](#ownership-of-the-data-plane)
@@ -130,8 +131,8 @@ one of the two).
 | Subject | Matches |
 |---|---|
 | `token:<name>` | the static token entry with that name in `FASTMOCK_ADMIN_TOKENS` or `FASTMOCK_ADMIN_TOKENS_FILE` (a binding for an unknown token name is a start-up error) |
-| `user:<username>` | a user signed in through OIDC, by user name (reserved for OIDC sign-in) |
-| `group:<group>` | a user signed in through OIDC, by group (reserved for OIDC sign-in) |
+| `user:<username>` | an [OIDC user](#oidc-sign-in-and-bearer-jwts) by the value of the username claim |
+| `group:<group>` | an [OIDC user](#oidc-sign-in-and-bearer-jwts) who has this group in the groups claim |
 
 A token entry with a role is a global binding of that role, as before. To give a token only space bindings,
 leave its role empty: `ci-billing::<sha256>`. Such an entry needs at least one `token:ci-billing` binding.
@@ -214,6 +215,245 @@ bindings:
 The token's own principal has kind `apiToken` (`GET /__admin/info`), and the audit log records `token.create` and
 `token.revoke` with the token's id, name, kind, role, scopes and expiry; the value never appears in logs, the audit
 log or later responses.
+
+## OIDC sign-in and bearer JWTs
+
+FastMock can sign users in through an OpenID Connect provider (Keycloak, Microsoft Entra ID, Okta, Auth0, ADFS,
+Dex, Authentik and others) and accept the provider's JWTs as bearer tokens on the admin API. FastMock implements
+only OIDC: LDAP, Active Directory and SAML users come through the provider (for Keycloak: user federation and
+identity brokering, see [below](#keycloak)). Static and managed tokens keep working next to it, and the UI's token
+login stays available.
+
+### How it works
+
+The UI signs in through the admin port (backend for frontend): the browser never sees an OIDC token.
+
+1. `GET /__admin/auth/login?return=/ui/stubs` answers `302` to the provider's authorization endpoint with
+   `response_type=code`, `state`, `nonce` and a PKCE `code_challenge` (S256). The pending login (nonce, PKCE
+   verifier, return path) is kept for 10 minutes in the hot store (Valkey, or process memory in memory mode) under
+   the hash of `state`. A short-lived cookie `__Host-fastmock_login` ties the callback to the browser that started
+   the login, so a callback URL sent to someone else does not sign them in.
+2. The provider redirects to `GET /__admin/auth/callback?code=...&state=...`. FastMock takes the pending login
+   (each `state` works once), checks the login cookie, exchanges the code (with the client secret and the PKCE
+   verifier) and validates the ID token: signature against the provider's JWKS, `iss`, `aud`, `azp` when
+   present, `exp`, `nbf`, `iat` (60 seconds of clock skew) and `nonce`. Accepted algorithms: RS256, PS256, ES256
+   and EdDSA (Ed25519); `none` and HMAC algorithms are always rejected. A token signed with an unknown key id
+   makes FastMock fetch the JWKS again, at most once a minute.
+3. The username and groups come from the ID token (`FASTMOCK_OIDC_USERNAME_CLAIM`, default
+   `preferred_username`; `FASTMOCK_OIDC_GROUPS_CLAIM`, default `groups`). When the ID token has no groups claim
+   (or no username claim), FastMock asks the userinfo endpoint. The groups claim may be a name or a dotted path
+   (`realm_access.roles`); a claim whose name itself contains dots (`https://example.com/groups`) is found by its
+   full name first.
+4. FastMock computes the user's bindings (`user:<username>` and `group:<group>` subjects). **Without any binding no
+   session is created**: the browser goes to `/ui/?loginError=no_access` and the login is audited as failed.
+   Otherwise FastMock creates a session and redirects to the `return` path with the session cookie.
+
+`return` must be a relative path under `/ui/`. Values starting with `//`, containing a backslash, a scheme,
+`..` segments, control characters or the same tricks percent-encoded answer `400`.
+
+| `loginError` | Meaning |
+|---|---|
+| `no_access` | the user signed in at the provider but no binding matches the user or its groups |
+| `invalid_state` | unknown, expired (10 minutes) or already used `state`, or the login cookie is missing or different |
+| `idp_error` | the provider answered with an error (for example the user cancelled) |
+| `failed` | code exchange or ID token validation failed, or the username claim is missing; the log says why |
+| `unavailable` | the provider has not been discovered yet or the session store is unavailable |
+
+### Sessions
+
+| Property | Value |
+|---|---|
+| Cookie | `__Host-fastmock_session`, `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, `Max-Age` = `FASTMOCK_OIDC_SESSION_TTL` |
+| Value | 256 random bits (43 base64url characters) |
+| Server side | in the hot store under the SHA-256 of the value: user name, group names, creation and last-seen time |
+| Lifetime | absolute `FASTMOCK_OIDC_SESSION_TTL` (default `8h`) and idle `FASTMOCK_OIDC_SESSION_IDLE` (default `1h`) |
+| Replicas | every replica and every cluster sharing the Valkey sees the same sessions; in memory mode they live in the process |
+
+The last-seen time is written back at most once a minute (and at least four times per idle period), so the idle
+timeout can be exceeded by up to a quarter of it. The bindings are computed from the access file on every request,
+so a changed access file applies to existing sessions after the restart. The groups are those of the sign-in; a
+user removed from a group at the provider keeps it until the session ends.
+
+An expired or unknown session answers `401 {"error":"unauthorized","details":["session expired or unknown: sign in again"]}`
+and clears the cookie.
+
+`POST /__admin/auth/logout` deletes the session and clears the cookie. When the provider publishes an
+`end_session_endpoint`, the response carries `logoutUrl` (with `client_id` and `post_logout_redirect_uri` set to
+the admin URL's `/ui/`) so the UI can end the provider session too:
+
+```json
+{"loggedOut": true, "logoutUrl": "https://sso.example.com/realms/mocks/protocol/openid-connect/logout?client_id=fastmock&post_logout_redirect_uri=https%3A%2F%2Fmock-admin.example.com%2Fui%2F"}
+```
+
+`GET /__admin/auth/config` (no authentication) tells the login page what is available:
+`{"oidc": true, "tokenLogin": true}`.
+
+**Local development over http.** Browsers keep `Secure` cookies only on https, except on `localhost` where most
+browsers accept them over plain http too. For other local setups set `FASTMOCK_OIDC_INSECURE_COOKIE=true`: the
+cookies are then called `fastmock_session` and `fastmock_login` and lose `Secure` (the `__Host-` prefix requires
+it). The switch is accepted only when `FASTMOCK_OIDC_REDIRECT_URL` points to `localhost`, `127.0.0.1` or `::1`.
+
+### CSRF protection
+
+Requests authenticated by the session cookie that are not `GET` or `HEAD` must carry the header
+`X-FastMock-Request: 1`; otherwise they answer `403 {"error":"forbidden","details":["missing X-FastMock-Request: 1 header"]}`.
+A cross-origin page cannot add the header without a CORS preflight, which the admin API never grants. The header
+comes on top of the `Origin` check that applies to every admin request. `POST /__admin/auth/logout` needs it too.
+Requests with an `Authorization` header are not affected.
+
+### Bearer JWTs on the admin API
+
+With `FASTMOCK_OIDC_API_AUDIENCE` set, a bearer value that looks like a JWT (three base64url parts) is validated
+like the ID token, but against that audience, without `nonce` and without `azp` (the token may have been issued to
+another client, for example a CI pipeline using client credentials or a CLI using the device flow). `iat` is
+optional. The username claim falls back to `sub` when absent; the groups claim is read from the token (userinfo is
+not called). Use an audience different from the client id, so ID tokens of the UI client are not accepted as API
+tokens.
+
+Precedence: a request with an `Authorization` header is decided by that header alone, in this order: static
+tokens, managed `fm_` tokens, JWTs. The session cookie is used only when there is no `Authorization` header. A
+JWT for a user without bindings answers `403` with
+`"details":["user alice has no access: the access file binds neither user:alice nor any of the user's groups"]`.
+An invalid JWT answers `401` with `WWW-Authenticate: Bearer error="invalid_token"`.
+
+### Configuration
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FASTMOCK_OIDC_ISSUER` | none | Issuer URL; OIDC is off without it. https (plain http only for `localhost`, `127.0.0.1` and `::1`, for tests). Must equal the `issuer` of the discovery document exactly. |
+| `FASTMOCK_OIDC_CLIENT_ID` | none | Client id (required). |
+| `FASTMOCK_OIDC_CLIENT_SECRET` / `_SECRET_FILE` | none | Client secret, one of the two (required). |
+| `FASTMOCK_OIDC_REDIRECT_URL` | none | Public admin URL followed by `/__admin/auth/callback` (required, https except on localhost). Register it at the provider. |
+| `FASTMOCK_OIDC_SCOPES` | `openid profile email` | Space- or comma-separated; must include `openid`. |
+| `FASTMOCK_OIDC_USERNAME_CLAIM` | `preferred_username` | Claim (or dotted path) with the user name for `user:` bindings. |
+| `FASTMOCK_OIDC_GROUPS_CLAIM` | `groups` | Claim (or dotted path such as `realm_access.roles`) with the groups for `group:` bindings: an array of strings or one string. |
+| `FASTMOCK_OIDC_API_AUDIENCE` | none | Enables bearer JWTs on the admin API for this audience. |
+| `FASTMOCK_OIDC_CA_FILE` | none | PEM bundle added to the trusted roots for the provider connections. |
+| `FASTMOCK_OIDC_SESSION_TTL` | `8h` | Absolute session lifetime. |
+| `FASTMOCK_OIDC_SESSION_IDLE` | `1h` | Idle timeout. |
+| `FASTMOCK_OIDC_ALLOWED_HOSTS` | none | Hosts besides the issuer's that discovery endpoints may use (comma-separated). |
+| `FASTMOCK_OIDC_INSECURE_COOKIE` | `false` | Cookies without `Secure` and `__Host-` for local http development (localhost redirect URL only). |
+
+Everything is checked at start-up; errors name the variable. With OIDC configured, `FASTMOCK_ADMIN_TOKENS` may be
+empty (sign-in only), and `FASTMOCK_AUTH_DISABLED=true` is refused.
+
+**Discovery and egress.** At start-up FastMock reads `<issuer>/.well-known/openid-configuration` and the JWKS. If
+the provider cannot be reached within 5 seconds the server starts anyway (the data plane and token
+authentication work) and retries in the background with backoff up to one minute; until then
+`/__admin/auth/login` answers `503` and the gauge `fastmock_oidc_ready` is 0. A discovery document that FastMock
+must not use stops the start with a clear error: a different `issuer`, an endpoint on a host other than the
+issuer's and not in `FASTMOCK_OIDC_ALLOWED_HOSTS`, plain http outside loopback, or no PKCE S256 support. All
+provider calls (discovery, JWKS, token, userinfo) use a dedicated HTTP client: only to the issuer host and the
+allowed hosts, redirects only to those hosts (at most three), 5 seconds to connect, 10 seconds per request,
+responses up to 1 MiB, the system roots plus `FASTMOCK_OIDC_CA_FILE`. The client honours `HTTPS_PROXY` and
+`NO_PROXY`. These calls are not subject to the [egress policy](security.md#egress-policy) for stub callbacks, so
+the provider may live on a private network. The client authenticates at the token endpoint with
+`client_secret_basic`, or `client_secret_post` when the provider supports only that. The JWKS is refreshed every
+hour and on an unknown key id.
+
+Starting logins is limited to a burst of 100 and 10 per second per replica (`429` above), so anonymous callers
+cannot fill the hot store with pending logins.
+
+### Keycloak
+
+1. Clients → *Create client*: type *OpenID Connect*, client id `fastmock`. *Client authentication* on (a
+   confidential client), *Standard flow* on, *Direct access grants* off. PKCE: in *Advanced* set *Proof Key for
+   Code Exchange Code Challenge Method* to `S256`.
+2. *Valid redirect URIs*: `https://mock-admin.example.com/__admin/auth/callback`. *Valid post logout redirect
+   URIs*: `https://mock-admin.example.com/ui/`. *Web origins*: leave empty (the browser never calls Keycloak with
+   JavaScript).
+3. *Credentials*: copy the client secret into a Secret (`FASTMOCK_OIDC_CLIENT_SECRET_FILE`).
+4. Groups: *Client scopes* → `fastmock-dedicated` → *Add mapper* → *By configuration* → *Group Membership*,
+   token claim name `groups`, *Full group path* **off** (otherwise the values are `/payments-dev`), added to the
+   ID token, the access token and userinfo. To bind realm roles instead, set
+   `FASTMOCK_OIDC_GROUPS_CLAIM=realm_access.roles`.
+5. For API JWTs, add an *Audience* mapper with *Included custom audience* `fastmock-api` to the client scope that
+   CI clients request, and set `FASTMOCK_OIDC_API_AUDIENCE=fastmock-api`. A CI pipeline then uses a separate
+   confidential client with *Service accounts* on (client credentials); its user name is
+   `service-account-<client id>`, so bind `user:service-account-ci-payments`, or give the service account groups.
+6. `FASTMOCK_OIDC_ISSUER=https://sso.example.com/realms/mocks`.
+
+**LDAP and Active Directory users.** Configure *User federation* → *LDAP* in the realm (vendor *Active Directory*
+or *Other*), and add a *group-ldap-mapper* (mode `READ_ONLY`) that imports the LDAP groups. The users sign in
+through Keycloak with their directory password; their directory groups arrive in the `groups` claim and match
+`group:` bindings by name. FastMock never talks to LDAP.
+
+**SAML.** Add the SAML identity provider under *Identity providers* (identity brokering) and map its group or role
+attribute to Keycloak groups with an *Advanced attribute to group* or *Attribute importer* mapper. Users choose the
+SAML provider on the Keycloak login page; FastMock still sees an OIDC sign-in.
+
+### Microsoft Entra ID
+
+1. *App registrations* → *New registration*; *Redirect URI* type *Web*:
+   `https://mock-admin.example.com/__admin/auth/callback`. Add `https://mock-admin.example.com/ui/` as a second
+   *Web* redirect URI, so that the provider returns the browser to the UI after logout
+   (`post_logout_redirect_uri`).
+2. *Certificates & secrets* → *New client secret*; store it in a Secret.
+3. *Token configuration* → *Add groups claim*: *Security groups* (or *Groups assigned to the application*, which
+   avoids the 200-group limit of the token). The values are group object ids, so bindings look like
+   `group:5f1c3f6e-0000-4000-8000-000000000001`. For groups synchronised from Active Directory you can emit
+   `sAMAccountName` instead and bind by name.
+4. Settings: `FASTMOCK_OIDC_ISSUER=https://login.microsoftonline.com/<tenant id>/v2.0`,
+   `FASTMOCK_OIDC_CLIENT_ID=<application id>`, `FASTMOCK_OIDC_USERNAME_CLAIM=preferred_username` (the UPN) or `email`.
+5. For API JWTs, *Expose an API* with an application id URI such as `api://fastmock` and set
+   `FASTMOCK_OIDC_API_AUDIENCE` to the `aud` value of the access tokens (the application id for v2 tokens). App
+   roles assigned to service principals arrive in the `roles` claim; set `FASTMOCK_OIDC_GROUPS_CLAIM=roles` if you
+   bind by app role.
+
+Users with more groups than fit in the token (more than 200) get an overage claim instead of `groups`; FastMock
+then sees no groups. Use *Groups assigned to the application* to avoid it.
+
+### Other providers
+
+Any provider with OIDC discovery, the authorization code flow with PKCE S256, a confidential client and RS256,
+PS256, ES256 or EdDSA signatures works:
+
+1. Create a confidential web client with the redirect URI `https://<admin host>/__admin/auth/callback`.
+2. Make the provider put the user's groups into the ID token (or userinfo) as an array of strings, and note the
+   claim name (`groups`, `roles`, a namespaced claim such as `https://example.com/groups`, or a nested path).
+3. Check the issuer: `curl https://<issuer>/.well-known/openid-configuration | jq .issuer` must print exactly
+   the value of `FASTMOCK_OIDC_ISSUER`, including a trailing slash if there is one.
+4. If the token or JWKS endpoint lives on another host than the issuer, list it in `FASTMOCK_OIDC_ALLOWED_HOSTS`.
+
+ADFS works as an OIDC provider (*Server application* plus *Web API* in an application group); its groups come
+from a claim issuance rule.
+
+### Example
+
+```yaml
+spaces:
+  - name: payments
+    pathPrefixes: [/payments/]
+bindings:
+  - subject: group:payments-dev
+    role: editor
+    spaces: [payments]
+  - subject: group:platform
+    role: admin
+    global: true
+  - subject: user:service-account-ci-payments
+    role: editor
+    spaces: [payments]
+```
+
+```sh
+FASTMOCK_OIDC_ISSUER=https://sso.example.com/realms/mocks
+FASTMOCK_OIDC_CLIENT_ID=fastmock
+FASTMOCK_OIDC_CLIENT_SECRET_FILE=/etc/fastmock/oidc/client-secret
+FASTMOCK_OIDC_REDIRECT_URL=https://mock-admin.example.com/__admin/auth/callback
+FASTMOCK_OIDC_API_AUDIENCE=fastmock-api
+```
+
+```sh
+# a CI job with a client-credentials token from the provider
+TOKEN=$(curl -s -d grant_type=client_credentials -u "ci-payments:$CI_SECRET" \
+  https://sso.example.com/realms/mocks/protocol/openid-connect/token | jq -r .access_token)
+curl -s https://mock-admin.example.com/__admin/stubs?space=payments -H "Authorization: Bearer $TOKEN"
+```
+
+Login, failed login and logout are audit events (`auth.login` with the group names, `auth.login_failed` with the
+reason, `auth.logout`); changes made by a user record `principalKind: user`. Codes, tokens, session ids, the
+client secret and the PKCE verifier are never logged.
 
 ## Spaces
 
@@ -306,7 +546,8 @@ with global `stubs:write` can create them.
 
 `permissions.global` holds what is granted everywhere; `permissions.spaces` what is granted only in single spaces
 (the effective permissions in a space are both lists together). `kind` is `token` for static tokens, `apiToken`
-for [managed tokens](#managed-tokens) (`anonymous` when authentication is disabled). `role` is kept for older clients: the highest built-in role whose permissions
+for [managed tokens](#managed-tokens), `user` for [OIDC users](#oidc-sign-in-and-bearer-jwts) (`anonymous` when
+authentication is disabled). Users also get `groups`, the group names from the provider. `role` is kept for older clients: the highest built-in role whose permissions
 the principal holds everywhere, `viewer` when it holds less.
 
 `GET /__admin/spaces` lists the spaces the caller can see (every space for a principal with a global permission,
@@ -329,10 +570,15 @@ otherwise its bound spaces) with the caller's permissions in each:
 | `400 {"error":"space payments owns /payments/, /psp/: ...",...}` | a stub outside the space's ownership |
 | `403 {"error":"requires permission ... to grant role ... there",...}` | a token request that would exceed the caller's permissions ([escalation rule](#managed-tokens)) |
 | `401 {"error":"unauthorized","details":["token expired"]}` | an expired managed token |
+| `401 {"error":"unauthorized","details":["session expired or unknown: sign in again"]}` | an expired, logged-out or unknown session cookie |
+| `401 {"error":"unauthorized","details":["invalid bearer token"]}` | a JWT that fails validation |
+| `403 {"error":"forbidden","details":["missing X-FastMock-Request: 1 header"]}` | a cookie-authenticated change without the CSRF header |
+| `403 {"error":"forbidden","details":["user bob has no access: ..."]}` | an OIDC user without any binding |
 
 Denials count in `fastmock_admin_auth_failures_total` with `reason="role"` for principals holding only global
 built-in roles and `reason="permission"` otherwise; expired managed tokens count as `reason="expired"`, revoked
-ones as `reason="token"`. Audit events record the principal kind (`principalKind`) and
+ones as `reason="token"`, rejected sessions as `reason="session"`, invalid JWTs as `reason="jwt"` and missing CSRF
+headers as `reason="csrf"`. Audit events record the principal kind (`principalKind`) and
 the space of the change (`space`).
 
 ## Examples
@@ -379,7 +625,7 @@ With Helm, put the same document under the `access` value ([Helm: access control
 2. Add spaces and bindings in the access file. Existing global tokens keep their global role, so they keep
    seeing and changing everything.
 3. Give teams new tokens with an empty role and space bindings (`name::<hash>` plus `token:name` bindings),
-   create [managed tokens](#managed-tokens) for them, or bind their OIDC groups once OIDC sign-in is available.
+   create [managed tokens](#managed-tokens) for them, or bind their [OIDC groups](#oidc-sign-in-and-bearer-jwts).
    The migration that adds the `fm_api_tokens` table is additive as well. Move their stubs into their space by exporting them
    (`GET /__admin/export?tag=...`), importing them with `?space=<space>` and deleting the global copies.
 4. Clients that read `principal.role` from `/__admin/info` keep working; use `principal.permissions` for new

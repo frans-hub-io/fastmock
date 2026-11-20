@@ -92,6 +92,39 @@ Prefer managed tokens with short lifetimes for CI pipelines and people, scoped t
 static tokens for the few clients that must survive a database loss (the operator, monitoring). In memory mode
 managed tokens are lost on restart. Watch `fastmock_api_tokens_active` for tokens piling up.
 
+## OIDC sign-in
+
+With [OIDC sign-in](access-control.md#oidc-sign-in-and-bearer-jwts) people use the UI with their identity provider
+account, and their groups decide what they may do. Design points:
+
+- **No tokens in the browser.** The admin port runs the authorization code flow itself (backend for frontend)
+  with `state`, `nonce` and PKCE S256 and a confidential client. The browser holds only an opaque session cookie
+  (`__Host-fastmock_session`: `Secure`, `HttpOnly`, `SameSite=Lax`, host-only). The session record in the hot
+  store is keyed by the SHA-256 of the cookie value, so a copy of Valkey does not contain usable cookies.
+- **Login integrity.** Each `state` is single-use and expires after 10 minutes; a login cookie ties the callback
+  to the browser that started the login (no login CSRF); `return` accepts only relative paths under `/ui/` (no
+  open redirect). Starting logins is rate-limited per replica.
+- **Token validation.** Signatures are checked against the provider's JWKS with RS256, PS256, ES256 or EdDSA only;
+  `none`, HMAC and `crit` headers are rejected, so a public key can never be used as an HMAC secret. `iss`, `aud`,
+  `azp`, `exp`, `nbf`, `iat` and `nonce` are checked with 60 seconds of skew. Unknown key ids trigger at most one
+  JWKS refresh per minute.
+- **CSRF.** Cookie-authenticated changes need `X-FastMock-Request: 1`, which a cross-site page cannot send without
+  a CORS preflight that the admin port never grants, on top of the `Origin` check.
+- **No implicit access.** A user without a binding gets no session (and `403` with a bearer JWT); there is no
+  default viewer role.
+- **Mock port isolation.** Cookies are not separated by port, so a browser also sends the session cookie to the
+  mock port of the same host. FastMock removes its session and login cookies from every data-plane request before
+  matching, templating, journaling or proxying, so a stub cannot echo or forward them. Serving the admin UI on its
+  own host name is still recommended.
+- **Egress.** Provider calls go only to the issuer host and `FASTMOCK_OIDC_ALLOWED_HOSTS`, through a dedicated
+  client with timeouts, a response size limit and no redirects elsewhere. A discovery document pointing elsewhere
+  stops the start.
+- **Logs and audit.** `auth.login`, `auth.login_failed` (with the reason) and `auth.logout` are audit events.
+  Authorization codes, tokens, session ids, the client secret and the PKCE verifier are never logged.
+- **Revocation.** Logging out deletes the session on every replica at once. Group changes at the provider apply at
+  the next sign-in; keep `FASTMOCK_OIDC_SESSION_TTL` and `FASTMOCK_OIDC_SESSION_IDLE` short enough for your
+  off-boarding needs. A JWT stays valid until its `exp`.
+
 ## Rotating tokens
 
 Managed tokens rotate without a restart: create the new token, switch the client, revoke the old one. Static
@@ -121,8 +154,9 @@ Refusals answer `403 {"error":"origin not allowed","details":[]}` and count as
 `fastmock_admin_auth_failures_total{reason="origin"}`. Non-browser clients do not send `Origin` and are not
 affected.
 
-The UI is a static application served from the admin port. It authenticates every call with the bearer token,
-which it keeps only in the tab's session storage (no cookies, so no cross-site request forgery). It is delivered
+The UI is a static application served from the admin port. With token login it authenticates every call with
+the bearer token, which it keeps only in the tab's session storage. With [OIDC sign-in](#oidc-sign-in) it uses the
+session cookie and sends the `X-FastMock-Request` header on changes. It is delivered
 with a strict Content-Security-Policy (`default-src 'none'`, `script-src 'self'`, `frame-ancestors 'none'`, no
 inline or third-party scripts) and renders data as text, never as HTML. Publish it only over TLS (see [Helm: Gateway API](helm.md#exposing-the-admin-ui-with-gateway-api)) and set
 `FASTMOCK_ADMIN_ALLOWED_ORIGINS` to its public URL.
@@ -283,7 +317,7 @@ Every change through the admin API is recorded:
   (`admin request rejected: missing or invalid token`, `... permission missing`), ready to be shipped to your log
   system.
 
-Events carry `principalKind` (`token`, `apiToken`, `anonymous`) and, for changes inside a space, `space`; `role` lists the role
+Events carry `principalKind` (`token`, `apiToken`, `user`, `anonymous`) and, for changes inside a space, `space`; `role` lists the role
 names of the principal's bindings.
 
 ```json
@@ -323,6 +357,8 @@ FastMock sends no telemetry anywhere unless you configure an OTLP endpoint.
 ## Hardening checklist
 
 - [ ] One token per client, minimal role, stored in a secret manager; rotation documented.
+- [ ] People sign in through OIDC with group bindings instead of shared tokens; session TTL and idle timeout
+      match your off-boarding needs; the admin UI on its own host name.
 - [ ] Admin port reachable only from tests, Prometheus and the Gateway (NetworkPolicy `adminFrom`).
 - [ ] UI only over TLS, `FASTMOCK_ADMIN_ALLOWED_ORIGINS` set to its URL; `/metrics` not published.
 - [ ] `FASTMOCK_CALLBACK_ALLOWED_HOSTS` set; egress NetworkPolicy with the same scope.

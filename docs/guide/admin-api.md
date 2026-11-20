@@ -68,6 +68,15 @@ fastmock hash-token "$FASTMOCK_TOKEN"   # prints the hash of an existing token
 Tokens can also be created, listed and revoked through the API, with an expiry and optionally limited to
 spaces: see [Managed tokens](#managed-tokens).
 
+With OIDC configured, two more credentials are accepted ([Access control: OIDC](../operations/access-control.md#oidc-sign-in-and-bearer-jwts)):
+
+- a JWT from the identity provider as the bearer token, when `FASTMOCK_OIDC_API_AUDIENCE` is set and the token's
+  `aud` contains it;
+- the UI's session cookie (`__Host-fastmock_session`) when there is no `Authorization` header. Requests other than
+  `GET` and `HEAD` then need the header `X-FastMock-Request: 1`.
+
+An `Authorization` header always wins: static tokens are checked first, then managed `fm_` tokens, then JWTs.
+
 Browser requests carrying an `Origin` header are accepted only from `FASTMOCK_ADMIN_ALLOWED_ORIGINS` or the
 admin listener's own origin.
 
@@ -76,6 +85,11 @@ admin listener's own origin.
 | `401 {"error":"unauthorized","details":[]}` + `WWW-Authenticate: Bearer` | token missing, unknown or revoked |
 | `401 {"error":"unauthorized","details":["token expired"]}` | managed token past its expiry |
 | `503 {"error":"token store unavailable","details":[]}` | a managed token could not be checked because the database is unreachable |
+| `401 {"error":"unauthorized","details":["invalid bearer token"]}` + `WWW-Authenticate: Bearer error="invalid_token"` | a JWT with a bad signature, issuer, audience or lifetime |
+| `401 {"error":"unauthorized","details":["session expired or unknown: sign in again"]}` | session cookie expired, logged out or unknown; the cookie is cleared |
+| `403 {"error":"forbidden","details":["missing X-FastMock-Request: 1 header"]}` | a change authenticated by the session cookie without the CSRF header |
+| `403 {"error":"forbidden","details":["user bob has no access: ..."],"required":"..."}` | an OIDC user without any binding |
+| `503 {"error":"session store unavailable","details":[]}` | the hot store holding sessions is unreachable |
 | `403 {"error":"forbidden","details":["requires role editor"],"required":"editor"}` | token valid, role too low |
 | `403 {"error":"forbidden","details":["requires permission files:read"],"required":"files:read"}` | a token with a custom role or space bindings lacks the permission ([Access control](../operations/access-control.md#errors)) |
 | `403 {"error":"origin not allowed","details":[]}` | browser request from another origin |
@@ -111,6 +125,18 @@ selects data are listed in [Access control](../operations/access-control.md#perm
 | `POST /reset`, `GET /audit` | admin |
 | `GET /tokens`, `/tokens/{id}`; `POST /tokens`, `DELETE /tokens/{id}` | admin (`tokens:read`, `tokens:write`; see [Managed tokens](#managed-tokens)) |
 | `GET /tokens/self`; `DELETE /tokens/{id}` of the calling token itself | the managed token itself |
+
+## Sign-in endpoints
+
+These routes serve the UI's SSO sign-in and need no token ([Access control: OIDC](../operations/access-control.md#oidc-sign-in-and-bearer-jwts)).
+Without OIDC configuration they answer `404`, except `/auth/config`.
+
+| Endpoint | Response |
+|---|---|
+| `GET /auth/config` | `{"oidc": true, "tokenLogin": true}`: which sign-in methods the login page offers |
+| `GET /auth/login?return=/ui/...` | `302` to the identity provider; `400` for a `return` outside `/ui/`; `503` until the provider is discovered; `429` when too many logins start on this replica |
+| `GET /auth/callback` | `302` to the `return` path with the session cookie, or to `/ui/?loginError=<code>` (`no_access`, `invalid_state`, `idp_error`, `failed`, `unavailable`) |
+| `POST /auth/logout` | needs `X-FastMock-Request: 1`; deletes the session, clears the cookie, `{"loggedOut": true, "logoutUrl": "..."}` (`logoutUrl` only when the provider supports RP-initiated logout) |
 
 ## Managed tokens
 
