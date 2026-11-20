@@ -149,3 +149,61 @@ test('a team lead can grant only roles it holds, only in its space', async ({ pa
   await page.getByTestId('token-spaces').click();
   await expect(page.getByRole('option')).toHaveText(['payments']);
 });
+
+test('access page: a space viewer sees only its own access', async ({ page }) => {
+  const errors = watchConsole(page);
+  await login(page, SPACE_VIEWER_TOKEN);
+  await page.getByRole('link', { name: 'Access' }).click();
+  await expect(page.getByRole('heading', { name: 'Access' })).toBeVisible();
+  await expect(page.getByTestId('your-access')).toContainText('pay-viewer');
+  await expect(page.getByTestId('your-space-row')).toHaveCount(1);
+  await expect(page.getByTestId('your-space-row')).toContainText('payments');
+  await expect(page.getByTestId('your-space-row')).toContainText('stubs:read');
+  await expect(page.getByTestId('access-config-hidden')).toBeVisible();
+  await expect(page.getByTestId('access-config')).toHaveCount(0);
+  expect(cspViolations(errors)).toEqual([]);
+});
+
+test('access page: access:read shows the spaces, roles and bindings of the access file', async ({ page }) => {
+  const errors = watchConsole(page);
+  await login(page, ADMIN_TOKEN);
+  await page.getByRole('link', { name: 'Access' }).click();
+  await expect(page.getByTestId('access-source')).toContainText('access file');
+  await expect(page.getByTestId('access-space-row')).toHaveText([/^billing/, /^payments\/payments\//]);
+  await expect(page.getByTestId('access-role-row').filter({ hasText: 'team-lead' })).toContainText('custom');
+  await expect(page.getByTestId('access-role-row').first()).toContainText(/viewer\s*built-in/);
+  await expect(page.getByTestId('access-binding-row').first()).toHaveText('token:leadteam-leadpayments');
+  expect(cspViolations(errors)).toEqual([]);
+});
+
+test('tokens page: a token for all spaces', async ({ page }) => {
+  const errors = watchConsole(page);
+  const name = `${run}-all`;
+  await login(page, ADMIN_TOKEN);
+  await page.getByRole('link', { name: 'Admin tokens' }).click();
+  await page.getByTestId('create-token').click();
+  await page.getByTestId('token-name').fill(name);
+  await page.getByTestId('token-role').click();
+  await page.getByRole('option', { name: 'viewer' }).click();
+  await page.getByTestId('token-scope').locator('label', { hasText: /^All spaces$/ }).click();
+  await expect(page.getByTestId('token-all-spaces-note')).toBeVisible();
+  await page.getByTestId('token-days').fill('1');
+  await page.getByTestId('token-create-submit').click();
+
+  const shown = page.getByTestId('token-value');
+  await expect(shown).toBeVisible();
+  const value = (await shown.textContent())?.trim() ?? '';
+  const me = await adminApi('/__admin/info', { token: value });
+  expect(me.status).toBe(200);
+  const perms = ((await me.json()) as { principal: { permissions: { spaces: Record<string, string[]>; allSpaces: string[] } } }).principal.permissions;
+  expect(Object.keys(perms.spaces).sort()).toEqual(['billing', 'payments']);
+  expect(perms.allSpaces).toContain('stubs:read');
+
+  await page.getByTestId('token-done').click();
+  const row = page.getByTestId('token-row').filter({ hasText: name });
+  await expect(row.getByTestId('scope-all-spaces')).toHaveText('All spaces');
+  await row.getByTestId('revoke-token').click();
+  await page.getByTestId('confirm-button').click();
+  await expect(row).toHaveCount(0);
+  expect(cspViolations(errors)).toEqual([]);
+});

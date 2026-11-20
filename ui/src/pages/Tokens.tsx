@@ -20,16 +20,16 @@ import {
 } from '@mantine/core';
 import { IconAlertTriangle, IconBan, IconCheck, IconCopy, IconKey, IconPlus } from '@tabler/icons-react';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useState, type ReactElement } from 'react';
 import { client, unwrap } from '../api/client';
 import { errorMessage } from '../api/http';
 import { confirmAction, notifySuccess, useApiMutation } from '../api/mutations';
 import type { components } from '../api/schema';
-import { can as allowed } from '../auth/permissions';
+import { ALL_SPACES, can as allowed, canInAllSpaces, isAllSpaces } from '../auth/permissions';
 import { useAuth, useCan, useSpace, useSpaceQuery } from '../auth/useAuth';
 import { PageHeader, Time } from '../components/common';
 import { Permitted } from '../components/Permitted';
-import { SpaceBadge } from '../components/spaces';
+import { ScopeBadges } from '../components/spaces';
 import { EmptyState, ErrorState, LoadingState, NoAccessState, TokensGate } from '../components/States';
 
 type TokenInfo = components['schemas']['TokenInfo'];
@@ -54,11 +54,15 @@ function RoleBadge({ role, options }: { role: string; options: TokenOptions | un
   );
 }
 
+type Scope = 'spaces' | 'all' | 'global';
+
 /** Scopes the role may be granted in, as offered to the caller. */
-function scopesOf(role: GrantableRole | undefined, spacesEnabled: boolean): { global: boolean; spaces: string[] } {
-  if (!role) return { global: false, spaces: [] };
-  return { global: role.global, spaces: spacesEnabled ? role.spaces : [] };
+function scopesOf(role: GrantableRole | undefined, spacesEnabled: boolean): { global: boolean; all: boolean; spaces: string[] } {
+  if (!role) return { global: false, all: false, spaces: [] };
+  return { global: role.global, all: spacesEnabled && role.allSpaces, spaces: spacesEnabled ? role.spaces : [] };
 }
+
+const SCOPE_LABEL: Record<Scope, string> = { spaces: 'In spaces', all: 'All spaces', global: 'Global' };
 
 function CreateTokenModal({
   opened,
@@ -75,20 +79,22 @@ function CreateTokenModal({
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [role, setRole] = useState<string | null>(null);
-  const [scope, setScope] = useState<'global' | 'spaces'>('spaces');
+  const [scope, setScope] = useState<Scope>('spaces');
   const [spaces, setSpaces] = useState<string[]>([]);
   const [days, setDays] = useState<number | ''>('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const roles = (options?.roles ?? []).filter((r) => r.global || (spacesCtx.enabled && r.spaces.length > 0));
+  const roles = (options?.roles ?? []).filter((r) => r.global || (spacesCtx.enabled && (r.spaces.length > 0 || r.allSpaces)));
   const def = roles.find((r) => r.name === role);
   const offered = scopesOf(def, spacesCtx.enabled);
-  const effectiveScope: 'global' | 'spaces' = !offered.spaces.length ? 'global' : !offered.global ? 'spaces' : scope;
+  const choices = (['spaces', 'all', 'global'] as const).filter((c) => (c === 'spaces' ? offered.spaces.length > 0 : offered[c]));
+  const effectiveScope: Scope = choices.includes(scope) ? scope : (choices[0] ?? 'global');
   const max = options?.maxDays ?? 365;
   const lifetime = days === '' ? (options?.defaultDays ?? Math.min(90, max)) : days;
   const nameOk = NAME_RE.test(name.trim());
-  const scopeOk = effectiveScope === 'global' ? offered.global : spaces.length > 0 && spaces.every((s) => offered.spaces.includes(s));
+  const scopeOk =
+    effectiveScope === 'spaces' ? spaces.length > 0 && spaces.every((s) => offered.spaces.includes(s)) : choices.includes(effectiveScope);
   const valid = nameOk && !!def && scopeOk && lifetime >= 1 && lifetime <= max;
 
   const reset = () => {
@@ -121,7 +127,7 @@ function CreateTokenModal({
           body: {
             name: name.trim(),
             role: def.name,
-            ...(effectiveScope === 'global' ? { global: true } : { spaces }),
+            ...(effectiveScope === 'global' ? { global: true } : { spaces: effectiveScope === 'all' ? [ALL_SPACES] : spaces }),
             expiresInDays: lifetime,
             ...(description.trim() ? { description: description.trim() } : {}),
           },
@@ -171,14 +177,11 @@ function CreateTokenModal({
             ))}
           </Group>
         )}
-        {def && offered.global && offered.spaces.length > 0 && (
+        {def && choices.length > 1 && (
           <SegmentedControl
             value={effectiveScope}
             onChange={setScope}
-            data={[
-              { label: 'In spaces', value: 'spaces' },
-              { label: 'Global', value: 'global' },
-            ]}
+            data={choices.map((c) => ({ label: SCOPE_LABEL[c], value: c }))}
             aria-label="Scope"
             w="fit-content"
             data-testid="token-scope"
@@ -196,6 +199,11 @@ function CreateTokenModal({
             data-testid="token-spaces"
             comboboxProps={{ withinPortal: true }}
           />
+        )}
+        {def && effectiveScope === 'all' && (
+          <Text size="xs" c="dimmed" data-testid="token-all-spaces-note">
+            An all-spaces token acts in every space of the access file, including spaces added later, but not in the global area.
+          </Text>
         )}
         {def && effectiveScope === 'global' && spacesCtx.enabled && (
           <Text size="xs" c="dimmed">
@@ -230,6 +238,20 @@ function CreateTokenModal({
         </Group>
       </Stack>
     </Modal>
+  );
+}
+
+/**
+ * The revoke control as is when the caller may revoke the token, else disabled with the missing permission.
+ * An all-spaces token needs `tokens:write` globally or through the caller's own all-spaces grant, which
+ * `Permitted` cannot express.
+ */
+function RevokeGuard({ allowed: ok, where, children }: { allowed: boolean; where: string | null | undefined; children: ReactElement<{ disabled?: boolean }> }) {
+  if (ok) return children;
+  return (
+    <Permitted perm="tokens:write" where={where}>
+      {children}
+    </Permitted>
   );
 }
 
@@ -301,7 +323,8 @@ function TokensInner() {
 
   if (!canRead) return <NoAccessState perm="tokens:read" />;
 
-  const revocable = (t: TokenInfo) => (t.global ? can('tokens:write', null) : t.spaces.every((s) => can('tokens:write', s)));
+  const revocable = (t: TokenInfo) =>
+    t.global ? can('tokens:write', null) : isAllSpaces(t.spaces) ? canInAllSpaces(permissions, 'tokens:write') : t.spaces.every((s) => can('tokens:write', s));
   const grantable = (options.data?.roles ?? []).some((r) => r.global || r.spaces.length > 0);
 
   return (
@@ -375,17 +398,7 @@ function TokensInner() {
                       <RoleBadge role={t.role} options={options.data} />
                     </Table.Td>
                     <Table.Td>
-                      {t.global ? (
-                        <Badge variant="outline" color="grape" tt="none">
-                          global
-                        </Badge>
-                      ) : (
-                        <Group gap={4}>
-                          {t.spaces.map((s) => (
-                            <SpaceBadge key={s} space={s} />
-                          ))}
-                        </Group>
-                      )}
+                      <ScopeBadges global={t.global} spaces={t.spaces} globalLabel="global" />
                     </Table.Td>
                     <Table.Td className="truncate" maw={160}>
                       {t.createdBy}
@@ -406,7 +419,7 @@ function TokensInner() {
                     </Table.Td>
                     <Table.Td>
                       {t.status === 'active' && (
-                        <Permitted perm="tokens:write" where={t.global ? null : t.spaces.find((s) => !can('tokens:write', s)) ?? t.spaces[0]}>
+                        <RevokeGuard allowed={revocable(t)} where={t.global || isAllSpaces(t.spaces) ? null : (t.spaces.find((s) => !can('tokens:write', s)) ?? t.spaces[0])}>
                           <Tooltip label={`Revoke ${t.name}`} withArrow disabled={!revocable(t)}>
                             <ActionIcon
                               variant="subtle"
@@ -425,7 +438,7 @@ function TokensInner() {
                               <IconBan size={16} />
                             </ActionIcon>
                           </Tooltip>
-                        </Permitted>
+                        </RevokeGuard>
                       )}
                     </Table.Td>
                   </Table.Tr>

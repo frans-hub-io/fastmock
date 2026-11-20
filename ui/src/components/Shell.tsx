@@ -38,6 +38,7 @@ import {
   IconSitemap,
   IconSun,
   IconUser,
+  IconUserShield,
   IconWebhook,
 } from '@tabler/icons-react';
 import type { ComponentType, ReactNode } from 'react';
@@ -100,6 +101,7 @@ const NAV: { group: string; items: NavItem[] }[] = [
       { to: '/kv', label: 'KV store', icon: IconDatabase, perm: 'state:read' },
       { to: '/settings', label: 'Settings', icon: IconSettings, perm: 'chaos:read' },
       { to: '/tokens', label: 'Admin tokens', icon: IconKey, perm: 'tokens:read', tokensApi: true },
+      { to: '/access', label: 'Access', icon: IconUserShield },
       { to: '/audit', label: 'Audit log', icon: IconHistory, perm: 'audit:read' },
       { to: '/api', label: 'API docs', icon: IconApi },
     ],
@@ -173,8 +175,9 @@ function ThemeToggle() {
 }
 
 /** The role badge: the role for principals that hold it everywhere, else the spaces they are bound to. */
-function scopeLabel(role: string, spaces: string[], global: boolean): string {
+function scopeLabel(role: string, spaces: string[], global: boolean, allSpaces: boolean): string {
   if (global || !spaces.length) return role;
+  if (allSpaces) return 'all spaces';
   return spaces.length === 1 ? (spaces[0] ?? role) : `${spaces.length} spaces`;
 }
 
@@ -182,7 +185,8 @@ function Principal() {
   const { name, role, kind, info, permissions, logout } = useAuth();
   const spaces = boundSpaces(permissions);
   const global = seesAllSpaces(permissions);
-  const badge = scopeLabel(role, spaces, global);
+  const allSpaces = !!permissions?.allSpaces?.length;
+  const badge = scopeLabel(role, spaces, global, allSpaces);
   const groups = info?.principal.groups ?? [];
   const who = name || 'anonymous';
   return (
@@ -217,7 +221,7 @@ function Principal() {
           </Text>
           {spaces.length > 0 && (
             <Text size="xs" c="dimmed" data-testid="principal-spaces">
-              Spaces: {spaces.join(', ')}
+              Spaces: {allSpaces ? `all (${spaces.join(', ')})` : spaces.join(', ')}
             </Text>
           )}
           {groups.length > 0 && (
@@ -230,6 +234,9 @@ function Principal() {
         <Menu.Divider />
         <Menu.Item leftSection={<IconBolt size={16} />} component={Link} to="/">
           Dashboard
+        </Menu.Item>
+        <Menu.Item leftSection={<IconUserShield size={16} />} component={Link} to="/access">
+          Your access
         </Menu.Item>
         {!info?.authDisabled && (
           <Menu.Item leftSection={<IconLogout size={16} />} color="red" onClick={() => logout()} data-testid="logout">

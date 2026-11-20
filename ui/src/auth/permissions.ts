@@ -6,6 +6,8 @@ export type Permission = string;
 export interface Permissions {
   global: Permission[];
   spaces: Record<string, Permission[]>;
+  /** Permissions granted in every space through a `spaces: ["*"]` binding or token (absent when none). */
+  allSpaces?: Permission[];
 }
 
 /**
@@ -23,12 +25,14 @@ const GLOBAL_ONLY = new Set([
   'chaos:write',
   'grpc:read',
   'grpc:write',
+  'contracts:secrets',
   'info:read',
   'audit:read',
   'system:reset',
+  'access:read',
 ]);
 
-const GLOBAL_RESOURCES = new Set(['recordings', 'chaos', 'grpc', 'info', 'audit', 'system']);
+const GLOBAL_RESOURCES = new Set(['recordings', 'chaos', 'grpc', 'info', 'audit', 'system', 'access']);
 
 const VIEWER = [
   'stubs:read',
@@ -86,11 +90,38 @@ export function can(perms: Permissions | null | undefined, needed: Permission, w
   return holds(perms.spaces[where], needed);
 }
 
+/** Effective permissions in one space: the global ones that apply in spaces plus the space's own grants. */
+export function effectiveInSpace(perms: Permissions | null | undefined, space: string): Permission[] {
+  if (!perms) return [];
+  const fromGlobal = perms.global.filter((p) => p === '*' || (p.endsWith(':*') ? !GLOBAL_RESOURCES.has(p.slice(0, -2)) : spaceScoped(p)));
+  return [...new Set([...fromGlobal, ...(perms.spaces[space] ?? [])])].sort();
+}
+
+/** The `spaces` entry of a binding or token that stands for every space, including spaces added later. */
+export const ALL_SPACES = '*';
+
+/** True when a binding's or token's space list is the all-spaces wildcard. */
+export function isAllSpaces(spaces: readonly string[] | null | undefined): boolean {
+  return !!spaces && spaces.length === 1 && spaces[0] === ALL_SPACES;
+}
+
+/**
+ * True when the principal holds `needed` in every space, including spaces added later: globally, or through a
+ * `spaces: ["*"]` grant for a space-scoped permission.
+ */
+export function canInAllSpaces(perms: Permissions | null | undefined, needed: Permission): boolean {
+  if (!perms) return false;
+  return holds(perms.global, needed) || (spaceScoped(needed) && holds(perms.allSpaces, needed));
+}
+
 /** The principal's permissions, derived from the role when the server predates permissions. */
 export function permissionsOf(principal: Partial<Principal> | null | undefined): Permissions | null {
   if (!principal) return null;
   const p = principal.permissions as Partial<Permissions> | undefined;
-  if (p && Array.isArray(p.global)) return { global: strings(p.global), spaces: spaceLists(p.spaces) };
+  if (p && Array.isArray(p.global)) {
+    const all = strings(p.allSpaces);
+    return { global: strings(p.global), spaces: spaceLists(p.spaces), ...(all.length ? { allSpaces: all } : {}) };
+  }
   if (!principal.role) return null;
   const builtin = Object.hasOwn(BUILTIN_ROLES, principal.role) ? BUILTIN_ROLES[principal.role] : undefined;
   return { global: builtin ?? [], spaces: {} };

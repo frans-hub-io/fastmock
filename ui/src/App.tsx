@@ -33,6 +33,7 @@ const ServicesPage = lazy(() => import('./pages/Services'));
 const ContractTestsPage = lazy(() => import('./pages/ContractTests'));
 const AuditPage = lazy(() => import('./pages/Audit'));
 const TokensPage = lazy(() => import('./pages/Tokens'));
+const AccessPage = lazy(() => import('./pages/Access'));
 const ApiDocsPage = lazy(() => import('./pages/ApiDocs'));
 const NotFoundPage = lazy(() => import('./pages/NotFound'));
 
@@ -80,6 +81,7 @@ function Protected() {
           <Route path="contract-tests" element={<ContractTestsPage />} />
           <Route path="audit" element={<AuditPage />} />
           <Route path="tokens" element={<TokensPage />} />
+          <Route path="access" element={<AccessPage />} />
           <Route path="api" element={<ApiDocsPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>

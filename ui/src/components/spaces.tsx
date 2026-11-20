@@ -1,6 +1,6 @@
-import { Badge, Select, Text } from '@mantine/core';
+import { Badge, Group, Select, Text } from '@mantine/core';
 import { IconStack2 } from '@tabler/icons-react';
-import type { Permission } from '../auth/permissions';
+import { isAllSpaces, type Permission } from '../auth/permissions';
 import { useSpace, useSpaceOptions } from '../auth/useAuth';
 
 const ALL = '*';
@@ -52,6 +52,29 @@ export function SpaceBadge({ space }: { space: string | null | undefined }) {
     <Badge variant="light" color="teal" radius="sm" tt="none" data-testid="space-badge">
       {space}
     </Badge>
+  );
+}
+
+/** Where a binding or token applies: the whole server, every space (`["*"]`) or the listed spaces. */
+export function ScopeBadges({ global, spaces, globalLabel = 'Global' }: { global: boolean; spaces: readonly string[]; globalLabel?: string }) {
+  if (global)
+    return (
+      <Badge variant="outline" color="grape" tt="none" data-testid="scope-global">
+        {globalLabel}
+      </Badge>
+    );
+  if (isAllSpaces(spaces))
+    return (
+      <Badge variant="outline" color="teal" tt="none" data-testid="scope-all-spaces">
+        All spaces
+      </Badge>
+    );
+  return (
+    <Group gap={4}>
+      {spaces.map((s) => (
+        <SpaceBadge key={s} space={s} />
+      ))}
+    </Group>
   );
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boundSpaces, can, covers, missingText, permissionsOf, seesAllSpaces, tokensOffered, type Permissions } from './permissions';
+import { boundSpaces, can, canInAllSpaces, covers, isAllSpaces, missingText, permissionsOf, seesAllSpaces, tokensOffered, type Permissions } from './permissions';
 import { loginErrorMessage, ssoReturnPath, takeLoginError } from './sso';
 
 const scoped: Permissions = {
@@ -79,11 +79,32 @@ describe('unknown roles and partial permissions', () => {
   });
 
   it('keeps what the server lists and drops malformed space entries', () => {
-    const p = permissionsOf({ name: 'x', role: 'auditor' as never, permissions: { global: ['journal:read'], spaces: { billing: null as never, payments: ['stubs:read'] } } });
+    const p = permissionsOf({ name: 'x', role: 'auditor' as never, permissions: { global: ['journal:read'], spaces: { billing: null as never, payments: ['stubs:read'] }, allSpaces: [] } });
     expect(p).toEqual({ global: ['journal:read'], spaces: { billing: [], payments: ['stubs:read'] } });
     expect(can(p, 'stubs:read', 'billing')).toBe(false);
     expect(can(p, 'stubs:read', 'payments')).toBe(true);
     expect(seesAllSpaces(p)).toBe(true);
+  });
+});
+
+describe('all-spaces grants', () => {
+  it('keeps allSpaces from the server and treats access:read as global-only', () => {
+    const p = permissionsOf({
+      name: 'ci',
+      role: 'viewer',
+      permissions: { global: ['info:read'], spaces: { billing: ['stubs:read', 'tokens:write'], payments: ['stubs:read', 'tokens:write'] }, allSpaces: ['stubs:read', 'tokens:write'] },
+    });
+    expect(p?.allSpaces).toEqual(['stubs:read', 'tokens:write']);
+    expect(canInAllSpaces(p, 'tokens:write')).toBe(true);
+    expect(canInAllSpaces(p, 'stubs:write')).toBe(false);
+    expect(canInAllSpaces({ global: [], spaces: {}, allSpaces: ['*'] }, 'audit:read')).toBe(false);
+    expect(canInAllSpaces({ global: ['tokens:*'], spaces: {} }, 'tokens:write')).toBe(true);
+    expect(can({ global: [], spaces: { payments: ['access:read'] } }, 'access:read')).toBe(false);
+    expect(can({ global: ['access:*'], spaces: {} }, 'access:read')).toBe(true);
+    expect(seesAllSpaces({ global: ['access:*'], spaces: {} })).toBe(false);
+    expect(isAllSpaces(['*'])).toBe(true);
+    expect(isAllSpaces(['*', 'billing'])).toBe(false);
+    expect(isAllSpaces([])).toBe(false);
   });
 });
 

@@ -12,7 +12,7 @@ interface Principal {
   name: string;
   role: string;
   kind?: string;
-  permissions?: { global: string[]; spaces: Record<string, string[] | null> };
+  permissions?: { global: string[]; spaces: Record<string, string[] | null>; allSpaces?: string[] };
   groups?: string[];
 }
 
@@ -39,6 +39,8 @@ interface Server {
   expireSession?: () => boolean;
   /** `features` of `GET /__admin/version`. */
   features?: string[];
+  /** Body of `GET /__admin/access`; 403 when absent. */
+  access?: unknown;
 }
 
 function server(s: Server) {
@@ -54,6 +56,7 @@ function server(s: Server) {
     if (url.pathname === '/__admin/info') return { body: info(s.principal) };
     if (url.pathname === '/__admin/version') return { body: { version: '0.1.0', features: s.features ?? ['files', 'tokens'] } };
     if (url.pathname === '/__admin/spaces') return { body: { spaces: s.spaces ?? [] } };
+    if (url.pathname === '/__admin/access') return s.access ? { body: s.access } : { status: 403, body: { error: 'forbidden', details: [], required: 'access:read' } };
     if (url.pathname === '/__admin/stubs' && init.method === 'GET') {
       const space = url.searchParams.get('space');
       const stubs = STUBS.filter((x) => !space || x.space === space);
@@ -446,5 +449,196 @@ describe('screens and imports outside the principal permissions', () => {
     renderApp(<AppRoutes />, '/stubs');
     await userEvent.click(await screen.findByRole('button', { name: 'Import' }));
     expect(await screen.findByTestId('import-dropzone')).toHaveTextContent(/AsyncAPI, WSDL/);
+  });
+});
+
+describe('access page', () => {
+  const BUILTIN = [
+    { name: 'viewer', builtin: true, permissions: ['stubs:read', 'journal:read'] },
+    { name: 'editor', builtin: true, permissions: ['stubs:read', 'stubs:write'] },
+    { name: 'admin', builtin: true, permissions: ['access:read', 'stubs:purge'] },
+  ];
+  const CONFIGURED = {
+    configured: true,
+    oidc: true,
+    spaces: [
+      { name: 'billing', pathPrefixes: ['/billing/'], hosts: ['billing.example.com'] },
+      { name: 'payments', pathPrefixes: ['/payments/'], hosts: [] },
+    ],
+    roles: [...BUILTIN, { name: 'team-lead', builtin: false, permissions: ['stubs:read', 'tokens:write'] }],
+    bindings: [
+      { subject: 'token:ci-payments', role: 'team-lead', global: false, spaces: ['payments'] },
+      { subject: 'group:qa', role: 'editor', global: false, spaces: ['*'] },
+      { subject: 'group:platform', role: 'admin', global: true, spaces: [] },
+    ],
+  };
+
+  it('shows your access and the read-only configuration to principals with access:read', async () => {
+    tokenStore.set('good');
+    server({ principal: { name: 'ops', role: 'admin', kind: 'token', permissions: ADMIN_PERMS }, spaces: SPACES, access: CONFIGURED });
+    renderApp(<AppRoutes />, '/access');
+    expect(await screen.findByRole('heading', { name: 'Access' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Access' })).toBeInTheDocument();
+    expect(screen.getByTestId('your-global')).toHaveTextContent('*');
+    expect(await screen.findByTestId('access-source')).toHaveTextContent(/access file.*restart/);
+    expect(screen.getByTestId('oidc-badge')).toHaveTextContent('OIDC enabled');
+
+    const spaces = screen.getAllByTestId('access-space-row');
+    expect(spaces.map((r) => r.textContent)).toEqual(['billing/billing/billing.example.com', 'payments/payments/—']);
+
+    const roles = screen.getAllByTestId('access-role-row');
+    expect(roles).toHaveLength(4);
+    expect(roles[0]).toHaveTextContent(/viewer\s*built-in/);
+    expect(roles[3]).toHaveTextContent(/team-lead\s*custom/);
+    expect(roles[3]).toHaveTextContent('tokens:write');
+
+    const bindings = screen.getAllByTestId('access-binding-row');
+    expect(bindings.map((r) => r.textContent)).toEqual(['token:ci-paymentsteam-leadpayments', 'group:qaeditorAll spaces', 'group:platformadminGlobal']);
+    expect(within(bindings[1] as HTMLElement).getByTestId('scope-all-spaces')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /edit|delete|save/i })).not.toBeInTheDocument();
+  });
+
+  it('shows only your access to principals without access:read and does not call the endpoint', async () => {
+    tokenStore.set('good');
+    const calls = server({
+      principal: { name: 'alice', role: 'viewer', kind: 'user', groups: ['payments-dev'], permissions: { global: ['info:read', 'journal:read'], spaces: { payments: ['stubs:read', 'stubs:write'] } } },
+      spaces: SPACES.slice(1),
+      access: CONFIGURED,
+    });
+    renderApp(<AppRoutes />, '/access');
+    expect(await screen.findByTestId('your-access')).toHaveTextContent(/alice.*user.*payments-dev/);
+    expect(screen.getByTestId('your-global')).toHaveTextContent('info:readjournal:read');
+    const [row] = screen.getAllByTestId('your-space-row');
+    expect(row).toHaveTextContent('payments');
+    expect(row).toHaveTextContent('journal:readstubs:readstubs:write');
+    expect(row).not.toHaveTextContent('info:read');
+    expect(screen.getByTestId('access-config-hidden')).toHaveTextContent('access:read');
+    expect(screen.queryByTestId('access-config')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('your-all-spaces')).not.toBeInTheDocument();
+    expect(calls.some((c) => c.url.startsWith('/__admin/access'))).toBe(false);
+  });
+
+  it('explains static tokens and built-in roles when no access file is loaded', async () => {
+    tokenStore.set('good');
+    server({ principal: { name: 'ops', role: 'admin', kind: 'token', permissions: ADMIN_PERMS }, access: { configured: false, oidc: false, spaces: [], roles: BUILTIN, bindings: [] } });
+    renderApp(<AppRoutes />, '/access');
+    const note = await screen.findByTestId('access-not-configured');
+    expect(note).toHaveTextContent(/static admin tokens and the built-in roles/);
+    expect(note).toHaveTextContent('operations/access-control/');
+    expect(screen.getByTestId('access-file-badge')).toHaveTextContent('No access file');
+    expect(screen.getAllByTestId('access-role-row')).toHaveLength(3);
+    expect(screen.queryByTestId('access-spaces')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('access-bindings')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('access-source')).not.toBeInTheDocument();
+  });
+
+  it('shows permissions granted in all spaces', async () => {
+    tokenStore.set('good');
+    server({
+      principal: {
+        name: 'qa',
+        role: 'viewer',
+        kind: 'apiToken',
+        permissions: { global: ['info:read'], spaces: { billing: ['stubs:read', 'journal:read'], payments: ['stubs:read', 'journal:read'] }, allSpaces: ['stubs:read', 'journal:read'] },
+      },
+      spaces: SPACES,
+    });
+    renderApp(<AppRoutes />, '/access');
+    const all = await screen.findByTestId('your-all-spaces');
+    expect(all).toHaveTextContent(/All spaces.*including spaces added later.*stubs:readjournal:read/);
+    expect(screen.getAllByTestId('your-space-row')).toHaveLength(2);
+    expect(screen.getByTestId('role-badge')).toHaveTextContent('all spaces');
+    expect(screen.getByTestId('access-config-hidden')).toBeInTheDocument();
+  });
+});
+
+describe('tokens in all spaces', () => {
+  const OPTIONS = {
+    maxDays: 30,
+    defaultDays: 30,
+    roles: [
+      { name: 'viewer', builtin: true, permissions: ['stubs:read'], global: true, allSpaces: true, spaces: ['billing', 'payments'] },
+      { name: 'stub-author', builtin: false, permissions: ['stubs:read', 'stubs:write'], global: false, allSpaces: false, spaces: ['payments'] },
+      { name: 'qa', builtin: false, permissions: ['journal:read'], global: false, allSpaces: true, spaces: [] },
+    ],
+  };
+  const STAR = {
+    id: '0190e0d0-0000-7000-8000-000000000003',
+    name: 'ci-everywhere',
+    role: 'viewer',
+    spaces: ['*'],
+    global: false,
+    createdBy: 'ops',
+    createdAt: '2026-11-01T10:00:00Z',
+    expiresAt: '2027-01-01T10:00:00Z',
+    lastUsedAt: null,
+    revokedAt: null,
+    status: 'active',
+  };
+
+  function starServer() {
+    let tokens = [STAR];
+    return mockFetch((url, init) => {
+      if (url.pathname === '/openapi.json') return { body: { paths: { '/__admin/tokens': { get: {} } }, components: { schemas: {} } } };
+      if (url.pathname === '/__admin/auth/config') return { body: { oidc: false, tokenLogin: true } };
+      if (init.headers.get('authorization') !== 'Bearer good') return { status: 401, body: { error: 'unauthorized' } };
+      if (url.pathname === '/__admin/info') return { body: info({ name: 'ops', role: 'admin', kind: 'token', permissions: ADMIN_PERMS }) };
+      if (url.pathname === '/__admin/version') return { body: { version: '0.1.0', features: ['tokens'] } };
+      if (url.pathname === '/__admin/spaces') return { body: { spaces: SPACES } };
+      if (url.pathname === '/__admin/tokens/options') return { body: OPTIONS };
+      if (url.pathname === '/__admin/tokens' && init.method === 'GET') return { body: { tokens } };
+      if (url.pathname === '/__admin/tokens' && init.method === 'POST') {
+        const b = JSON.parse(init.body ?? '{}') as { name: string; role: string; spaces?: string[] };
+        const t = { ...STAR, id: '0190e0d0-0000-7000-8000-000000000004', name: b.name, role: b.role, spaces: b.spaces ?? [], global: !b.spaces };
+        tokens = [t, ...tokens];
+        return { status: 201, body: { ...t, token: 'fm_' + 'cd'.repeat(32) } };
+      }
+      return undefined;
+    });
+  }
+
+  async function pickRole(name: string) {
+    await userEvent.click(screen.getByRole('combobox', { name: 'Role' }));
+    await userEvent.click(await screen.findByRole('option', { name, hidden: true }));
+  }
+
+  it('shows All spaces in the list and creates a token for all spaces', async () => {
+    tokenStore.set('good');
+    const calls = starServer();
+    renderApp(<AppRoutes />, '/tokens');
+    const row = await screen.findByTestId('token-row');
+    expect(within(row).getByTestId('scope-all-spaces')).toHaveTextContent('All spaces');
+    expect(within(row).getByTestId('revoke-token')).toBeEnabled();
+
+    await userEvent.click(screen.getByTestId('create-token'));
+    await userEvent.type(await screen.findByTestId('token-name'), 'ci-all');
+    await pickRole('viewer');
+    const scope = screen.getByTestId('token-scope');
+    expect(within(scope).getAllByRole('radio').map((r) => r.getAttribute('value'))).toEqual(['spaces', 'all', 'global']);
+    await userEvent.click(within(scope).getByLabelText('All spaces'));
+    expect(screen.getByTestId('token-all-spaces-note')).toHaveTextContent(/including spaces added later/);
+    expect(screen.queryByTestId('token-spaces')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('token-create-submit'));
+    await screen.findByTestId('token-value');
+    const post = calls.find((c) => c.method === 'POST' && c.url === '/__admin/tokens');
+    expect(JSON.parse(post?.body ?? '{}')).toEqual({ name: 'ci-all', role: 'viewer', spaces: ['*'], expiresInDays: 30 });
+  });
+
+  it('offers All spaces only for roles whose allSpaces is true', async () => {
+    tokenStore.set('good');
+    starServer();
+    renderApp(<AppRoutes />, '/tokens');
+    await userEvent.click(await screen.findByTestId('create-token'));
+    await screen.findByTestId('token-name');
+    await pickRole('stub-author (custom)');
+    expect(screen.queryByTestId('token-scope')).not.toBeInTheDocument();
+    expect(screen.getByTestId('token-spaces')).toBeInTheDocument();
+    await pickRole('qa (custom)');
+    expect(screen.queryByTestId('token-scope')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('token-spaces')).not.toBeInTheDocument();
+    expect(screen.getByTestId('token-all-spaces-note')).toBeInTheDocument();
+    expect(screen.getByTestId('token-create-submit')).toBeDisabled();
+    await userEvent.type(screen.getByTestId('token-name'), 'ci-qa');
+    expect(screen.getByTestId('token-create-submit')).toBeEnabled();
   });
 });
