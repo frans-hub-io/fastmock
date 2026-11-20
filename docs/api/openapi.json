@@ -10,6 +10,53 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/__admin/access": {
+      "get": {
+        "tags": [
+          "access"
+        ],
+        "summary": "The access configuration (read-only)",
+        "description": "Spaces, roles (with expanded permissions) and bindings of the access file (`FASTMOCK_ACCESS_FILE`). Needs `access:read`, a global permission of the built-in admin role. Changes need a new access file and a restart. Token values and hashes, the file path and OIDC settings are never included; static tokens without an access file have no bindings here.",
+        "operationId": "getAccess",
+        "responses": {
+          "200": {
+            "description": "The access configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires access:read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/__admin/async-mocks": {
       "get": {
         "tags": [
@@ -6730,13 +6777,13 @@
           "tokens"
         ],
         "summary": "List managed tokens",
-        "description": "Metadata only, newest first, including revoked and expired tokens (kept for 90 days). Lists the tokens for which the caller holds `tokens:read` in every scope; global tokens need it globally.",
+        "description": "Metadata only, newest first, including revoked and expired tokens (kept for 90 days). Lists the tokens for which the caller holds `tokens:read` in every scope; global tokens need it globally, `*` tokens globally or through a `*` grant.",
         "operationId": "listTokens",
         "parameters": [
           {
             "name": "space",
             "in": "query",
-            "description": "Only tokens granted in this space.",
+            "description": "Only tokens granted in this space; tokens with `spaces: [\"*\"]` belong to every space.",
             "required": false,
             "schema": {
               "type": "string"
@@ -6815,7 +6862,7 @@
           "tokens"
         ],
         "summary": "Create a managed token",
-        "description": "Returns the token value once. The caller needs `tokens:write` and every permission of the role in each requested scope (globally for `global: true`), so a token never holds more than its creator; a caller bound only to spaces cannot create global tokens. Expiry is mandatory; a token created by a managed token expires no later than that token and is revoked with it.",
+        "description": "Returns the token value once. The caller needs `tokens:write` and every permission of the role in each requested scope (globally for `global: true`), so a token never holds more than its creator; a caller bound only to spaces cannot create global tokens. `spaces: [\"*\"]` grants the role in every space, including spaces added to the access file later: it needs `tokens:write` and every permission of the role globally or through the caller's own `*` grant (being bound to every current space one by one is not enough). Expiry is mandatory; a token created by a managed token expires no later than that token and is revoked with it.",
         "operationId": "createToken",
         "requestBody": {
           "content": {
@@ -7073,7 +7120,7 @@
           "tokens"
         ],
         "summary": "Revoke a managed token",
-        "description": "Needs `tokens:write` in every scope of the token; a managed token may always revoke itself. Every replica rejects the token within 10 seconds. Tokens created by this token, directly or not, are revoked with it. Revoking a token that is no longer active (revoked or expired) changes nothing and records no audit event.",
+        "description": "Needs `tokens:write` in every scope of the token (for a `*` token, globally or through a `*` grant); a managed token may always revoke itself. Every replica rejects the token within 10 seconds. Tokens created by this token, directly or not, are revoked with it. Revoking a token that is no longer active (revoked or expired) changes nothing and records no audit event.",
         "operationId": "revokeToken",
         "parameters": [
           {
@@ -7459,6 +7506,148 @@
   },
   "components": {
     "schemas": {
+      "AccessBinding": {
+        "type": "object",
+        "description": "A binding of the access file.",
+        "required": [
+          "subject",
+          "role",
+          "global",
+          "spaces"
+        ],
+        "properties": {
+          "subject": {
+            "type": "string",
+            "description": "`token:<name>`, `user:<name>` or `group:<name>`.",
+            "example": "group:payments-dev"
+          },
+          "role": {
+            "type": "string",
+            "example": "editor"
+          },
+          "global": {
+            "type": "boolean",
+            "description": "The role is granted everywhere."
+          },
+          "spaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Spaces the role is granted in: `[\"*\"]` for every space; empty for a global binding.",
+            "example": [
+              "payments"
+            ]
+          }
+        }
+      },
+      "AccessRole": {
+        "type": "object",
+        "description": "A built-in role or a custom role of the access file.",
+        "required": [
+          "name",
+          "builtin",
+          "permissions"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "stub-author"
+          },
+          "builtin": {
+            "type": "boolean",
+            "description": "`viewer`, `editor` or `admin`; false for custom roles of the access file."
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The role's permissions, with wildcards expanded.",
+            "example": [
+              "stubs:read",
+              "stubs:write"
+            ]
+          }
+        }
+      },
+      "AccessSpace": {
+        "type": "object",
+        "description": "A space of the access file.",
+        "required": [
+          "name",
+          "pathPrefixes",
+          "hosts"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "payments"
+          },
+          "pathPrefixes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Data-plane path prefixes the space's stubs must stay under (empty: no restriction).",
+            "example": [
+              "/payments/"
+            ]
+          },
+          "hosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Hosts the space's stubs must match (empty: no restriction).",
+            "example": [
+              "psp.example.com"
+            ]
+          }
+        }
+      },
+      "AccessView": {
+        "type": "object",
+        "description": "The access configuration, read-only: spaces, roles and bindings of the access file.",
+        "required": [
+          "configured",
+          "oidc",
+          "spaces",
+          "roles",
+          "bindings"
+        ],
+        "properties": {
+          "configured": {
+            "type": "boolean",
+            "description": "An access file (`FASTMOCK_ACCESS_FILE`) is loaded."
+          },
+          "oidc": {
+            "type": "boolean",
+            "description": "OIDC sign-in or OIDC bearer tokens are enabled."
+          },
+          "spaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccessSpace"
+            },
+            "description": "Spaces, sorted by name."
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccessRole"
+            },
+            "description": "Built-in roles first (viewer, editor, admin), then the custom roles sorted by name."
+          },
+          "bindings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccessBinding"
+            },
+            "description": "Bindings in file order."
+          }
+        }
+      },
       "ApiKind": {
         "type": "string",
         "enum": [
@@ -8422,7 +8611,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Spaces the role is granted in. Set either `spaces` or `global: true`.",
+            "description": "Spaces the role is granted in, or `[\"*\"]` (the only entry) for every space of the access file, including spaces added later. Set either `spaces` or `global: true`.",
             "example": [
               "billing"
             ]
@@ -8739,7 +8928,8 @@
           "builtin",
           "permissions",
           "global",
-          "spaces"
+          "spaces",
+          "allSpaces"
         ],
         "properties": {
           "name": {
@@ -8773,6 +8963,10 @@
             "example": [
               "payments"
             ]
+          },
+          "allSpaces": {
+            "type": "boolean",
+            "description": "The caller may create tokens with this role and `spaces: [\"*\"]` (every space, including spaces added later): it holds `tokens:write` and every permission of the role globally or through its own `*` grant, and the access file defines at least one space."
           }
         }
       },
@@ -9899,7 +10093,8 @@
         "type": "object",
         "required": [
           "global",
-          "spaces"
+          "spaces",
+          "allSpaces"
         ],
         "properties": {
           "global": {
@@ -9915,7 +10110,7 @@
           },
           "spaces": {
             "type": "object",
-            "description": "Permissions granted only in single spaces, by space; the effective permissions in a space are these plus the global ones.",
+            "description": "Permissions granted only in single spaces, by space; the effective permissions in a space are these plus the global ones. Permissions granted through `spaces: [\"*\"]` appear under every configured space.",
             "additionalProperties": {
               "type": "array",
               "items": {
@@ -9931,6 +10126,16 @@
                 "journal:read"
               ]
             }
+          },
+          "allSpaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Permissions granted in every space through `spaces: [\"*\"]`, including spaces added to the access file later (empty when none).",
+            "example": [
+              "stubs:read"
+            ]
           }
         }
       },
@@ -11544,7 +11749,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Spaces of the token; empty for a global token."
+            "description": "Spaces of the token: `[\"*\"]` for every space; empty for a global token."
           },
           "global": {
             "type": "boolean"
@@ -11976,7 +12181,7 @@
       "bearer": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Static admin token from FASTMOCK_ADMIN_TOKENS, a managed token from POST /__admin/tokens or, with FASTMOCK_OIDC_API_AUDIENCE, a JWT from the OIDC provider. The UI may instead use the SSO session cookie (see the `session` scheme). Every route needs a permission (`resource:action`); the built-in roles viewer, editor and admin are permission sets, custom roles and space bindings come from FASTMOCK_ACCESS_FILE. Without an access file: GET/HEAD and read-only POSTs need viewer, other changes editor; deleting all stubs, reset, the audit log and managing other tokens (`/__admin/tokens*`, `tokens:read`/`tokens:write`) need admin. Routes without a rule need admin."
+        "description": "Static admin token from FASTMOCK_ADMIN_TOKENS, a managed token from POST /__admin/tokens or, with FASTMOCK_OIDC_API_AUDIENCE, a JWT from the OIDC provider. The UI may instead use the SSO session cookie (see the `session` scheme). Every route needs a permission (`resource:action`); the built-in roles viewer, editor and admin are permission sets, custom roles and space bindings come from FASTMOCK_ACCESS_FILE. Without an access file: GET/HEAD and read-only POSTs need viewer, other changes editor; deleting all stubs, reset, the audit log and managing other tokens (`/__admin/tokens*`, `tokens:read`/`tokens:write`) and reading the access configuration (`/__admin/access`, `access:read`) need admin. Routes without a rule need admin."
       },
       "session": {
         "type": "apiKey",
@@ -12034,6 +12239,10 @@
     {
       "name": "audit",
       "description": "Audit log"
+    },
+    {
+      "name": "access",
+      "description": "Spaces, roles and bindings of the access file (read-only)"
     },
     {
       "name": "auth",

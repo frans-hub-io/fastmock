@@ -34,6 +34,7 @@ pub enum Permission {
     SystemReset,
     TokensRead,
     TokensWrite,
+    AccessRead,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,7 +45,7 @@ pub enum ScopeKind {
 
 use Permission::*;
 
-pub const ALL_PERMISSIONS: [Permission; 27] = [
+pub const ALL_PERMISSIONS: [Permission; 28] = [
     StubsRead,
     StubsWrite,
     StubsPurge,
@@ -72,6 +73,7 @@ pub const ALL_PERMISSIONS: [Permission; 27] = [
     SystemReset,
     TokensRead,
     TokensWrite,
+    AccessRead,
 ];
 
 impl Permission {
@@ -104,6 +106,7 @@ impl Permission {
             SystemReset => "system:reset",
             TokensRead => "tokens:read",
             TokensWrite => "tokens:write",
+            AccessRead => "access:read",
         }
     }
 
@@ -119,7 +122,7 @@ impl Permission {
     pub fn scope(self) -> ScopeKind {
         match self {
             StubsPurge | RecordingsRead | RecordingsWrite | ChaosRead | ChaosWrite | GrpcRead
-            | GrpcWrite | ContractsSecrets | InfoRead | AuditRead | SystemReset => {
+            | GrpcWrite | ContractsSecrets | InfoRead | AuditRead | SystemReset | AccessRead => {
                 ScopeKind::Global
             }
             _ => ScopeKind::Space,
@@ -270,10 +273,26 @@ pub struct SpaceDef {
     pub hosts: Vec<String>,
 }
 
+/// The `spaces` entry that stands for every space of the access file, current and future.
+pub const ALL_SPACES: &str = "*";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BindingScope {
     Global,
     Spaces(Vec<String>),
+    /// `spaces: ["*"]`: every space configured when the request is checked.
+    AllSpaces,
+}
+
+impl BindingScope {
+    /// `spaces` as written: `["*"]` for every space, empty for a global binding.
+    pub fn space_list(&self) -> Vec<String> {
+        match self {
+            BindingScope::Global => vec![],
+            BindingScope::Spaces(l) => l.clone(),
+            BindingScope::AllSpaces => vec![ALL_SPACES.to_string()],
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -315,6 +334,16 @@ impl Subject {
             "group" => Subject::Group(name.to_string()),
             other => bail!("unknown subject kind `{other}`: use token, user or group"),
         })
+    }
+}
+
+impl std::fmt::Display for Subject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Subject::Token(n) => write!(f, "token:{n}"),
+            Subject::User(n) => write!(f, "user:{n}"),
+            Subject::Group(n) => write!(f, "group:{n}"),
+        }
     }
 }
 
@@ -406,7 +435,9 @@ fn parse_permissions(list: &[String]) -> anyhow::Result<(PermSet, PermSet)> {
     let mut explicit = PermSet::default();
     for raw in list {
         let p = raw.trim();
-        if let Some(resource) = p.strip_suffix(":*") {
+        if p == "*" {
+            set = set.union(PermSet::all());
+        } else if let Some(resource) = p.strip_suffix(":*") {
             let matching: Vec<Permission> = ALL_PERMISSIONS
                 .into_iter()
                 .filter(|x| x.resource() == resource)
@@ -542,8 +573,15 @@ impl AccessConfig {
             let scope = match (b.global.unwrap_or(false), b.spaces) {
                 (true, None) => BindingScope::Global,
                 (false, Some(list)) if !list.is_empty() => {
+                    let all = list.iter().any(|s| s == ALL_SPACES);
+                    if all && list.len() != 1 {
+                        bail!("{at}: \"*\" must be the only entry in spaces");
+                    }
+                    if all && cfg.spaces.is_empty() {
+                        bail!("{at}: spaces: [\"*\"] needs at least one space in the file");
+                    }
                     let mut seen = BTreeSet::new();
-                    for s in &list {
+                    for s in list.iter().filter(|_| !all) {
                         if !cfg.spaces.contains_key(s) {
                             bail!("{at}: unknown space `{s}`");
                         }
@@ -561,7 +599,11 @@ impl AccessConfig {
                             b.role
                         );
                     }
-                    BindingScope::Spaces(list)
+                    if all {
+                        BindingScope::AllSpaces
+                    } else {
+                        BindingScope::Spaces(list)
+                    }
                 }
                 (true, Some(_)) => bail!("{at}: set either spaces or global: true, not both"),
                 _ => bail!("{at}: set spaces (a non-empty list) or global: true"),
@@ -651,6 +693,11 @@ impl AccessConfig {
         !self.spaces.is_empty()
     }
 
+    /// The bindings of the access file with their subjects, in file order.
+    pub fn bindings(&self) -> impl Iterator<Item = (&Subject, &Binding)> {
+        self.bindings.iter().map(|(s, b)| (s, b))
+    }
+
     /// `token:` subjects with the index of their binding in the file.
     pub fn token_subjects(&self) -> impl Iterator<Item = (usize, &str)> {
         self.bindings
@@ -683,10 +730,14 @@ impl AccessConfig {
 pub struct Grants {
     global: PermSet,
     spaces: BTreeMap<String, PermSet>,
+    /// Space-scoped permissions granted through `spaces: ["*"]` (empty when no space is configured);
+    /// they are also included in `spaces` for every configured space.
+    all_spaces: PermSet,
 }
 
 impl Grants {
-    pub fn from_bindings(bindings: &[Binding]) -> Self {
+    /// The grants of the bindings; `spaces: ["*"]` covers every space `access` configures.
+    pub fn from_bindings(bindings: &[Binding], access: &AccessConfig) -> Self {
         let mut g = Grants::default();
         for b in bindings {
             match &b.scope {
@@ -697,6 +748,16 @@ impl Grants {
                         *e = e.union(b.permissions.space_scoped());
                     }
                 }
+                BindingScope::AllSpaces if access.has_spaces() => {
+                    g.all_spaces = g.all_spaces.union(b.permissions.space_scoped());
+                }
+                BindingScope::AllSpaces => {}
+            }
+        }
+        if !g.all_spaces.is_empty() {
+            for s in access.spaces.keys() {
+                let e = g.spaces.entry(s.clone()).or_default();
+                *e = e.union(g.all_spaces);
             }
         }
         if !bindings.is_empty() {
@@ -710,7 +771,19 @@ impl Grants {
         Grants {
             global: PermSet::all(),
             spaces: BTreeMap::new(),
+            all_spaces: PermSet::default(),
         }
+    }
+
+    /// Space-scoped permissions granted through `spaces: ["*"]`.
+    pub fn all_spaces(&self) -> PermSet {
+        self.all_spaces
+    }
+
+    /// Granted globally, or, for a space-scoped permission, through `spaces: ["*"]`: the permission
+    /// holds in every space, including spaces added to the access file later.
+    pub fn allowed_in_all_spaces(&self, p: Permission) -> bool {
+        self.global.contains(p) || (p.scope() == ScopeKind::Space && self.all_spaces.contains(p))
     }
 
     pub fn global(&self) -> PermSet {
@@ -770,9 +843,13 @@ pub struct PermissionsView {
     /// Permissions granted everywhere.
     #[schema(example = json!(["stubs:read", "info:read"]))]
     pub global: Vec<String>,
-    /// Permissions granted only in single spaces, by space; the effective permissions in a space are these plus the global ones.
+    /// Permissions granted only in single spaces, by space; the effective permissions in a space are these plus the global ones. Permissions granted through `spaces: ["*"]` appear under every configured space.
     #[schema(example = json!({"payments": ["stubs:write", "journal:read"]}))]
     pub spaces: BTreeMap<String, Vec<String>>,
+    /// Permissions granted in every space through `spaces: ["*"]`, including spaces added to the access file later (empty when none).
+    #[serde(rename = "allSpaces")]
+    #[schema(example = json!(["stubs:read"]))]
+    pub all_spaces: Vec<String>,
 }
 
 impl Serialize for Grants {
@@ -783,6 +860,12 @@ impl Serialize for Grants {
                 .spaces
                 .iter()
                 .map(|(k, v)| (k.clone(), v.names().into_iter().map(String::from).collect()))
+                .collect(),
+            all_spaces: self
+                .all_spaces
+                .names()
+                .into_iter()
+                .map(String::from)
                 .collect(),
         }
         .serialize(s)
@@ -860,6 +943,7 @@ pub fn route_rule(method: &Method, full_path: &str) -> Option<(Permission, Scope
         ("GET", ["tokens", "options"]) => natural(TokensWrite),
         ("GET", ["tokens", "self"]) | ("DELETE", ["tokens", _]) => global(InfoRead),
         ("GET", ["tokens", _]) => natural(TokensRead),
+        ("GET", ["access"]) => global(AccessRead),
         ("GET", ["plugins", _, ..]) => global(StubsRead),
         (_, ["plugins", _, ..]) => global(StubsWrite),
         _ => None,
@@ -925,7 +1009,7 @@ bindings:
             let is_read = p.name().ends_with(":read");
             assert_eq!(
                 v.contains(p),
-                is_read && p != AuditRead && p != TokensRead,
+                is_read && p != AuditRead && p != TokensRead && p != AccessRead,
                 "{p}"
             );
         }
@@ -938,6 +1022,7 @@ bindings:
             ContractsSecrets,
             TokensRead,
             TokensWrite,
+            AccessRead,
         ] {
             assert!(!e.contains(p), "{p}");
         }
@@ -945,6 +1030,8 @@ bindings:
         assert_eq!(minimal_role(StubsRead), "viewer");
         assert_eq!(minimal_role(StubsWrite), "editor");
         assert_eq!(minimal_role(StubsPurge), "admin");
+        assert_eq!(minimal_role(AccessRead), "admin");
+        assert_eq!(AccessRead.scope(), ScopeKind::Global);
         for p in ALL_PERMISSIONS {
             assert_eq!(Permission::parse(p.name()), Some(p));
         }
@@ -1113,12 +1200,17 @@ bindings:
             "roles: [{name: secret-runner, permissions: [contracts:write, contracts:secrets]}, {name: tester, permissions: [\"contracts:*\"]}]\nspaces: [{name: billing}]\nbindings: [{subject: 'group:ops', role: secret-runner, global: true}, {subject: 'group:qa', role: tester, spaces: [billing]}, {subject: 'group:pay', role: admin, spaces: [billing]}]",
         )
         .unwrap();
-        let ops = Grants::from_bindings(&c.bindings_for(PrincipalKind::User, "a", &["ops".into()]));
+        let ops = Grants::from_bindings(
+            &c.bindings_for(PrincipalKind::User, "a", &["ops".into()]),
+            &c,
+        );
         assert!(ops.allowed(ContractsSecrets, None));
         assert!(ops.allowed(ContractsSecrets, Some("billing")));
         for group in ["qa", "pay"] {
-            let g =
-                Grants::from_bindings(&c.bindings_for(PrincipalKind::User, "a", &[group.into()]));
+            let g = Grants::from_bindings(
+                &c.bindings_for(PrincipalKind::User, "a", &[group.into()]),
+                &c,
+            );
             assert!(g.allowed(ContractsWrite, Some("billing")), "{group}");
             assert!(!g.allowed(ContractsSecrets, Some("billing")), "{group}");
             assert!(!g.anywhere(ContractsSecrets), "{group}");
@@ -1165,7 +1257,7 @@ bindings:
     #[test]
     fn grants_follow_bindings() {
         let c = AccessConfig::parse(EXAMPLE).unwrap();
-        let g = Grants::from_bindings(&c.bindings_for(PrincipalKind::Token, "ci-billing", &[]));
+        let g = Grants::from_bindings(&c.bindings_for(PrincipalKind::Token, "ci-billing", &[]), &c);
         assert!(g.allowed(StubsWrite, Some("billing")));
         assert!(!g.allowed(StubsWrite, Some("payments")));
         assert!(!g.allowed(StubsWrite, None));
@@ -1174,18 +1266,21 @@ bindings:
         assert!(!g.anywhere(FilesRead));
         assert_eq!(g.spaces_with(StubsRead), vec!["billing"]);
         assert!(!g.sees_all_spaces());
-        let admin_in_space = Grants::from_bindings(&[Binding {
-            role: "admin".into(),
-            permissions: PermSet::all(),
-            scope: BindingScope::Spaces(vec!["payments".into()]),
-        }]);
+        let admin_in_space = Grants::from_bindings(
+            &[Binding {
+                role: "admin".into(),
+                permissions: PermSet::all(),
+                scope: BindingScope::Spaces(vec!["payments".into()]),
+            }],
+            &c,
+        );
         assert!(!admin_in_space.allowed(StubsPurge, Some("payments")));
         assert!(!admin_in_space.allowed(AuditRead, None));
         assert!(admin_in_space.allowed(TokensWrite, Some("payments")));
-        let viewer = Grants::from_bindings(&[Binding::global("viewer", viewer_permissions())]);
+        let viewer = Grants::from_bindings(&[Binding::global("viewer", viewer_permissions())], &c);
         assert!(viewer.allowed(StubsRead, Some("payments")));
         assert!(viewer.sees_all_spaces());
-        assert!(Grants::from_bindings(&[]).global().is_empty());
+        assert!(Grants::from_bindings(&[], &c).global().is_empty());
         let v = serde_json::to_value(&g).unwrap();
         assert_eq!(v["global"], serde_json::json!(["info:read"]));
         assert_eq!(
@@ -1275,8 +1370,226 @@ bindings:
             r(Method::GET, "/__admin/tokens/options"),
             (TokensWrite, ScopeKind::Space)
         );
+        assert_eq!(
+            r(Method::GET, "/__admin/access"),
+            (AccessRead, ScopeKind::Global)
+        );
         assert_eq!(route_rule(&Method::GET, "/__admin/nope"), None);
         assert_eq!(route_rule(&Method::OPTIONS, "/__admin/stubs"), None);
+    }
+
+    const ALL_SPACES_DOC: &str = r#"
+roles:
+  - name: tester
+    permissions: ["contracts:*", stubs:read]
+spaces:
+  - name: payments
+  - name: billing
+bindings:
+  - subject: token:all-viewer
+    role: viewer
+    spaces: ["*"]
+  - subject: token:mixed
+    role: viewer
+    spaces: ["*"]
+  - subject: token:mixed
+    role: editor
+    spaces: [billing]
+  - subject: token:all-admin
+    role: admin
+    spaces: ["*"]
+  - subject: group:qa
+    role: tester
+    spaces: ["*"]
+"#;
+
+    fn grants_of(c: &AccessConfig, kind: PrincipalKind, name: &str, groups: &[String]) -> Grants {
+        Grants::from_bindings(&c.bindings_for(kind, name, groups), c)
+    }
+
+    #[test]
+    fn all_spaces_bindings_parse_and_keep_star_literally() {
+        let c = AccessConfig::parse(ALL_SPACES_DOC).unwrap();
+        let b = c.bindings_for(PrincipalKind::Token, "all-viewer", &[]);
+        assert_eq!(b[0].scope, BindingScope::AllSpaces);
+        assert_eq!(b[0].scope.space_list(), vec!["*"]);
+        assert!(BindingScope::Global.space_list().is_empty());
+        let listed: Vec<(String, Vec<String>)> = c
+            .bindings()
+            .map(|(s, b)| (s.to_string(), b.scope.space_list()))
+            .collect();
+        assert_eq!(listed[0], ("token:all-viewer".into(), vec!["*".into()]));
+        assert_eq!(listed[2], ("token:mixed".into(), vec!["billing".into()]));
+        assert_eq!(listed[4].0, "group:qa");
+    }
+
+    #[test]
+    fn all_spaces_errors_name_the_entry() {
+        for (doc, want) in [
+            (
+                "spaces: [{name: billing}]\nbindings: [{subject: 'user:x', role: viewer, spaces: ['*', billing]}]",
+                "bindings[0] (user:x): \"*\" must be the only entry in spaces",
+            ),
+            (
+                "spaces: [{name: billing}]\nbindings: [{subject: 'user:x', role: viewer, spaces: [billing, '*']}]",
+                "bindings[0] (user:x): \"*\" must be the only entry in spaces",
+            ),
+            (
+                "spaces: [{name: billing}]\nbindings: [{subject: 'user:x', role: viewer, spaces: ['*', '*']}]",
+                "bindings[0] (user:x): \"*\" must be the only entry in spaces",
+            ),
+            (
+                "bindings: [{subject: 'user:x', role: viewer, spaces: ['*']}]",
+                "bindings[0] (user:x): spaces: [\"*\"] needs at least one space in the file",
+            ),
+            (
+                "roles: [{name: secret-runner, permissions: [contracts:write, contracts:secrets]}]\nspaces: [{name: billing}]\nbindings: [{subject: 'group:qa', role: secret-runner, spaces: ['*']}]",
+                "bindings[0] (group:qa): role `secret-runner` lists contracts:secrets, a global permission that a binding limited to spaces cannot grant",
+            ),
+        ] {
+            let e = format!("{:#}", AccessConfig::parse(doc).unwrap_err());
+            assert!(e.starts_with(want), "{doc}: {e}");
+        }
+        let f = std::env::temp_dir().join(format!("fm-access-{}.yaml", uuid::Uuid::new_v4()));
+        std::fs::write(
+            &f,
+            "spaces: [{name: billing}]\nbindings: [{subject: 'user:x', role: viewer, spaces: ['*', billing]}]\n",
+        )
+        .unwrap();
+        let e = AccessConfig::load(&f).unwrap_err();
+        std::fs::remove_file(&f).unwrap();
+        assert_eq!(
+            format!("{e:?}"),
+            format!(
+                "access file {}: bindings[0] (user:x): \"*\" must be the only entry in spaces",
+                f.display()
+            )
+        );
+    }
+
+    #[test]
+    fn all_spaces_alone_grants_every_space_but_nothing_global() {
+        let c = AccessConfig::parse(ALL_SPACES_DOC).unwrap();
+        let g = grants_of(&c, PrincipalKind::Token, "all-viewer", &[]);
+        for s in ["payments", "billing"] {
+            assert!(g.allowed(StubsRead, Some(s)), "{s}");
+            assert!(!g.allowed(StubsWrite, Some(s)), "{s}");
+        }
+        assert!(!g.allowed(StubsRead, None), "global data is not granted");
+        assert!(!g.allowed(StubsRead, Some("unknown")));
+        assert!(!g.sees_all_spaces());
+        assert_eq!(g.spaces_with(StubsRead), vec!["billing", "payments"]);
+        assert_eq!(g.global().names(), vec!["info:read"]);
+        assert_eq!(g.all_spaces(), viewer_permissions().space_scoped());
+        assert!(g.allowed_in_all_spaces(StubsRead));
+        assert!(!g.allowed_in_all_spaces(StubsWrite));
+        let v = serde_json::to_value(&g).unwrap();
+        assert_eq!(v["global"], serde_json::json!(["info:read"]));
+        assert_eq!(
+            v["allSpaces"],
+            serde_json::json!(
+                viewer_permissions()
+                    .space_scoped()
+                    .names()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            )
+        );
+        assert_eq!(
+            v["spaces"].as_object().unwrap().keys().collect::<Vec<_>>(),
+            vec!["billing", "payments"]
+        );
+        assert_eq!(v["spaces"]["payments"], v["allSpaces"]);
+    }
+
+    #[test]
+    fn all_spaces_never_grants_global_only_permissions() {
+        let c = AccessConfig::parse(ALL_SPACES_DOC).unwrap();
+        let g = grants_of(&c, PrincipalKind::Token, "all-admin", &[]);
+        for p in ALL_PERMISSIONS {
+            let granted = p.scope() == ScopeKind::Space || p == InfoRead;
+            assert_eq!(g.allowed_in_all_spaces(p), granted, "{p}");
+            assert_eq!(g.allowed(p, Some("billing")), granted, "{p}");
+            assert_eq!(g.global_has(p), p == InfoRead, "{p}");
+        }
+        for p in [
+            ContractsSecrets,
+            AuditRead,
+            SystemReset,
+            StubsPurge,
+            AccessRead,
+        ] {
+            assert!(!g.anywhere(p), "{p}");
+        }
+        let v = serde_json::to_value(&g).unwrap();
+        for list in [&v["allSpaces"], &v["spaces"]["payments"]] {
+            for name in ["contracts:secrets", "audit:read", "access:read"] {
+                assert!(!list.as_array().unwrap().contains(&serde_json::json!(name)));
+            }
+        }
+        let qa = grants_of(&c, PrincipalKind::User, "a", &["qa".into()]);
+        assert!(qa.allowed(ContractsWrite, Some("payments")));
+        assert!(!qa.allowed(ContractsSecrets, Some("payments")));
+        assert!(!qa.anywhere(ContractsSecrets));
+    }
+
+    #[test]
+    fn all_spaces_mixed_with_a_space_binding() {
+        let c = AccessConfig::parse(ALL_SPACES_DOC).unwrap();
+        let g = grants_of(&c, PrincipalKind::Token, "mixed", &[]);
+        assert!(g.allowed(StubsWrite, Some("billing")));
+        assert!(!g.allowed(StubsWrite, Some("payments")));
+        assert!(g.allowed(StubsRead, Some("payments")));
+        assert_eq!(g.all_spaces(), viewer_permissions().space_scoped());
+        assert!(!g.allowed_in_all_spaces(StubsWrite));
+        assert_eq!(g.spaces_with(StubsWrite), vec!["billing"]);
+        assert_eq!(g.in_space("billing"), editor_permissions().space_scoped());
+    }
+
+    #[test]
+    fn all_spaces_follow_the_configured_spaces() {
+        let binding = [Binding {
+            role: "editor".into(),
+            permissions: editor_permissions(),
+            scope: BindingScope::AllSpaces,
+        }];
+        let before = AccessConfig::parse("spaces: [{name: payments}]").unwrap();
+        let after = AccessConfig::parse("spaces: [{name: payments}, {name: billing}]").unwrap();
+        let g = Grants::from_bindings(&binding, &before);
+        assert!(!g.allowed(StubsWrite, Some("billing")));
+        let g = Grants::from_bindings(&binding, &after);
+        assert!(g.allowed(StubsWrite, Some("billing")));
+        assert!(g.allowed(StubsWrite, Some("payments")));
+        let none = Grants::from_bindings(&binding, &AccessConfig::default());
+        assert_eq!(none.global().names(), vec!["info:read"]);
+        assert!(none.all_spaces().is_empty());
+        assert!(!none.anywhere(StubsWrite));
+        assert!(!none.allowed_in_all_spaces(StubsWrite));
+        let v = serde_json::to_value(&none).unwrap();
+        assert_eq!(v["allSpaces"], serde_json::json!([]));
+        assert_eq!(v["spaces"], serde_json::json!({}));
+        let plain =
+            Grants::from_bindings(&[Binding::global("viewer", viewer_permissions())], &after);
+        assert_eq!(
+            serde_json::to_value(&plain).unwrap()["allSpaces"],
+            serde_json::json!([])
+        );
+    }
+
+    #[test]
+    fn access_read_is_global_and_matched_by_wildcards() {
+        let c = AccessConfig::parse(
+            "roles: [{name: auditor, permissions: [\"access:*\"]}, {name: everything, permissions: [\"*\"]}]\nspaces: [{name: billing}]\nbindings: [{subject: 'user:a', role: everything, spaces: [billing]}]",
+        )
+        .unwrap();
+        assert_eq!(c.role("auditor").unwrap().names(), vec!["access:read"]);
+        assert_eq!(c.role("everything").unwrap(), PermSet::all());
+        assert!(builtin_role("admin").unwrap().contains(AccessRead));
+        assert!(!editor_permissions().contains(AccessRead));
+        let g = grants_of(&c, PrincipalKind::User, "a", &[]);
+        assert!(!g.allowed(AccessRead, Some("billing")));
+        assert!(!g.anywhere(AccessRead));
+        assert!(g.allowed(TokensWrite, Some("billing")));
     }
 
     fn concrete(path: &str) -> String {

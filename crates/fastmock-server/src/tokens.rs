@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::access::{Binding, BindingScope, PermSet, Permission, PrincipalKind};
+use crate::access::{ALL_SPACES, Binding, BindingScope, PermSet, Permission, PrincipalKind};
 use crate::admin::{ApiError, ApiResult, ErrorBody, audit_event_in, bad, not_found, require};
 use crate::auth::{Authenticator, Principal, generate_token, hash_token};
 use crate::state::AppState;
@@ -203,6 +203,8 @@ pub fn principal_of(auth: &Authenticator, t: &ApiToken) -> Option<Principal> {
     let perms = auth.access().role(&t.role)?;
     let scope = if t.global {
         BindingScope::Global
+    } else if all_spaces(t) {
+        BindingScope::AllSpaces
     } else {
         BindingScope::Spaces(t.spaces.clone())
     };
@@ -211,7 +213,8 @@ pub fn principal_of(auth: &Authenticator, t: &ApiToken) -> Option<Principal> {
         permissions: perms,
         scope,
     };
-    let mut p = Principal::from_bindings(&t.name, PrincipalKind::ApiToken, &[binding]);
+    let mut p =
+        Principal::from_bindings(&t.name, PrincipalKind::ApiToken, &[binding], auth.access());
     p.token_id = Some(t.id);
     Some(p)
 }
@@ -245,7 +248,7 @@ pub struct CreateToken {
     /// Built-in role (`viewer`, `editor`, `admin`) or a custom role of the access file.
     #[schema(example = "editor")]
     pub role: String,
-    /// Spaces the role is granted in. Set either `spaces` or `global: true`.
+    /// Spaces the role is granted in, or `["*"]` (the only entry) for every space of the access file, including spaces added later. Set either `spaces` or `global: true`.
     #[serde(default)]
     #[schema(example = json!(["billing"]))]
     pub spaces: Option<Vec<String>>,
@@ -288,7 +291,7 @@ pub struct TokenInfo {
     pub name: String,
     #[schema(example = "editor")]
     pub role: String,
-    /// Spaces of the token; empty for a global token.
+    /// Spaces of the token: `["*"]` for every space; empty for a global token.
     pub spaces: Vec<String>,
     pub global: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -354,7 +357,7 @@ pub struct TokenList {
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct TokensQuery {
-    /// Only tokens granted in this space.
+    /// Only tokens granted in this space; tokens with `spaces: ["*"]` belong to every space.
     pub space: Option<String>,
     /// `active`, `expired` or `revoked`.
     pub status: Option<String>,
@@ -368,6 +371,11 @@ fn valid_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@'))
 }
 
+/// A token granted in every space (`spaces: ["*"]`).
+fn all_spaces(t: &ApiToken) -> bool {
+    !t.global && t.spaces.len() == 1 && t.spaces[0] == ALL_SPACES
+}
+
 fn scopes_of(t: &ApiToken) -> Vec<Option<&str>> {
     if t.global {
         vec![None]
@@ -376,8 +384,12 @@ fn scopes_of(t: &ApiToken) -> Vec<Option<&str>> {
     }
 }
 
-/// True when the caller holds `perm` in every scope of the token.
+/// True when the caller holds `perm` in every scope of the token; for a `*` token, globally or
+/// through its own `*` grant.
 fn holds_everywhere(p: &Principal, perm: Permission, t: &ApiToken) -> bool {
+    if all_spaces(t) {
+        return p.permissions.allowed_in_all_spaces(perm);
+    }
     let scopes = scopes_of(t);
     !scopes.is_empty() && scopes.into_iter().all(|s| p.allowed(perm, s))
 }
@@ -418,6 +430,40 @@ fn missing_for_role(p: &Principal, perms: PermSet, scope: Option<&str>) -> Optio
     needed.iter().find(|x| !held.contains(*x))
 }
 
+/// The first permission of a role (with `perms`) that the caller holds neither globally nor through
+/// its own `*` grant: what a `*` token needs, since it also covers spaces added later.
+fn missing_in_all_spaces(p: &Principal, perms: PermSet) -> Option<Permission> {
+    std::iter::once(Permission::TokensWrite)
+        .chain(perms.space_scoped().iter())
+        .find(|x| !p.permissions.allowed_in_all_spaces(*x))
+}
+
+fn require_all_spaces(p: &Principal, perm: Permission) -> ApiResult<()> {
+    if p.permissions.allowed_in_all_spaces(perm) {
+        return Ok(());
+    }
+    Err(deny(
+        p,
+        format!("requires permission {perm} in all spaces (globally or through spaces: [\"*\"])"),
+    ))
+}
+
+/// The escalation rule for a `*` token: `tokens:write` and every permission of the role, each held
+/// globally or through the caller's own `*` grant. Being bound to every current space one by one is
+/// not enough.
+fn check_all_spaces_grant(p: &Principal, role: &str, perms: PermSet) -> ApiResult<()> {
+    match missing_in_all_spaces(p, perms) {
+        None => Ok(()),
+        Some(Permission::TokensWrite) => require_all_spaces(p, Permission::TokensWrite),
+        Some(missing) => Err(deny(
+            p,
+            format!(
+                "requires permission {missing} in all spaces (globally or through spaces: [\"*\"]) to grant role {role} there"
+            ),
+        )),
+    }
+}
+
 /// The escalation rule: in each requested scope the caller needs `tokens:write` and every permission the
 /// role grants there.
 fn check_grant(
@@ -455,7 +501,7 @@ fn audit_detail(t: &ApiToken) -> serde_json::Value {
 
 fn audit_space(t: &ApiToken) -> Option<&str> {
     match t.spaces.as_slice() {
-        [one] if !t.global => Some(one.as_str()),
+        [one] if !t.global && one != ALL_SPACES => Some(one.as_str()),
         _ => None,
     }
 }
@@ -463,7 +509,7 @@ fn audit_space(t: &ApiToken) -> Option<&str> {
 #[utoipa::path(
     post, path = "/__admin/tokens", tag = "tokens", operation_id = "createToken",
     summary = "Create a managed token",
-    description = "Returns the token value once. The caller needs `tokens:write` and every permission of the role in each requested scope (globally for `global: true`), so a token never holds more than its creator; a caller bound only to spaces cannot create global tokens. Expiry is mandatory; a token created by a managed token expires no later than that token and is revoked with it.",
+    description = "Returns the token value once. The caller needs `tokens:write` and every permission of the role in each requested scope (globally for `global: true`), so a token never holds more than its creator; a caller bound only to spaces cannot create global tokens. `spaces: [\"*\"]` grants the role in every space, including spaces added to the access file later: it needs `tokens:write` and every permission of the role globally or through the caller's own `*` grant (being bound to every current space one by one is not enough). Expiry is mandatory; a token created by a managed token expires no later than that token and is revoked with it.",
     request_body = CreateToken,
     responses(
         (status = 201, description = "Created; `token` is shown only here", body = CreatedToken),
@@ -495,6 +541,17 @@ pub async fn create_token(
     let spaces = match (body.global.unwrap_or(false), body.spaces) {
         (true, None) => vec![],
         (true, Some(l)) if l.is_empty() => vec![],
+        (false, Some(list)) if list.iter().any(|s| s == ALL_SPACES) => {
+            if list.len() != 1 {
+                return Err(bad("\"*\" must be the only entry in spaces"));
+            }
+            if !app.auth.access().has_spaces() {
+                return Err(bad(
+                    "spaces: [\"*\"] needs at least one space in the access file",
+                ));
+            }
+            list
+        }
         (false, Some(list)) if !list.is_empty() => {
             let mut seen = BTreeSet::new();
             for s in &list {
@@ -509,12 +566,16 @@ pub async fn create_token(
         _ => return Err(bad("set spaces (a non-empty list) or global: true")),
     };
     let global = spaces.is_empty();
-    let scopes: Vec<Option<&str>> = if global {
-        vec![None]
+    if spaces.len() == 1 && spaces[0] == ALL_SPACES {
+        check_all_spaces_grant(&p, &body.role, perms)?;
     } else {
-        spaces.iter().map(|s| Some(s.as_str())).collect()
-    };
-    check_grant(&p, &body.role, perms, &scopes)?;
+        let scopes: Vec<Option<&str>> = if global {
+            vec![None]
+        } else {
+            spaces.iter().map(|s| Some(s.as_str())).collect()
+        };
+        check_grant(&p, &body.role, perms, &scopes)?;
+    }
     let max = app.cfg.tokens_max_days;
     let days = body
         .expires_in_days
@@ -598,7 +659,7 @@ pub async fn create_token(
 #[utoipa::path(
     get, path = "/__admin/tokens", tag = "tokens", operation_id = "listTokens",
     summary = "List managed tokens",
-    description = "Metadata only, newest first, including revoked and expired tokens (kept for 90 days). Lists the tokens for which the caller holds `tokens:read` in every scope; global tokens need it globally.",
+    description = "Metadata only, newest first, including revoked and expired tokens (kept for 90 days). Lists the tokens for which the caller holds `tokens:read` in every scope; global tokens need it globally, `*` tokens globally or through a `*` grant.",
     params(TokensQuery),
     responses(
         (status = 200, description = "Tokens", body = TokenList),
@@ -637,7 +698,7 @@ pub async fn list_tokens(
         .filter(|t| {
             q.space
                 .as_ref()
-                .is_none_or(|s| !t.global && t.spaces.contains(s))
+                .is_none_or(|s| !t.global && (all_spaces(t) || t.spaces.contains(s)))
         })
         .map(TokenInfo::of)
         .collect();
@@ -705,7 +766,7 @@ pub async fn get_token(
 #[utoipa::path(
     delete, path = "/__admin/tokens/{id}", tag = "tokens", operation_id = "revokeToken",
     summary = "Revoke a managed token",
-    description = "Needs `tokens:write` in every scope of the token; a managed token may always revoke itself. Every replica rejects the token within 10 seconds. Tokens created by this token, directly or not, are revoked with it. Revoking a token that is no longer active (revoked or expired) changes nothing and records no audit event.",
+    description = "Needs `tokens:write` in every scope of the token (for a `*` token, globally or through a `*` grant); a managed token may always revoke itself. Every replica rejects the token within 10 seconds. Tokens created by this token, directly or not, are revoked with it. Revoking a token that is no longer active (revoked or expired) changes nothing and records no audit event.",
     params(("id" = Uuid, Path, description = "Token id")),
     responses(
         (status = 200, description = "The token after revocation", body = TokenInfo),
@@ -734,8 +795,12 @@ pub async fn revoke_token(
         {
             return Err(not_found("token"));
         }
-        for s in scopes_of(&t) {
-            require(&p, Permission::TokensWrite, s)?;
+        if all_spaces(&t) {
+            require_all_spaces(&p, Permission::TokensWrite)?;
+        } else {
+            for s in scopes_of(&t) {
+                require(&p, Permission::TokensWrite, s)?;
+            }
         }
     }
     let now = stored_precision(Utc::now());
@@ -793,6 +858,8 @@ pub struct GrantableRole {
     /// Spaces in which the caller may create tokens with this role.
     #[schema(example = json!(["payments"]))]
     pub spaces: Vec<String>,
+    /// The caller may create tokens with this role and `spaces: ["*"]` (every space, including spaces added later): it holds `tokens:write` and every permission of the role globally or through its own `*` grant, and the access file defines at least one space.
+    pub all_spaces: bool,
 }
 
 /// What the caller may choose when creating a token.
@@ -844,6 +911,7 @@ pub async fn token_options(
                     .filter(|s| grantable(Some(s)))
                     .map(|s| s.to_string())
                     .collect(),
+                all_spaces: !space_names.is_empty() && missing_in_all_spaces(&p, perms).is_none(),
             }
         })
         .collect();

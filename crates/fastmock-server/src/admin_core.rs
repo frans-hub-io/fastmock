@@ -6,7 +6,7 @@ use fastmock_core::engine::{COUNTER_PREFIX, SETTINGS_KEY, SETTINGS_NAMESPACE};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::access::Permission;
+use crate::access::{BindingScope, Permission};
 use crate::admin::{
     ApiResult, ErrorBody, ImportResult, ImportTarget, audit_event_in, bad, finish_import, valid_tag,
 };
@@ -21,6 +21,117 @@ pub fn routes() -> Router<AppState> {
         .route("/settings", get(get_settings).put(put_settings))
         .route("/stubs/counters", get(list_counters).delete(reset_counters))
         .route("/import/mockserver", post(import_mockserver))
+        .route("/access", get(get_access))
+}
+
+/// A space of the access file.
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessSpace {
+    #[schema(example = "payments")]
+    pub name: String,
+    /// Data-plane path prefixes the space's stubs must stay under (empty: no restriction).
+    #[schema(example = json!(["/payments/"]))]
+    pub path_prefixes: Vec<String>,
+    /// Hosts the space's stubs must match (empty: no restriction).
+    #[schema(example = json!(["psp.example.com"]))]
+    pub hosts: Vec<String>,
+}
+
+/// A built-in role or a custom role of the access file.
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessRole {
+    #[schema(example = "stub-author")]
+    pub name: String,
+    /// `viewer`, `editor` or `admin`; false for custom roles of the access file.
+    pub builtin: bool,
+    /// The role's permissions, with wildcards expanded.
+    #[schema(example = json!(["stubs:read", "stubs:write"]))]
+    pub permissions: Vec<String>,
+}
+
+/// A binding of the access file.
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessBinding {
+    /// `token:<name>`, `user:<name>` or `group:<name>`.
+    #[schema(example = "group:payments-dev")]
+    pub subject: String,
+    #[schema(example = "editor")]
+    pub role: String,
+    /// The role is granted everywhere.
+    pub global: bool,
+    /// Spaces the role is granted in: `["*"]` for every space; empty for a global binding.
+    #[schema(example = json!(["payments"]))]
+    pub spaces: Vec<String>,
+}
+
+/// The access configuration, read-only: spaces, roles and bindings of the access file.
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessView {
+    /// An access file (`FASTMOCK_ACCESS_FILE`) is loaded.
+    pub configured: bool,
+    /// OIDC sign-in or OIDC bearer tokens are enabled.
+    pub oidc: bool,
+    /// Spaces, sorted by name.
+    pub spaces: Vec<AccessSpace>,
+    /// Built-in roles first (viewer, editor, admin), then the custom roles sorted by name.
+    pub roles: Vec<AccessRole>,
+    /// Bindings in file order.
+    pub bindings: Vec<AccessBinding>,
+}
+
+impl AccessView {
+    pub fn of(app: &AppState) -> Self {
+        let access = app.auth.access();
+        AccessView {
+            configured: app.cfg.access_file.is_some(),
+            oidc: app.oidc.is_some(),
+            spaces: access
+                .spaces()
+                .map(|s| AccessSpace {
+                    name: s.name.clone(),
+                    path_prefixes: s.path_prefixes.clone(),
+                    hosts: s.hosts.clone(),
+                })
+                .collect(),
+            roles: access
+                .roles()
+                .into_iter()
+                .map(|(name, perms, builtin)| AccessRole {
+                    name: name.to_string(),
+                    builtin,
+                    permissions: perms.names().into_iter().map(String::from).collect(),
+                })
+                .collect(),
+            bindings: access
+                .bindings()
+                .map(|(subject, b)| AccessBinding {
+                    subject: subject.to_string(),
+                    role: b.role.clone(),
+                    global: b.scope == BindingScope::Global,
+                    spaces: b.scope.space_list(),
+                })
+                .collect(),
+        }
+    }
+}
+
+#[utoipa::path(
+    get, path = "/__admin/access", tag = "access", operation_id = "getAccess",
+    summary = "The access configuration (read-only)",
+    description = "Spaces, roles (with expanded permissions) and bindings of the access file (`FASTMOCK_ACCESS_FILE`). Needs `access:read`, a global permission of the built-in admin role. Changes need a new access file and a restart. Token values and hashes, the file path and OIDC settings are never included; static tokens without an access file have no bindings here.",
+    responses(
+        (status = 200, description = "The access configuration", body = AccessView),
+        (status = 401, description = "Missing or invalid token", body = ErrorBody),
+        (status = 403, description = "Requires access:read", body = ErrorBody),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn get_access(State(app): State<AppState>) -> Json<AccessView> {
+    Json(AccessView::of(&app))
 }
 
 #[utoipa::path(
@@ -322,6 +433,7 @@ pub async fn import_mockserver(
 #[derive(utoipa::OpenApi)]
 #[openapi(
     paths(
+        get_access,
         get_settings,
         put_settings,
         list_counters,
@@ -329,6 +441,10 @@ pub async fn import_mockserver(
         import_mockserver
     ),
     components(schemas(
+        AccessView,
+        AccessSpace,
+        AccessRole,
+        AccessBinding,
         GlobalSettings,
         fastmock_core::Delay,
         fastmock_core::LogNormalDelay,

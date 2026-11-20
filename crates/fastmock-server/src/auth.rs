@@ -68,8 +68,14 @@ pub struct Principal {
 }
 
 impl Principal {
-    pub fn from_bindings(name: &str, kind: PrincipalKind, bindings: &[Binding]) -> Self {
-        let grants = Grants::from_bindings(bindings);
+    /// The principal of the bindings; `spaces: ["*"]` covers every space of `access`.
+    pub fn from_bindings(
+        name: &str,
+        kind: PrincipalKind,
+        bindings: &[Binding],
+        access: &AccessConfig,
+    ) -> Self {
+        let grants = Grants::from_bindings(bindings, access);
         let mut labels: Vec<&str> = Vec::new();
         for b in bindings {
             if !labels.contains(&b.role.as_str()) {
@@ -96,6 +102,7 @@ impl Principal {
             "anonymous",
             PrincipalKind::Anonymous,
             &[Binding::global("admin", PermSet::all())],
+            &AccessConfig::default(),
         );
         p.permissions = Grants::admin();
         p
@@ -251,7 +258,12 @@ impl Authenticator {
             }
             tokens.push(TokenEntry {
                 hash: e.hash,
-                principal: Principal::from_bindings(&e.name, PrincipalKind::Token, &bindings),
+                principal: Principal::from_bindings(
+                    &e.name,
+                    PrincipalKind::Token,
+                    &bindings,
+                    &access,
+                ),
                 bindings,
             });
         }
@@ -304,7 +316,7 @@ impl Authenticator {
         groups: &[String],
     ) -> Option<Principal> {
         let b = self.bindings_for(kind, name, groups);
-        (!b.is_empty()).then(|| Principal::from_bindings(name, kind, &b))
+        (!b.is_empty()).then(|| Principal::from_bindings(name, kind, &b, &self.access))
     }
 
     /// True when a static token entry has this name; managed tokens must not reuse it.

@@ -206,7 +206,12 @@ fn failed_login(oidc: &Oidc, code: &'static str) -> Response {
 }
 
 async fn audit_failure(app: &AppState, name: Option<&str>, reason: &str) {
-    let p = Principal::from_bindings(name.unwrap_or("unknown"), PrincipalKind::User, &[]);
+    let p = Principal::from_bindings(
+        name.unwrap_or("unknown"),
+        PrincipalKind::User,
+        &[],
+        app.auth.access(),
+    );
     audit_event(app, &p, "auth.login_failed", json!({"reason": reason})).await;
 }
 
@@ -423,7 +428,8 @@ pub async fn logout(State(app): State<AppState>, headers: HeaderMap) -> Response
             Ok(Some(r)) => {
                 logged_out = true;
                 id_token_hint = r.id_token.clone();
-                let p = Principal::from_bindings(&r.name, PrincipalKind::User, &[]);
+                let p =
+                    Principal::from_bindings(&r.name, PrincipalKind::User, &[], app.auth.access());
                 audit_event(&app, &p, "auth.logout", json!({})).await;
             }
             Ok(None) => {}

@@ -185,13 +185,13 @@ const OLD_VIEWER_POSTS: &[&str] = &[
 
 /// The role table before permissions existed: `required_role` of the middleware (GET/HEAD and the
 /// read-only POSTs need viewer, everything else editor) and the handler-level admin checks. The token
-/// routes came later: they need admin, `/tokens/self` any role.
+/// routes and the access view came later: they need admin, `/tokens/self` any role.
 fn old_required(method: &str, path: &str) -> (u8, u8) {
     let path = path.strip_suffix('/').unwrap_or(path);
     if path == "/__admin/tokens/self" {
         return (0, 0);
     }
-    if path.starts_with("/__admin/tokens") {
+    if path.starts_with("/__admin/tokens") || path == "/__admin/access" {
         return (2, 2);
     }
     let middleware = if method == "GET"

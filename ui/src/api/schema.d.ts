@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/__admin/access": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The access configuration (read-only)
+         * @description Spaces, roles (with expanded permissions) and bindings of the access file (`FASTMOCK_ACCESS_FILE`). Needs `access:read`, a global permission of the built-in admin role. Changes need a new access file and a restart. Token values and hashes, the file path and OIDC settings are never included; static tokens without an access file have no bindings here.
+         */
+        get: operations["getAccess"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/__admin/async-mocks": {
         parameters: {
             query?: never;
@@ -1145,13 +1165,13 @@ export interface paths {
         };
         /**
          * List managed tokens
-         * @description Metadata only, newest first, including revoked and expired tokens (kept for 90 days). Lists the tokens for which the caller holds `tokens:read` in every scope; global tokens need it globally.
+         * @description Metadata only, newest first, including revoked and expired tokens (kept for 90 days). Lists the tokens for which the caller holds `tokens:read` in every scope; global tokens need it globally, `*` tokens globally or through a `*` grant.
          */
         get: operations["listTokens"];
         put?: never;
         /**
          * Create a managed token
-         * @description Returns the token value once. The caller needs `tokens:write` and every permission of the role in each requested scope (globally for `global: true`), so a token never holds more than its creator; a caller bound only to spaces cannot create global tokens. Expiry is mandatory; a token created by a managed token expires no later than that token and is revoked with it.
+         * @description Returns the token value once. The caller needs `tokens:write` and every permission of the role in each requested scope (globally for `global: true`), so a token never holds more than its creator; a caller bound only to spaces cannot create global tokens. `spaces: ["*"]` grants the role in every space, including spaces added to the access file later: it needs `tokens:write` and every permission of the role globally or through the caller's own `*` grant (being bound to every current space one by one is not enough). Expiry is mandatory; a token created by a managed token expires no later than that token and is revoked with it.
          */
         post: operations["createToken"];
         delete?: never;
@@ -1216,7 +1236,7 @@ export interface paths {
         post?: never;
         /**
          * Revoke a managed token
-         * @description Needs `tokens:write` in every scope of the token; a managed token may always revoke itself. Every replica rejects the token within 10 seconds. Tokens created by this token, directly or not, are revoked with it. Revoking a token that is no longer active (revoked or expired) changes nothing and records no audit event.
+         * @description Needs `tokens:write` in every scope of the token (for a `*` token, globally or through a `*` grant); a managed token may always revoke itself. Every replica rejects the token within 10 seconds. Tokens created by this token, directly or not, are revoked with it. Revoking a token that is no longer active (revoked or expired) changes nothing and records no audit event.
          */
         delete: operations["revokeToken"];
         options?: never;
@@ -1305,6 +1325,72 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description A binding of the access file. */
+        AccessBinding: {
+            /**
+             * @description `token:<name>`, `user:<name>` or `group:<name>`.
+             * @example group:payments-dev
+             */
+            subject: string;
+            /** @example editor */
+            role: string;
+            /** @description The role is granted everywhere. */
+            global: boolean;
+            /**
+             * @description Spaces the role is granted in: `["*"]` for every space; empty for a global binding.
+             * @example [
+             *       "payments"
+             *     ]
+             */
+            spaces: string[];
+        };
+        /** @description A built-in role or a custom role of the access file. */
+        AccessRole: {
+            /** @example stub-author */
+            name: string;
+            /** @description `viewer`, `editor` or `admin`; false for custom roles of the access file. */
+            builtin: boolean;
+            /**
+             * @description The role's permissions, with wildcards expanded.
+             * @example [
+             *       "stubs:read",
+             *       "stubs:write"
+             *     ]
+             */
+            permissions: string[];
+        };
+        /** @description A space of the access file. */
+        AccessSpace: {
+            /** @example payments */
+            name: string;
+            /**
+             * @description Data-plane path prefixes the space's stubs must stay under (empty: no restriction).
+             * @example [
+             *       "/payments/"
+             *     ]
+             */
+            pathPrefixes: string[];
+            /**
+             * @description Hosts the space's stubs must match (empty: no restriction).
+             * @example [
+             *       "psp.example.com"
+             *     ]
+             */
+            hosts: string[];
+        };
+        /** @description The access configuration, read-only: spaces, roles and bindings of the access file. */
+        AccessView: {
+            /** @description An access file (`FASTMOCK_ACCESS_FILE`) is loaded. */
+            configured: boolean;
+            /** @description OIDC sign-in or OIDC bearer tokens are enabled. */
+            oidc: boolean;
+            /** @description Spaces, sorted by name. */
+            spaces: components["schemas"]["AccessSpace"][];
+            /** @description Built-in roles first (viewer, editor, admin), then the custom roles sorted by name. */
+            roles: components["schemas"]["AccessRole"][];
+            /** @description Bindings in file order. */
+            bindings: components["schemas"]["AccessBinding"][];
+        };
         /** @enum {string} */
         ApiKind: "REST" | "SOAP" | "GRAPHQL" | "EVENT" | "GRPC" | "GENERIC";
         ArtifactImportResult: components["schemas"]["ImportResult"] & {
@@ -1559,7 +1645,7 @@ export interface components {
              */
             role: string;
             /**
-             * @description Spaces the role is granted in. Set either `spaces` or `global: true`.
+             * @description Spaces the role is granted in, or `["*"]` (the only entry) for every space of the access file, including spaces added later. Set either `spaces` or `global: true`.
              * @example [
              *       "billing"
              *     ]
@@ -1668,6 +1754,8 @@ export interface components {
              *     ]
              */
             spaces: string[];
+            /** @description The caller may create tokens with this role and `spaces: ["*"]` (every space, including spaces added later): it holds `tokens:write` and every permission of the role globally or through its own `*` grant, and the access file defines at least one space. */
+            allSpaces: boolean;
         };
         GraphQlImport: {
             /** @description GraphQL SDL. A `# microcksId: <name> : <version>` comment names the service. */
@@ -1979,7 +2067,7 @@ export interface components {
              */
             global: string[];
             /**
-             * @description Permissions granted only in single spaces, by space; the effective permissions in a space are these plus the global ones.
+             * @description Permissions granted only in single spaces, by space; the effective permissions in a space are these plus the global ones. Permissions granted through `spaces: ["*"]` appear under every configured space.
              * @example {
              *       "payments": [
              *         "stubs:write",
@@ -1990,6 +2078,13 @@ export interface components {
             spaces: {
                 [key: string]: string[];
             };
+            /**
+             * @description Permissions granted in every space through `spaces: ["*"]`, including spaces added to the access file later (empty when none).
+             * @example [
+             *       "stubs:read"
+             *     ]
+             */
+            allSpaces: string[];
         };
         PluginInfo: {
             name: string;
@@ -2388,7 +2483,7 @@ export interface components {
             name: string;
             /** @example editor */
             role: string;
-            /** @description Spaces of the token; empty for a global token. */
+            /** @description Spaces of the token: `["*"]` for every space; empty for a global token. */
             spaces: string[];
             global: boolean;
             description?: string | null;
@@ -2547,6 +2642,44 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getAccess: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The access configuration */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccessView"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Requires access:read */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     listAsyncMocks: {
         parameters: {
             query?: {
@@ -7468,7 +7601,7 @@ export interface operations {
     listTokens: {
         parameters: {
             query?: {
-                /** @description Only tokens granted in this space. */
+                /** @description Only tokens granted in this space; tokens with `spaces: ["*"]` belong to every space. */
                 space?: string;
                 /** @description `active`, `expired` or `revoked`. */
                 status?: string;
