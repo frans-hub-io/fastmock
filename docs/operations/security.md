@@ -6,6 +6,7 @@ security model and how to harden a deployment. To report a vulnerability, see [S
 
 - [Model](#model)
 - [Admin tokens and roles](#admin-tokens-and-roles)
+- [Managed tokens](#managed-tokens)
 - [Rotating tokens](#rotating-tokens)
 - [Browsers, origins and the UI](#browsers-origins-and-the-ui)
 - [TLS and mTLS](#tls-and-mtls)
@@ -26,7 +27,7 @@ security model and how to harden a deployment. To report a vulnerability, see [S
 |---|---|
 | The system under test cannot change its mocks | Mocks and the control plane are on different ports; no admin route exists on the data port. |
 | Every control-plane call is authenticated | Bearer tokens bound to roles (sets of permissions), compared as SHA-256 hashes in constant time. There is no anonymous mode except an explicit local-development switch. |
-| Security settings are not runtime state | Tokens, origins, egress policy, secrets, storage and listeners come from the environment at start-up and cannot be changed through the API or the UI. |
+| Security settings are not runtime state | Static tokens, roles, spaces, bindings, origins, egress policy, secrets, storage and listeners come from the environment at start-up and cannot be changed through the API or the UI. Managed tokens are the exception: they can be created through the API, but never with more permissions than their creator, and they always expire. |
 | Mock definitions are data, never code | Templates are a closed language without file, environment, secret or network access; imports never execute anything. |
 | Outgoing traffic follows one policy | Callbacks, proxy stubs and recording use one HTTP client with one egress policy. |
 | What is stored is masked | Secrets in headers, query strings and bodies are masked before they reach the journal, the callbacks API, the UI or logs. |
@@ -74,9 +75,27 @@ recordings, chaos rules, gRPC descriptors or Kafka settings still need separate 
 `FASTMOCK_AUTH_DISABLED=true` turns authentication off for a laptop. The server logs a warning, and the operator
 refuses the variable.
 
+## Managed tokens
+
+[Managed tokens](access-control.md#managed-tokens) are created through `POST /__admin/tokens` and need no restart.
+Their life cycle:
+
+| Stage | What happens |
+|---|---|
+| Creation | Only a caller holding `tokens:write` and every permission of the requested role in each requested scope can create one; a caller bound to spaces cannot create a global token. The value (`fm_` and 64 random hex digits) is returned once; only its SHA-256 hash is stored. Name, role, scopes and expiry are audited (`token.create`), the value never. |
+| Use | Static tokens are checked first; a value in the managed format is then looked up by hash. Each replica caches lookups for at most 10 seconds. The last use is recorded at most once per minute. |
+| Expiry | Mandatory: 90 days by default, at most `FASTMOCK_TOKENS_MAX_DAYS` (365 by default). Checked on every request; expired tokens get `401` with `"details":["token expired"]` and count as `fastmock_admin_auth_failures_total{reason="expired"}`. |
+| Revocation | `DELETE /__admin/tokens/{id}` by a caller with `tokens:write` in every scope of the token, or by the token itself. Effective at once on the replica that handled it and within 10 seconds on all others. Audited as `token.revoke`; later uses count as `reason="token"`. |
+| Clean-up | Revoked and expired tokens stay visible for 90 days, then they are deleted. |
+
+Prefer managed tokens with short lifetimes for CI pipelines and people, scoped to the spaces they work in; keep
+static tokens for the few clients that must survive a database loss (the operator, monitoring). In memory mode
+managed tokens are lost on restart. Watch `fastmock_api_tokens_active` for tokens piling up.
+
 ## Rotating tokens
 
-Token files are read at start-up. To rotate without downtime:
+Managed tokens rotate without a restart: create the new token, switch the client, revoke the old one. Static
+token files are read at start-up. To rotate without downtime:
 
 1. Add an entry for the new token next to the old one (`ci-payments-2026q4:editor:<new hash>`).
 2. Roll the pods. With Helm: update the Secret, then `kubectl rollout restart deploy/<fullname>` (pods are
@@ -264,7 +283,7 @@ Every change through the admin API is recorded:
   (`admin request rejected: missing or invalid token`, `... permission missing`), ready to be shipped to your log
   system.
 
-Events carry `principalKind` (`token`, `anonymous`) and, for changes inside a space, `space`; `role` lists the role
+Events carry `principalKind` (`token`, `apiToken`, `anonymous`) and, for changes inside a space, `space`; `role` lists the role
 names of the principal's bindings.
 
 ```json

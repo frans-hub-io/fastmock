@@ -88,7 +88,7 @@ avoid generating thousands of uniquely named stubs per run.
 | `fastmock_journal_dropped_total` | counter | | Journal entries dropped because the write queue was full. |
 | `fastmock_journal_write_errors_total` | counter | | Journal entries that could not be written. |
 | `fastmock_journal_batch_size` | summary | | Entries per journal write. |
-| `fastmock_store_errors_total` | counter | `store` (`stubs`, `outbox`, `audit`, `chaos`, `settings`, `services`, `asyncmocks`, `asyncmock_lease`, `contract_runs`) | Storage operations that failed in background work. |
+| `fastmock_store_errors_total` | counter | `store` (`stubs`, `outbox`, `audit`, `chaos`, `settings`, `services`, `asyncmocks`, `asyncmock_lease`, `contract_runs`, `tokens`) | Storage operations that failed in background work (`tokens`: managed token lookups, last-use updates and counts). |
 | `fastmock_imports_total` | counter | `format`, `dry_run` | Stub imports (WireMock, MockServer, OpenAPI, Postman, HAR and others). |
 | `fastmock_import_rejections_total` | counter | `format` | Imports rejected with `400` because the document produced no valid stub; nothing was changed. |
 | `fastmock_import_detections_total` | counter | `format` | Formats detected by `POST /__admin/import`. |
@@ -105,7 +105,8 @@ avoid generating thousands of uniquely named stubs per run.
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `fastmock_admin_changes_total` | counter | `action` | Audited changes (`stub.create`, `stub.import`, `scenario.set`, `reset`, ...). |
-| `fastmock_admin_auth_failures_total` | counter | `reason` (`token`, `role`, `permission`, `origin`) | Rejected admin calls. |
+| `fastmock_admin_auth_failures_total` | counter | `reason` (`token`, `expired`, `role`, `permission`, `origin`) | Rejected admin calls; `token` covers missing, unknown and revoked tokens, `expired` managed tokens past their expiry. |
+| `fastmock_api_tokens_active` | gauge | | Active (not revoked, not expired) [managed tokens](access-control.md#managed-tokens), refreshed every minute and after each create or revoke. |
 | `fastmock_admin_errors_total` | counter | | Admin calls that failed with 500. |
 | `fastmock_admin_verifications_total` | counter | `kind` (`count`, `sequence`), `result` (`pass`, `fail`) | Verification requests. |
 | `fastmock_contract_tests_total` | counter | `result` (`passed`, `failed`, `error`) | Contract test runs. |

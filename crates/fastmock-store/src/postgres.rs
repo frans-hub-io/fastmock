@@ -7,9 +7,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fastmock_core::{
-    AuditEvent, AuditFilter, AuditStore, CallbackFilter, CallbackJob, CallbackStatus, DataStore,
-    JournalEntry, JournalFilter, JournalStore, OutboxStore, SpaceFilter, StoreResult, Stub,
-    StubStore,
+    ApiToken, AuditEvent, AuditFilter, AuditStore, CallbackFilter, CallbackJob, CallbackStatus,
+    DataStore, JournalEntry, JournalFilter, JournalStore, OutboxStore, SpaceFilter, StoreResult,
+    Stub, StubStore, TokenStore,
 };
 use serde_json::Value;
 use sqlx::migrate::Migrator;
@@ -1020,5 +1020,126 @@ impl AuditStore for PgStore {
             .execute(&self.pool)
             .await?
             .rows_affected())
+    }
+}
+
+const TOKEN_COLUMNS: &str = "id, name, sha256, role, spaces, global, description, created_by, created_at, expires_at, last_used_at, revoked_at";
+
+fn row_to_token(r: &PgRow) -> StoreResult<ApiToken> {
+    Ok(ApiToken {
+        id: r.try_get("id")?,
+        name: r.try_get("name")?,
+        sha256: r.try_get("sha256")?,
+        role: r.try_get("role")?,
+        spaces: r.try_get("spaces")?,
+        global: r.try_get("global")?,
+        description: r.try_get("description")?,
+        created_by: r.try_get("created_by")?,
+        created_at: r.try_get("created_at")?,
+        expires_at: r.try_get("expires_at")?,
+        last_used_at: r.try_get("last_used_at")?,
+        revoked_at: r.try_get("revoked_at")?,
+    })
+}
+
+#[async_trait]
+impl TokenStore for PgStore {
+    async fn create(&self, t: &ApiToken, now: DateTime<Utc>) -> StoreResult<bool> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("update fm_api_tokens set revoked_at = expires_at where name = $1 and revoked_at is null and expires_at <= $2")
+            .bind(&t.name)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        let inserted = sqlx::query(&format!(
+            "insert into fm_api_tokens ({TOKEN_COLUMNS}) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) on conflict (name) where revoked_at is null do nothing"
+        ))
+        .bind(t.id)
+        .bind(no_nul(&t.name))
+        .bind(&t.sha256)
+        .bind(&t.role)
+        .bind(&t.spaces)
+        .bind(t.global)
+        .bind(t.description.as_deref().map(no_nul))
+        .bind(no_nul(&t.created_by))
+        .bind(t.created_at)
+        .bind(t.expires_at)
+        .bind(t.last_used_at)
+        .bind(t.revoked_at)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            == 1;
+        tx.commit().await?;
+        Ok(inserted)
+    }
+
+    async fn get(&self, id: Uuid) -> StoreResult<Option<ApiToken>> {
+        let r = sqlx::query(&format!(
+            "select {TOKEN_COLUMNS} from fm_api_tokens where id = $1"
+        ))
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        r.as_ref().map(row_to_token).transpose()
+    }
+
+    async fn by_hash(&self, sha256: &str) -> StoreResult<Option<ApiToken>> {
+        let r = sqlx::query(&format!(
+            "select {TOKEN_COLUMNS} from fm_api_tokens where sha256 = $1"
+        ))
+        .bind(sha256)
+        .fetch_optional(&self.pool)
+        .await?;
+        r.as_ref().map(row_to_token).transpose()
+    }
+
+    async fn list(&self) -> StoreResult<Vec<ApiToken>> {
+        let rows = sqlx::query(&format!(
+            "select {TOKEN_COLUMNS} from fm_api_tokens order by created_at desc, id desc limit 10000"
+        ))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_token).collect()
+    }
+
+    async fn revoke(&self, id: Uuid, at: DateTime<Utc>) -> StoreResult<bool> {
+        Ok(sqlx::query(
+            "update fm_api_tokens set revoked_at = $2 where id = $1 and revoked_at is null",
+        )
+        .bind(id)
+        .bind(at)
+        .execute(&self.pool)
+        .await?
+        .rows_affected()
+            == 1)
+    }
+
+    async fn touch(&self, id: Uuid, at: DateTime<Utc>) -> StoreResult<()> {
+        sqlx::query("update fm_api_tokens set last_used_at = $2 where id = $1 and (last_used_at is null or last_used_at <= $2 - interval '1 minute')")
+            .bind(id)
+            .bind(at)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn count_active(&self, now: DateTime<Utc>) -> StoreResult<i64> {
+        Ok(sqlx::query_scalar(
+            "select count(*) from fm_api_tokens where revoked_at is null and expires_at > $1",
+        )
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    async fn purge_inactive_before(&self, at: DateTime<Utc>) -> StoreResult<u64> {
+        Ok(
+            sqlx::query("delete from fm_api_tokens where revoked_at < $1 or expires_at < $1")
+                .bind(at)
+                .execute(&self.pool)
+                .await?
+                .rows_affected(),
+        )
     }
 }

@@ -12,6 +12,7 @@ data-plane URL space.
 - [The access file](#the-access-file)
 - [Custom roles](#custom-roles)
 - [Bindings](#bindings)
+- [Managed tokens](#managed-tokens)
 - [Spaces](#spaces)
 - [Selecting a space in the API](#selecting-a-space-in-the-api)
 - [Ownership of the data plane](#ownership-of-the-data-plane)
@@ -54,7 +55,7 @@ everywhere.
 | `info:read` | `GET /info`, `/version`, `/plugins`, `/spaces` | global, implied by any binding |
 | `audit:read` | `GET /audit` | global |
 | `system:reset` | `POST /reset` | global |
-| `tokens:read`, `tokens:write` | reserved for token management through the API | space |
+| `tokens:read`, `tokens:write` | `GET /tokens`, `/tokens/{id}`; `POST /tokens`, `DELETE /tokens/{id}` ([managed tokens](#managed-tokens)) | space (the scopes of the token) |
 
 Endpoints without a space of their own need the permission globally:
 
@@ -139,6 +140,80 @@ A principal is allowed a permission in a space when one of its bindings grants i
 space and the permission is a space permission. A binding of `admin` in a space therefore grants every space
 permission there but none of the global ones (`stubs:purge`, `system:reset`, `audit:read` and so on).
 `info:read` comes with any binding.
+
+## Managed tokens
+
+Besides the static entries of `FASTMOCK_ADMIN_TOKENS`, tokens can be created and revoked through the admin API
+without a restart. A managed token has a name, one role (built-in or custom) and a scope: global or a list of
+spaces. Its expiry is mandatory.
+
+```sh
+curl -s -X POST localhost:9090/__admin/tokens -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"name": "ci-billing", "role": "editor", "spaces": ["billing"], "expiresInDays": 30, "description": "CI of the billing team"}'
+```
+
+```json
+{"token": "fm_3f9c...", "id": "019a8f1e-...", "name": "ci-billing", "role": "editor", "spaces": ["billing"],
+ "global": false, "description": "CI of the billing team", "createdBy": "ops", "createdAt": "2026-11-20T09:00:00Z",
+ "expiresAt": "2026-12-20T09:00:00Z", "lastUsedAt": null, "revokedAt": null, "status": "active"}
+```
+
+The value (`fm_` and 64 hex digits, the same format as `fastmock hash-token --generate`) is returned only in this
+response; FastMock stores its SHA-256 hash. Store it in your secret manager right away.
+
+| Field | Meaning |
+|---|---|
+| `name` | `[A-Za-z0-9._@-]`, at most 128 characters. Unique among active tokens and different from every static token name (`409` otherwise); a name becomes free again when its token is revoked or expired. It appears as the principal name in `/info`, logs and the audit log. |
+| `role` | `viewer`, `editor`, `admin` or a custom role of the access file. |
+| `spaces` or `global: true` | Exactly one of them. A token in spaces gets the role's space permissions in each of them (like a space binding). |
+| `expiresInDays` | 1 to `FASTMOCK_TOKENS_MAX_DAYS` (default 365); 90 when omitted. |
+| `description` | Optional, at most 1024 bytes. |
+
+| Endpoint | Permission |
+|---|---|
+| `POST /tokens` | the escalation rule below |
+| `GET /tokens` | `tokens:read`; lists the tokens for which the caller holds `tokens:read` in every scope (global tokens need it globally). Filters: `?space=`, `?status=active\|expired\|revoked`. |
+| `GET /tokens/{id}` | `tokens:read` in every scope of the token; others answer 404 |
+| `DELETE /tokens/{id}` | `tokens:write` in every scope of the token, or the token itself (self-revocation) |
+| `GET /tokens/self` | the managed token itself (any static token gets 404) |
+
+**Escalation rule.** The caller can create a token only if, in each requested scope, it holds `tokens:write` and
+every permission the role grants there: for a global token, globally; for a token in space `s`, the space
+permissions of the role in `s`. A token therefore never holds more than its creator, and a caller bound only to
+spaces cannot create a global token. A denial names the first missing permission:
+`403 {"error":"requires permission contracts:secrets in space billing to grant role admin there",...,"required":"contracts:secrets"}`.
+The built-in `editor` role lacks `tokens:write`; to let a team manage its own tokens, bind a custom role with
+`tokens:read` and `tokens:write` in its space:
+
+```yaml
+roles:
+  - name: team-lead
+    permissions: [stubs:*, imports:run, journal:*, files:*, callbacks:*, state:*, contracts:read,
+      contracts:details, contracts:write, tokens:read, tokens:write]
+bindings:
+  - subject: token:billing-lead
+    role: team-lead
+    spaces: [billing]
+```
+
+**Lifecycle.**
+
+- *Use*: static tokens are checked first, in constant time; a value in the managed format is then looked up by
+  its hash. Each replica caches the result of a lookup (including "unknown") for at most 10 seconds.
+- *Revocation* (`DELETE /tokens/{id}`) takes effect at once on the replica that handled it and within 10 seconds
+  on every other replica of the same storage. Revoking again answers `200` and changes nothing.
+- *Expiry* is checked on every request against the stored time, so an expired token stops working at once
+  everywhere (`401 {"error":"unauthorized","details":["token expired"]}`).
+- `lastUsedAt` is written in the background at most once per minute per token; it never delays a request.
+- Revoked and expired tokens stay listed with `status` `revoked` or `expired` for 90 days, then they are deleted.
+- If the role of a token disappears from the access file, the token is rejected until the role is back.
+- In memory mode (`FASTMOCK_STORAGE=memory`) managed tokens live in the process and are lost on restart. With
+  PostgreSQL they are stored in `fm_api_tokens` and shared by all replicas.
+
+The token's own principal has kind `apiToken` (`GET /__admin/info`), and the audit log records `token.create` and
+`token.revoke` with the token's id, name, kind, role, scopes and expiry; the value never appears in logs, the audit
+log or later responses.
 
 ## Spaces
 
@@ -230,8 +305,8 @@ with global `stubs:write` can create them.
 ```
 
 `permissions.global` holds what is granted everywhere; `permissions.spaces` what is granted only in single spaces
-(the effective permissions in a space are both lists together). `kind` is `token` for static tokens (`anonymous`
-when authentication is disabled). `role` is kept for older clients: the highest built-in role whose permissions
+(the effective permissions in a space are both lists together). `kind` is `token` for static tokens, `apiToken`
+for [managed tokens](#managed-tokens) (`anonymous` when authentication is disabled). `role` is kept for older clients: the highest built-in role whose permissions
 the principal holds everywhere, `viewer` when it holds less.
 
 `GET /__admin/spaces` lists the spaces the caller can see (every space for a principal with a global permission,
@@ -252,9 +327,12 @@ otherwise its bound spaces) with the caller's permissions in each:
 | `400 {"error":"several spaces are bound (billing, payments); set space",...}` | a write without `space` by a principal bound to several spaces |
 | `404 {"error":"space nope not found",...}` | unknown space |
 | `400 {"error":"space payments owns /payments/, /psp/: ...",...}` | a stub outside the space's ownership |
+| `403 {"error":"requires permission ... to grant role ... there",...}` | a token request that would exceed the caller's permissions ([escalation rule](#managed-tokens)) |
+| `401 {"error":"unauthorized","details":["token expired"]}` | an expired managed token |
 
 Denials count in `fastmock_admin_auth_failures_total` with `reason="role"` for principals holding only global
-built-in roles and `reason="permission"` otherwise. Audit events record the principal kind (`principalKind`) and
+built-in roles and `reason="permission"` otherwise; expired managed tokens count as `reason="expired"`, revoked
+ones as `reason="token"`. Audit events record the principal kind (`principalKind`) and
 the space of the change (`space`).
 
 ## Examples
@@ -300,8 +378,9 @@ With Helm, put the same document under the `access` value ([Helm: access control
    adds nullable `space` columns and indexes; existing rows stay in the global area.
 2. Add spaces and bindings in the access file. Existing global tokens keep their global role, so they keep
    seeing and changing everything.
-3. Give teams new tokens with an empty role and space bindings (`name::<hash>` plus `token:name` bindings), or
-   bind their OIDC groups once OIDC sign-in is available. Move their stubs into their space by exporting them
+3. Give teams new tokens with an empty role and space bindings (`name::<hash>` plus `token:name` bindings),
+   create [managed tokens](#managed-tokens) for them, or bind their OIDC groups once OIDC sign-in is available.
+   The migration that adds the `fm_api_tokens` table is additive as well. Move their stubs into their space by exporting them
    (`GET /__admin/export?tag=...`), importing them with `?space=<space>` and deleting the global copies.
 4. Clients that read `principal.role` from `/__admin/info` keep working; use `principal.permissions` for new
    decisions. `403` responses keep `error`, `details` and `required`.

@@ -175,6 +175,60 @@ pub trait AuditStore: Send + Sync {
     }
 }
 
+/// A token managed through the admin API. Only the SHA-256 of the value is stored.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ApiToken {
+    pub id: Uuid,
+    pub name: String,
+    /// Lowercase hex SHA-256 of the token value.
+    pub sha256: String,
+    pub role: String,
+    pub spaces: Vec<String>,
+    pub global: bool,
+    pub description: Option<String>,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApiTokenStatus {
+    Active,
+    Expired,
+    Revoked,
+}
+
+impl ApiToken {
+    /// A token retired because it expired has `revoked_at == expires_at`; it counts as expired.
+    pub fn status(&self, now: DateTime<Utc>) -> ApiTokenStatus {
+        match self.revoked_at {
+            Some(r) if r < self.expires_at => ApiTokenStatus::Revoked,
+            _ if self.expires_at <= now => ApiTokenStatus::Expired,
+            _ => ApiTokenStatus::Active,
+        }
+    }
+}
+
+#[async_trait]
+pub trait TokenStore: Send + Sync {
+    /// Stores a new token. Returns false when an active token already has the name; expired tokens with
+    /// the name are retired first, so the name can be reused.
+    async fn create(&self, token: &ApiToken, now: DateTime<Utc>) -> StoreResult<bool>;
+    async fn get(&self, id: Uuid) -> StoreResult<Option<ApiToken>>;
+    async fn by_hash(&self, sha256: &str) -> StoreResult<Option<ApiToken>>;
+    /// Every stored token, newest first.
+    async fn list(&self) -> StoreResult<Vec<ApiToken>>;
+    /// Marks the token revoked; false when it does not exist or is already revoked or retired.
+    async fn revoke(&self, id: Uuid, at: DateTime<Utc>) -> StoreResult<bool>;
+    /// Records a use, unless one was recorded less than a minute before `at`.
+    async fn touch(&self, id: Uuid, at: DateTime<Utc>) -> StoreResult<()>;
+    async fn count_active(&self, now: DateTime<Utc>) -> StoreResult<i64>;
+    /// Deletes tokens revoked or expired before `at`.
+    async fn purge_inactive_before(&self, at: DateTime<Utc>) -> StoreResult<u64>;
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct AuditFilter {
     pub action: Option<String>,

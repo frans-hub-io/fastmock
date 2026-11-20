@@ -203,6 +203,27 @@ pub struct Config {
     pub journal_scan_timeout: Duration,
     pub journal_scan_max_work: u64,
     pub journal_scan_concurrency: usize,
+    /// Longest lifetime of a managed token, in days (`FASTMOCK_TOKENS_MAX_DAYS`).
+    pub tokens_max_days: u32,
+    /// How long a replica trusts its cached view of a managed token; revocation takes effect within it.
+    pub token_cache_ttl: Duration,
+}
+
+pub const DEFAULT_TOKEN_DAYS: u32 = 90;
+pub const TOKEN_CACHE_TTL: Duration = Duration::from_secs(10);
+
+/// `FASTMOCK_TOKENS_MAX_DAYS`: 1 to 3650, default 365.
+pub fn parse_tokens_max_days(raw: Option<&str>) -> anyhow::Result<u32> {
+    let Some(v) = raw.map(str::trim) else {
+        return Ok(365);
+    };
+    let n: u32 = v.parse().map_err(|_| {
+        anyhow::anyhow!("FASTMOCK_TOKENS_MAX_DAYS must be a whole number of days, got `{v}`")
+    })?;
+    if !(1..=3650).contains(&n) {
+        bail!("FASTMOCK_TOKENS_MAX_DAYS must be between 1 and 3650 days, got {n}");
+    }
+    Ok(n)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -575,6 +596,8 @@ impl Config {
             journal_scan_timeout: Duration::from_secs(10),
             journal_scan_max_work: DEFAULT_JOURNAL_SCAN_MAX_WORK,
             journal_scan_concurrency: 2,
+            tokens_max_days: 365,
+            token_cache_ttl: TOKEN_CACHE_TTL,
         }
     }
 
@@ -705,6 +728,8 @@ impl Config {
             journal_scan_max_work: parse("JOURNAL_SCAN_MAX_WORK", DEFAULT_JOURNAL_SCAN_MAX_WORK)?
                 .max(1),
             journal_scan_concurrency: parse("JOURNAL_SCAN_CONCURRENCY", 2usize)?.max(1),
+            tokens_max_days: parse_tokens_max_days(env("TOKENS_MAX_DAYS").as_deref())?,
+            token_cache_ttl: TOKEN_CACHE_TTL,
         };
         if cfg.max_inflight_body_bytes < cfg.max_body_bytes {
             bail!("FASTMOCK_MAX_INFLIGHT_BODY_BYTES must be at least FASTMOCK_MAX_BODY_BYTES");
@@ -721,6 +746,25 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tokens_max_days_is_validated() {
+        assert_eq!(parse_tokens_max_days(None).unwrap(), 365);
+        assert_eq!(parse_tokens_max_days(Some(" 30 ")).unwrap(), 30);
+        assert_eq!(parse_tokens_max_days(Some("3650")).unwrap(), 3650);
+        for (v, want) in [
+            ("0", "between 1 and 3650"),
+            ("3651", "between 1 and 3650"),
+            ("-1", "whole number"),
+            ("90d", "whole number"),
+        ] {
+            let e = parse_tokens_max_days(Some(v)).unwrap_err().to_string();
+            assert!(
+                e.contains("FASTMOCK_TOKENS_MAX_DAYS") && e.contains(want),
+                "{v}: {e}"
+            );
+        }
+    }
 
     #[test]
     fn passwords_are_url_encoded() {

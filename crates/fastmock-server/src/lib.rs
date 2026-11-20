@@ -22,6 +22,7 @@ pub mod spaces;
 pub mod state;
 pub mod telemetry;
 pub mod tls;
+pub mod tokens;
 pub mod ui;
 pub mod websocket;
 
@@ -194,6 +195,10 @@ pub async fn build(
             admin_routes.push((p.name().to_string(), a));
         }
     }
+    let token_store: Arc<dyn fastmock_core::TokenStore> = match &pg {
+        Some(pg) => Arc::new(pg.clone()),
+        None => Arc::new(fastmock_core::memory::MemoryTokens::default()),
+    };
     let (journal_tx, journal_rx) = tokio::sync::mpsc::channel(cfg.journal_queue);
     tokio::spawn(journal_writer(stores.journal.clone(), journal_rx));
     let app = AppState {
@@ -216,6 +221,7 @@ pub async fn build(
         )),
         journal_tx,
         scans: Arc::new(tokio::sync::Semaphore::new(cfg.journal_scan_concurrency)),
+        tokens: Arc::new(tokens::TokenService::new(token_store, cfg.token_cache_ttl)),
     };
     if let Err(e) = app.grpc.reload(&app).await {
         tracing::warn!(error = %e, "loading gRPC descriptors failed");
@@ -283,6 +289,7 @@ pub async fn maintenance(app: AppState, mut shutdown: watch::Receiver<bool>) {
             if let Err(e) = app.stores.audit.purge_older_than(cutoff).await {
                 tracing::error!(error = %e, "audit retention failed");
             }
+            tokens::maintain(&app).await;
         }
     }
 }

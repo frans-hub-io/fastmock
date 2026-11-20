@@ -583,6 +583,101 @@ impl AuditStore for MemoryAudit {
     }
 }
 
+/// Managed tokens of memory mode; they are lost on restart.
+#[derive(Default)]
+pub struct MemoryTokens {
+    tokens: Mutex<Vec<ApiToken>>,
+}
+
+#[async_trait]
+impl TokenStore for MemoryTokens {
+    async fn create(&self, token: &ApiToken, now: DateTime<Utc>) -> StoreResult<bool> {
+        let mut v = self.tokens.lock().await;
+        for t in v.iter_mut() {
+            if t.name == token.name && t.revoked_at.is_none() && t.expires_at <= now {
+                t.revoked_at = Some(t.expires_at);
+            }
+        }
+        if v.iter()
+            .any(|t| t.name == token.name && t.revoked_at.is_none())
+        {
+            return Ok(false);
+        }
+        if v.iter()
+            .any(|t| t.id == token.id || t.sha256 == token.sha256)
+        {
+            anyhow::bail!("duplicate token id or hash");
+        }
+        v.push(token.clone());
+        Ok(true)
+    }
+
+    async fn get(&self, id: Uuid) -> StoreResult<Option<ApiToken>> {
+        Ok(self
+            .tokens
+            .lock()
+            .await
+            .iter()
+            .find(|t| t.id == id)
+            .cloned())
+    }
+
+    async fn by_hash(&self, sha256: &str) -> StoreResult<Option<ApiToken>> {
+        Ok(self
+            .tokens
+            .lock()
+            .await
+            .iter()
+            .find(|t| t.sha256 == sha256)
+            .cloned())
+    }
+
+    async fn list(&self) -> StoreResult<Vec<ApiToken>> {
+        let mut v = self.tokens.lock().await.clone();
+        v.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
+        Ok(v)
+    }
+
+    async fn revoke(&self, id: Uuid, at: DateTime<Utc>) -> StoreResult<bool> {
+        let mut v = self.tokens.lock().await;
+        match v.iter_mut().find(|t| t.id == id && t.revoked_at.is_none()) {
+            Some(t) => {
+                t.revoked_at = Some(at);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    async fn touch(&self, id: Uuid, at: DateTime<Utc>) -> StoreResult<()> {
+        let mut v = self.tokens.lock().await;
+        if let Some(t) = v.iter_mut().find(|t| t.id == id)
+            && t.last_used_at
+                .is_none_or(|l| l <= at - chrono::Duration::minutes(1))
+        {
+            t.last_used_at = Some(at);
+        }
+        Ok(())
+    }
+
+    async fn count_active(&self, now: DateTime<Utc>) -> StoreResult<i64> {
+        Ok(self
+            .tokens
+            .lock()
+            .await
+            .iter()
+            .filter(|t| t.status(now) == ApiTokenStatus::Active)
+            .count() as i64)
+    }
+
+    async fn purge_inactive_before(&self, at: DateTime<Utc>) -> StoreResult<u64> {
+        let mut v = self.tokens.lock().await;
+        let before = v.len();
+        v.retain(|t| t.revoked_at.is_none_or(|r| r >= at) && t.expires_at >= at);
+        Ok((before - v.len()) as u64)
+    }
+}
+
 pub fn memory_stores(journal_capacity: usize) -> Stores {
     Stores {
         stubs: Arc::new(MemoryStubs::default()),

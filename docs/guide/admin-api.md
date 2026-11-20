@@ -7,6 +7,7 @@ files, imports, recording, scenarios, chaos rules and gRPC descriptors. The UI u
 - [OpenAPI document and Swagger UI](#openapi-document-and-swagger-ui)
 - [Authentication](#authentication)
 - [Roles per endpoint](#roles-per-endpoint)
+- [Managed tokens](#managed-tokens)
 - [Errors](#errors)
 - [Pagination and filtering](#pagination-and-filtering)
 - [Stubs](#stubs)
@@ -64,12 +65,17 @@ fastmock hash-token "$FASTMOCK_TOKEN"   # prints the hash of an existing token
 # FASTMOCK_ADMIN_TOKENS=ci:editor:<hash>,dash:viewer:<hash>
 ```
 
+Tokens can also be created, listed and revoked through the API, with an expiry and optionally limited to
+spaces: see [Managed tokens](#managed-tokens).
+
 Browser requests carrying an `Origin` header are accepted only from `FASTMOCK_ADMIN_ALLOWED_ORIGINS` or the
 admin listener's own origin.
 
 | Response | Meaning |
 |---|---|
-| `401 {"error":"unauthorized","details":[]}` + `WWW-Authenticate: Bearer` | token missing or unknown |
+| `401 {"error":"unauthorized","details":[]}` + `WWW-Authenticate: Bearer` | token missing, unknown or revoked |
+| `401 {"error":"unauthorized","details":["token expired"]}` | managed token past its expiry |
+| `503 {"error":"token store unavailable","details":[]}` | a managed token could not be checked because the database is unreachable |
 | `403 {"error":"forbidden","details":["requires role editor"],"required":"editor"}` | token valid, role too low |
 | `403 {"error":"forbidden","details":["requires permission files:read"],"required":"files:read"}` | a token with a custom role or space bindings lacks the permission ([Access control](../operations/access-control.md#errors)) |
 | `403 {"error":"origin not allowed","details":[]}` | browser request from another origin |
@@ -103,6 +109,32 @@ selects data are listed in [Access control](../operations/access-control.md#perm
 | `GET /contract-tests`, `/contract-tests/{id}` | viewer (verdicts only; details need editor) |
 | `POST /contract-tests`, `DELETE /contract-tests/{id}` | editor; `POST` with `secretHeaders` needs admin |
 | `POST /reset`, `GET /audit` | admin |
+| `GET /tokens`, `/tokens/{id}`; `POST /tokens`, `DELETE /tokens/{id}` | admin (`tokens:read`, `tokens:write`; see [Managed tokens](#managed-tokens)) |
+| `GET /tokens/self`; `DELETE /tokens/{id}` of the calling token itself | the managed token itself |
+
+## Managed tokens
+
+```sh
+# create (the value is shown only once)
+curl -s -X POST localhost:9090/__admin/tokens -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"name": "ci-billing", "role": "editor", "spaces": ["billing"], "expiresInDays": 30}'
+# list, read one, read your own, revoke
+curl -s localhost:9090/__admin/tokens?status=active -H "Authorization: Bearer $ADMIN_TOKEN"
+curl -s localhost:9090/__admin/tokens/$ID -H "Authorization: Bearer $ADMIN_TOKEN"
+curl -s localhost:9090/__admin/tokens/self -H "Authorization: Bearer $CI_TOKEN"
+curl -s -X DELETE localhost:9090/__admin/tokens/$ID -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+| Endpoint | Body or parameters | Response |
+|---|---|---|
+| `POST /tokens` | `{name, role, spaces?, global?, expiresInDays?, description?}`; exactly one of `spaces` and `global: true`; `expiresInDays` 1 to `FASTMOCK_TOKENS_MAX_DAYS`, default 90 | `201` with `token` (the value, once) and the metadata; `409` when the name is taken by an active or a static token |
+| `GET /tokens` | `?space=`, `?status=active\|expired\|revoked` | `{"tokens": [...]}`: metadata of the tokens the caller may manage, newest first |
+| `GET /tokens/{id}`, `GET /tokens/self` | | metadata: `id`, `name`, `role`, `spaces`, `global`, `description`, `createdBy`, `createdAt`, `expiresAt`, `lastUsedAt`, `revokedAt`, `status` |
+| `DELETE /tokens/{id}` | | the metadata with `status: revoked`; every replica rejects the token within 10 seconds |
+
+Who may create, see and revoke which tokens (the escalation rule), expiry, caching and memory-mode behaviour are
+described in [Access control: managed tokens](../operations/access-control.md#managed-tokens).
 
 ## Errors
 
@@ -278,7 +310,8 @@ the deleted stub in `before`. Sensitive header values and JSON fields named like
 they are written. Other actions: `stub.create`, `stub.delete_many`, `stub.delete_by_metadata`, `stub.import`,
 `import.<format>`, `journal.clear`, `journal.remove`, `file.put`, `file.delete`, `recording.start`,
 `recording.stop`, `recording.snapshot`, `scenario.set`, `scenario.reset`, `kv.set`, `kv.delete`, `chaos.set`,
-`chaos.clear`, `grpc.descriptor.put`, `grpc.descriptor.delete`, `callbacks.clear`, `reset`. Audit entries are also
+`chaos.clear`, `grpc.descriptor.put`, `grpc.descriptor.delete`, `callbacks.clear`, `reset`, `token.create`,
+`token.revoke` (id, name, kind, role, scopes and expiry of the managed token, never its value). Audit entries are also
 logged with the `audit` tracing target.
 
 ## Version and info

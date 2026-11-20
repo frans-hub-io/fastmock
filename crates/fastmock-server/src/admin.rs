@@ -2872,6 +2872,7 @@ pub fn router(app: AppState, plugin_admin: Vec<(String, Router)>) -> Router {
         .merge(crate::contract::routes())
         .merge(crate::services::routes())
         .merge(crate::admin_core::routes())
+        .merge(crate::tokens::routes())
         .with_state(app.clone());
     for (name, r) in plugin_admin {
         api = api.nest(&format!("/plugins/{name}"), r);

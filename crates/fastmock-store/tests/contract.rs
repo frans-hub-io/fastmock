@@ -5,8 +5,8 @@ use std::time::Duration;
 use chrono::Utc;
 use fastmock_core::memory::memory_stores;
 use fastmock_core::{
-    AuditEvent, CallbackFilter, CallbackJob, CallbackStatus, JournalEntry, JournalFilter,
-    SpaceFilter, Stores, Stub,
+    ApiToken, ApiTokenStatus, AuditEvent, CallbackFilter, CallbackJob, CallbackStatus,
+    JournalEntry, JournalFilter, SpaceFilter, Stores, Stub, TokenStore,
 };
 use fastmock_store::{PgStore, ValkeyStore};
 use serde_json::json;
@@ -698,5 +698,120 @@ async fn space_scoped_contract() {
             1,
             "{name}"
         );
+    }
+}
+
+async fn token_backends() -> Vec<(&'static str, Arc<dyn TokenStore>)> {
+    let mut v: Vec<(&'static str, Arc<dyn TokenStore>)> = vec![(
+        "memory",
+        Arc::new(fastmock_core::memory::MemoryTokens::default()),
+    )];
+    if let Ok(admin_url) = std::env::var("FASTMOCK_TEST_DATABASE_URL") {
+        let db = format!("fm_{}", uuid::Uuid::new_v4().simple());
+        let mut admin = sqlx::PgConnection::connect(&admin_url).await.unwrap();
+        sqlx::query(&format!("create database {db}"))
+            .execute(&mut admin)
+            .await
+            .unwrap();
+        let url = format!("{}/{}", admin_url.rsplit_once('/').unwrap().0, db);
+        let pg = PgStore::connect(&url, 5).await.unwrap();
+        pg.migrate().await.unwrap();
+        v.push(("postgres", Arc::new(pg)));
+    }
+    v
+}
+
+fn api_token(name: &str, hash: &str, expires_in: chrono::Duration) -> ApiToken {
+    let now = Utc::now();
+    ApiToken {
+        id: uuid::Uuid::now_v7(),
+        name: name.into(),
+        sha256: hash.into(),
+        role: "editor".into(),
+        spaces: vec!["alpha".into(), "beta".into()],
+        global: false,
+        description: Some("d".into()),
+        created_by: "ops".into(),
+        created_at: now,
+        expires_at: now + expires_in,
+        last_used_at: None,
+        revoked_at: None,
+    }
+}
+
+#[tokio::test]
+async fn token_store_contract() {
+    for (name, s) in token_backends().await {
+        let now = Utc::now();
+        let a = api_token("ci", &"a".repeat(64), chrono::Duration::days(1));
+        assert!(s.create(&a, now).await.unwrap(), "{name}");
+        let dup = api_token("ci", &"b".repeat(64), chrono::Duration::days(1));
+        assert!(
+            !s.create(&dup, now).await.unwrap(),
+            "{name}: active names are unique"
+        );
+        let same_hash = api_token("other", &"a".repeat(64), chrono::Duration::days(1));
+        assert!(
+            s.create(&same_hash, now).await.is_err(),
+            "{name}: hashes are unique"
+        );
+        let got = s.by_hash(&"a".repeat(64)).await.unwrap().unwrap();
+        assert_eq!(got.id, a.id, "{name}");
+        assert_eq!(got.spaces, vec!["alpha", "beta"], "{name}");
+        assert_eq!(got.description.as_deref(), Some("d"), "{name}");
+        assert!(
+            s.by_hash(&"c".repeat(64)).await.unwrap().is_none(),
+            "{name}"
+        );
+        assert_eq!(s.count_active(now).await.unwrap(), 1, "{name}");
+
+        s.touch(a.id, now).await.unwrap();
+        let first = s.get(a.id).await.unwrap().unwrap().last_used_at.unwrap();
+        s.touch(a.id, now + chrono::Duration::seconds(30))
+            .await
+            .unwrap();
+        let t = s.get(a.id).await.unwrap().unwrap().last_used_at.unwrap();
+        assert_eq!(
+            t.timestamp(),
+            first.timestamp(),
+            "{name}: at most once per minute"
+        );
+        s.touch(a.id, now + chrono::Duration::seconds(61))
+            .await
+            .unwrap();
+        let t = s.get(a.id).await.unwrap().unwrap().last_used_at.unwrap();
+        assert!(t > first, "{name}");
+
+        assert!(s.revoke(a.id, now).await.unwrap(), "{name}");
+        assert!(!s.revoke(a.id, now).await.unwrap(), "{name}");
+        let r = s.get(a.id).await.unwrap().unwrap();
+        assert_eq!(r.status(Utc::now()), ApiTokenStatus::Revoked, "{name}");
+        assert_eq!(s.count_active(Utc::now()).await.unwrap(), 0, "{name}");
+        assert!(
+            s.create(&dup, Utc::now()).await.unwrap(),
+            "{name}: name free again"
+        );
+
+        let gone = api_token("gone", &"d".repeat(64), chrono::Duration::seconds(-5));
+        assert!(s.create(&gone, Utc::now()).await.unwrap(), "{name}");
+        let again = api_token("gone", &"e".repeat(64), chrono::Duration::days(1));
+        assert!(
+            s.create(&again, Utc::now()).await.unwrap(),
+            "{name}: expired names are reused"
+        );
+        let old = s.get(gone.id).await.unwrap().unwrap();
+        assert_eq!(old.status(Utc::now()), ApiTokenStatus::Expired, "{name}");
+        let list = s.list().await.unwrap();
+        assert_eq!(list.len(), 4, "{name}");
+        assert_eq!(list[0].id, again.id, "{name}: newest first");
+
+        assert_eq!(
+            s.purge_inactive_before(Utc::now() + chrono::Duration::seconds(1))
+                .await
+                .unwrap(),
+            2,
+            "{name}"
+        );
+        assert_eq!(s.list().await.unwrap().len(), 2, "{name}");
     }
 }

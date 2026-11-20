@@ -18,7 +18,7 @@ impl utoipa::Modify for BearerScheme {
                 HttpBuilder::new()
                     .scheme(HttpAuthScheme::Bearer)
                     .description(Some(
-                        "Admin token from FASTMOCK_ADMIN_TOKENS. Every route needs a permission (`resource:action`); the built-in roles viewer, editor and admin are permission sets, custom roles and space bindings come from FASTMOCK_ACCESS_FILE. Without an access file: GET/HEAD and read-only POSTs need viewer, other changes editor; deleting all stubs, reset and the audit log need admin.",
+                        "Static admin token from FASTMOCK_ADMIN_TOKENS or a managed token from POST /__admin/tokens. Every route needs a permission (`resource:action`); the built-in roles viewer, editor and admin are permission sets, custom roles and space bindings come from FASTMOCK_ACCESS_FILE. Without an access file: GET/HEAD and read-only POSTs need viewer, other changes editor; deleting all stubs, reset and the audit log need admin.",
                     ))
                     .build(),
             ),
@@ -109,6 +109,7 @@ pub fn spec() -> utoipa::openapi::OpenApi {
     doc.merge(crate::contract::ContractApi::openapi());
     doc.merge(crate::services::ServicesApi::openapi());
     doc.merge(crate::admin_core::CoreApi::openapi());
+    doc.merge(crate::tokens::TokensApi::openapi());
     normalize_tags(&mut doc);
     doc
 }

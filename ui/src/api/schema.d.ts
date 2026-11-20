@@ -1056,6 +1056,74 @@ export interface paths {
         patch: operations["patchStub"];
         trace?: never;
     };
+    "/__admin/tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List managed tokens
+         * @description Metadata only, newest first, including revoked and expired tokens (kept for 90 days). Lists the tokens for which the caller holds `tokens:read` in every scope; global tokens need it globally.
+         */
+        get: operations["listTokens"];
+        put?: never;
+        /**
+         * Create a managed token
+         * @description Returns the token value once. The caller needs `tokens:write` and every permission of the role in each requested scope (globally for `global: true`), so a token never holds more than its creator; a caller bound only to spaces cannot create global tokens. Expiry is mandatory.
+         */
+        post: operations["createToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/tokens/self": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The caller's own managed token
+         * @description Any managed token may read its own metadata. Other principals get 404.
+         */
+        get: operations["getOwnToken"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/tokens/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One managed token
+         * @description Needs `tokens:read` in every scope of the token; tokens outside the caller's scopes answer 404.
+         */
+        get: operations["getToken"];
+        put?: never;
+        post?: never;
+        /**
+         * Revoke a managed token
+         * @description Needs `tokens:write` in every scope of the token; a managed token may always revoke itself. Every replica rejects the token within 10 seconds. Revoking a token that is no longer active changes nothing.
+         */
+        delete: operations["revokeToken"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/__admin/verify": {
         parameters: {
             query?: never;
@@ -1372,6 +1440,42 @@ export interface components {
         CountResult: {
             /** Format: int64 */
             count: number;
+        };
+        CreateToken: {
+            /**
+             * @description `[A-Za-z0-9._@-]`, at most 128 characters; unique among active tokens and distinct from the static token names.
+             * @example ci-billing
+             */
+            name: string;
+            /**
+             * @description Built-in role (`viewer`, `editor`, `admin`) or a custom role of the access file.
+             * @example editor
+             */
+            role: string;
+            /**
+             * @description Spaces the role is granted in. Set either `spaces` or `global: true`.
+             * @example [
+             *       "billing"
+             *     ]
+             */
+            spaces?: string[] | null;
+            /** @description Grant the role everywhere. */
+            global?: boolean | null;
+            /**
+             * Format: int32
+             * @description Lifetime in days: 1 to `FASTMOCK_TOKENS_MAX_DAYS` (default 365); 90 when omitted.
+             * @example 30
+             */
+            expiresInDays?: number | null;
+            /** @example CI pipeline of the billing team */
+            description?: string | null;
+        };
+        CreatedToken: components["schemas"]["TokenInfo"] & {
+            /**
+             * @description The token value (`fm_` and 64 hex digits). Returned only in this response: store it now.
+             * @example fm_3f9c0d5e8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0
+             */
+            token: string;
         };
         /** @enum {string} */
         DateTruncation: "first second of minute" | "first minute of hour" | "first hour of day" | "first day of month" | "first day of next month" | "last day of month" | "first day of year" | "first day of next year" | "last day of year";
@@ -2126,6 +2230,41 @@ export interface components {
             limit?: number | null;
             stubs: components["schemas"]["Stub"][];
         };
+        /** @description Metadata of a managed token; the value is never shown again after creation. */
+        TokenInfo: {
+            /** Format: uuid */
+            id: string;
+            /** @example ci-billing */
+            name: string;
+            /** @example editor */
+            role: string;
+            /** @description Spaces of the token; empty for a global token. */
+            spaces: string[];
+            global: boolean;
+            description?: string | null;
+            /**
+             * @description Name of the principal that created the token.
+             * @example ops
+             */
+            createdBy: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /**
+             * Format: date-time
+             * @description Last use, recorded at most once per minute.
+             */
+            lastUsedAt?: string | null;
+            /** Format: date-time */
+            revokedAt?: string | null;
+            status: components["schemas"]["TokenStatus"];
+        };
+        TokenList: {
+            tokens: components["schemas"]["TokenInfo"][];
+        };
+        /** @enum {string} */
+        TokenStatus: "active" | "expired" | "revoked";
         /**
          * @description How Kafka topics are named: after the channel (default) or as Microcks does,
          *     `<service name without spaces and dashes>-<version>-<channel with / replaced by ->`.
@@ -6340,6 +6479,274 @@ export interface operations {
                 };
             };
             /** @description No such stub */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    listTokens: {
+        parameters: {
+            query?: {
+                /** @description Only tokens granted in this space. */
+                space?: string;
+                /** @description `active`, `expired` or `revoked`. */
+                status?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tokens */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenList"];
+                };
+            };
+            /** @description Invalid status */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Requires tokens:read */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    createToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateToken"];
+            };
+        };
+        responses: {
+            /** @description Created; `token` is shown only here */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatedToken"];
+                };
+            };
+            /** @description Invalid name, role, scope or lifetime */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The caller cannot grant this role in these scopes */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description An active token or a static token has this name */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getOwnToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Token */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenInfo"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The caller is not a managed token */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Token id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Token */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenInfo"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Requires tokens:read */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    revokeToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Token id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The token after revocation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenInfo"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Requires tokens:write in every scope of the token */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Not found */
             404: {
                 headers: {
                     [name: string]: unknown;

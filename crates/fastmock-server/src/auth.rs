@@ -59,6 +59,9 @@ pub struct Principal {
     /// Every binding is a global binding of a built-in role: denials name the role, as before.
     #[serde(skip)]
     pub legacy: bool,
+    /// Id of the managed token the request authenticated with.
+    #[serde(skip)]
+    pub token_id: Option<uuid::Uuid>,
 }
 
 impl Principal {
@@ -80,6 +83,7 @@ impl Principal {
                 }),
             role_label: labels.join(","),
             permissions: grants,
+            token_id: None,
         }
     }
 
@@ -289,18 +293,16 @@ impl Authenticator {
         (!b.is_empty()).then(|| Principal::from_bindings(name, kind, &b))
     }
 
+    /// True when a static token entry has this name; managed tokens must not reuse it.
+    pub fn is_static_name(&self, name: &str) -> bool {
+        self.tokens.iter().any(|t| t.principal.name == name)
+    }
+
     pub fn authenticate(&self, headers: &HeaderMap) -> Option<Principal> {
         if self.disabled {
             return Some(Principal::anonymous());
         }
-        let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-        let token = value
-            .strip_prefix("Bearer ")
-            .or_else(|| value.strip_prefix("bearer "))?
-            .trim();
-        if token.is_empty() || token.len() > 512 {
-            return None;
-        }
+        let token = bearer(headers)?;
         let presented: [u8; 32] = Sha256::digest(token.as_bytes()).into();
         let mut found: Option<&TokenEntry> = None;
         for t in &self.tokens {
@@ -332,6 +334,62 @@ impl Authenticator {
     }
 }
 
+/// The bearer value of the `Authorization` header (at most 512 bytes).
+pub fn bearer(headers: &HeaderMap) -> Option<&str> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let token = value
+        .strip_prefix("Bearer ")
+        .or_else(|| value.strip_prefix("bearer "))?
+        .trim();
+    (!token.is_empty() && token.len() <= 512).then_some(token)
+}
+
+enum Rejection {
+    Token,
+    Expired,
+    Unavailable,
+}
+
+/// Static tokens first (constant time over the list), then managed tokens by hash through the cache.
+async fn principal_of(
+    app: &AppState,
+    headers: &HeaderMap,
+    path: &str,
+) -> Result<Principal, Rejection> {
+    if let Some(p) = app.auth.authenticate(headers) {
+        return Ok(p);
+    }
+    let Some(value) = bearer(headers).filter(|v| crate::tokens::looks_managed(v)) else {
+        return Err(Rejection::Token);
+    };
+    match app.tokens.lookup(value).await {
+        Ok(crate::tokens::Lookup::Valid(t)) => match crate::tokens::principal_of(&app.auth, &t) {
+            Some(p) => {
+                app.tokens.touch(t.id);
+                Ok(p)
+            }
+            None => {
+                tracing::warn!(target: "audit", token = %t.name, role = %t.role, path = %path, "admin request rejected: the role of the managed token is not defined");
+                Err(Rejection::Token)
+            }
+        },
+        Ok(crate::tokens::Lookup::Expired(t)) => {
+            tracing::warn!(target: "audit", token = %t.name, path = %path, "admin request rejected: token expired");
+            Err(Rejection::Expired)
+        }
+        Ok(crate::tokens::Lookup::Revoked(t)) => {
+            tracing::warn!(target: "audit", token = %t.name, path = %path, "admin request rejected: token revoked");
+            Err(Rejection::Token)
+        }
+        Ok(crate::tokens::Lookup::Unknown) => Err(Rejection::Token),
+        Err(e) => {
+            metrics::counter!("fastmock_store_errors_total", "store" => "tokens").increment(1);
+            tracing::error!(error = %e, "looking up a managed token failed");
+            Err(Rejection::Unavailable)
+        }
+    }
+}
+
 fn full_path(req: &Request) -> String {
     req.extensions()
         .get::<axum::extract::OriginalUri>()
@@ -348,17 +406,40 @@ pub async fn admin_auth(State(app): State<AppState>, mut req: Request, next: Nex
         )
             .into_response();
     }
-    let Some(principal) = app.auth.authenticate(req.headers()) else {
-        metrics::counter!("fastmock_admin_auth_failures_total", "reason" => "token").increment(1);
-        tracing::warn!(target: "audit", path = %full_path(&req), "admin request rejected: missing or invalid token");
-        return (
-            StatusCode::UNAUTHORIZED,
-            [(header::WWW_AUTHENTICATE, "Bearer")],
-            axum::Json(serde_json::json!({"error": "unauthorized", "details": []})),
-        )
-            .into_response();
-    };
     let path = full_path(&req);
+    let principal = match principal_of(&app, req.headers(), &path).await {
+        Ok(p) => p,
+        Err(Rejection::Unavailable) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(serde_json::json!({"error": "token store unavailable", "details": []})),
+            )
+                .into_response();
+        }
+        Err(Rejection::Expired) => {
+            metrics::counter!("fastmock_admin_auth_failures_total", "reason" => "expired")
+                .increment(1);
+            return (
+                StatusCode::UNAUTHORIZED,
+                [(header::WWW_AUTHENTICATE, "Bearer error=\"invalid_token\"")],
+                axum::Json(
+                    serde_json::json!({"error": "unauthorized", "details": ["token expired"]}),
+                ),
+            )
+                .into_response();
+        }
+        Err(Rejection::Token) => {
+            metrics::counter!("fastmock_admin_auth_failures_total", "reason" => "token")
+                .increment(1);
+            tracing::warn!(target: "audit", path = %path, "admin request rejected: missing or invalid token");
+            return (
+                StatusCode::UNAUTHORIZED,
+                [(header::WWW_AUTHENTICATE, "Bearer")],
+                axum::Json(serde_json::json!({"error": "unauthorized", "details": []})),
+            )
+                .into_response();
+        }
+    };
     let (perm, scope) = route_rule(req.method(), &path);
     let ok = match scope {
         ScopeKind::Space => principal.permissions.anywhere(perm),

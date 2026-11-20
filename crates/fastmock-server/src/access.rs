@@ -765,6 +765,10 @@ pub fn route_rule(method: &Method, full_path: &str) -> (Permission, ScopeKind) {
         ("DELETE", ["services", _]) => global(StubsWrite),
         ("GET", ["async-mocks", ..]) => global(StubsRead),
         ("PUT" | "POST" | "DELETE", ["async-mocks", _, ..]) => global(StubsWrite),
+        ("GET", ["tokens"]) => natural(TokensRead),
+        ("POST", ["tokens"]) => natural(TokensWrite),
+        ("GET", ["tokens", "self"]) | ("DELETE", ["tokens", _]) => global(InfoRead),
+        ("GET", ["tokens", _]) => natural(TokensRead),
         ("GET", ["plugins", _, ..]) => global(StubsRead),
         (_, ["plugins", _, ..]) => global(StubsWrite),
         _ => fallback(),
@@ -1049,6 +1053,22 @@ bindings:
         assert_eq!(
             r(Method::POST, "/__admin/plugins/x/verify"),
             (StubsWrite, ScopeKind::Global)
+        );
+        assert_eq!(
+            r(Method::POST, "/__admin/tokens"),
+            (TokensWrite, ScopeKind::Space)
+        );
+        assert_eq!(
+            r(Method::GET, "/__admin/tokens/self"),
+            (InfoRead, ScopeKind::Global)
+        );
+        assert_eq!(
+            r(Method::DELETE, "/__admin/tokens/x"),
+            (InfoRead, ScopeKind::Global)
+        );
+        assert_eq!(
+            r(Method::GET, "/__admin/tokens/x"),
+            (TokensRead, ScopeKind::Space)
         );
         assert_eq!(
             r(Method::GET, "/__admin/nope"),

@@ -38,6 +38,7 @@ pub struct AppState {
     pub body_budget: Arc<tokio::sync::Semaphore>,
     pub journal_tx: tokio::sync::mpsc::Sender<fastmock_core::JournalEntry>,
     pub scans: Arc<tokio::sync::Semaphore>,
+    pub tokens: Arc<crate::tokens::TokenService>,
 }
 
 pub struct StubSecrets {
