@@ -665,6 +665,51 @@ async fn ownership_rules_apply_on_create_update_and_import() {
             )
             .await;
         assert_eq!(st, 400, "{name}: dot segments in a WireMock import: {v}");
+        for request in [
+            json!({"url": "/pay/..%2fbill/x"}),
+            json!({"urlPath": "/pay/..%2Fbill/y"}),
+            json!({"urlPath": "/pay/a%5cb"}),
+            json!({"urlPath": "/pay/a%5Cb"}),
+            json!({"urlPath": "/pay\\..\\bill/z"}),
+            json!({"urlPathTemplate": "/pay/%2F/{id}"}),
+        ] {
+            let (st, v) = h
+                .call(
+                    Method::POST,
+                    "/stubs",
+                    PAY_T,
+                    Some(json!({"request": request, "response": {"status": 200}})),
+                )
+                .await;
+            assert_eq!(st, 400, "{name}: encoded separator in {request}: {v}");
+            assert!(
+                v["error"].as_str().unwrap().contains("encoded slash"),
+                "{name}: {v}"
+            );
+        }
+        let (st, v) = h
+            .call(
+                Method::POST,
+                "/stubs/import",
+                PAY_T,
+                Some(json!({"stubs": [
+                    {"request": {"urlPath": "/pay/..%2Fbill/z"}, "response": {"status": 200}}
+                ]})),
+            )
+            .await;
+        assert_eq!(st, 400, "{name}: encoded slash in an import: {v}");
+        let (st, v) = h
+            .call(
+                Method::POST,
+                "/import/wiremock",
+                PAY_T,
+                Some(json!({"mappings": {"mappings": [{"request": {"method": "GET", "url": "/pay/..%5Cbill/w"}, "response": {"status": 200}}]}, "tag": "slashes"})),
+            )
+            .await;
+        assert_eq!(
+            st, 400,
+            "{name}: encoded backslash in a WireMock import: {v}"
+        );
         let created = h
             .ok(
                 Method::POST,
@@ -687,6 +732,15 @@ async fn ownership_rules_apply_on_create_update_and_import() {
             )
             .await;
         assert_eq!(st, 400, "{name}: update outside the prefixes: {v}");
+        let (st, v) = h
+            .call(
+                Method::PUT,
+                &format!("/stubs/{id}"),
+                PAY_T,
+                Some(json!({"request": {"urlPath": "/pay/..%2fbill/x"}, "response": {"status": 200}})),
+            )
+            .await;
+        assert_eq!(st, 400, "{name}: update with an encoded slash: {v}");
         let (st, v) = h
             .call(
                 Method::PATCH,

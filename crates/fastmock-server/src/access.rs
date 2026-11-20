@@ -425,8 +425,14 @@ fn check_prefix(p: &str) -> anyhow::Result<()> {
     {
         bail!("path prefix `{p}` must start with `/`, have no spaces and be at most 512 bytes");
     }
-    if p.contains('?') || p.contains('#') || fastmock_core::ownership::has_dot_segment(p) {
-        bail!("path prefix `{p}` must be a plain path");
+    if p.contains('?')
+        || p.contains('#')
+        || fastmock_core::ownership::has_dot_segment(p)
+        || fastmock_core::ownership::has_encoded_separator(p)
+    {
+        bail!(
+            "path prefix `{p}` must be a plain path, without `.` or `..` segments, encoded slashes or backslashes"
+        );
     }
     Ok(())
 }
@@ -995,6 +1001,26 @@ bindings:
             (
                 "spaces: [{name: a, pathPrefixes: [payments]}]",
                 "spaces[0] (a): path prefix",
+            ),
+            (
+                "spaces: [{name: a, pathPrefixes: [/pay/../bill/]}]",
+                "spaces[0] (a): path prefix `/pay/../bill/` must be a plain path",
+            ),
+            (
+                "spaces: [{name: a, pathPrefixes: ['/pay/..%2Fbill/']}]",
+                "spaces[0] (a): path prefix `/pay/..%2Fbill/` must be a plain path",
+            ),
+            (
+                "spaces: [{name: a, pathPrefixes: ['/pay%2f']}]",
+                "must be a plain path",
+            ),
+            (
+                "spaces: [{name: a, pathPrefixes: ['/pay%5c']}]",
+                "must be a plain path",
+            ),
+            (
+                "spaces: [{name: a, pathPrefixes: ['/pay\\bill/']}]",
+                "must be a plain path",
             ),
             ("spaces: [{name: a, hosts: ['a b']}]", "spaces[0] (a): host"),
             (

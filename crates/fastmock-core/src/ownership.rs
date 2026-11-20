@@ -18,6 +18,14 @@ pub fn has_dot_segment(path: &str) -> bool {
     })
 }
 
+/// Whether a path has an encoded slash or backslash (`%2f`, `%5c`, in any case) or a raw backslash. A
+/// server or proxy that decodes or normalises them sees other segments than the text shows, so ownership
+/// checks refuse such paths.
+pub fn has_encoded_separator(path: &str) -> bool {
+    let p = path.to_ascii_lowercase();
+    p.contains('\\') || p.contains("%2f") || p.contains("%5c")
+}
+
 /// Two prefixes overlap when a path can lie under both.
 pub fn prefixes_overlap(a: &str, b: &str) -> bool {
     under(a.trim_end_matches('/'), b) || under(b.trim_end_matches('/'), a)
@@ -113,5 +121,27 @@ mod tests {
         assert!(!Ownership::admits(&["pay"], Some("free")));
         assert!(!Ownership::admits(&["pay", "bill"], Some("pay")));
         assert!(Ownership::admits(&[], Some("free")));
+    }
+
+    #[test]
+    fn encoded_separators() {
+        for bad in [
+            "/billing/..%2fpayments/x",
+            "/billing/%2F",
+            "/billing/a%5cb",
+            "/billing/a%5Cb",
+            "/billing\\x",
+        ] {
+            assert!(has_encoded_separator(bad), "{bad}");
+        }
+        for ok in [
+            "/billing/x",
+            "/billing/%2e",
+            "/billing/a%25b",
+            "/billing/a%2",
+            "/billing/f%5",
+        ] {
+            assert!(!has_encoded_separator(ok), "{ok}");
+        }
     }
 }

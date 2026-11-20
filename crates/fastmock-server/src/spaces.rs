@@ -140,6 +140,11 @@ pub fn ownership(def: &SpaceDef, stub: &Stub) -> Result<(), String> {
                     "space {name} owns {owned}: {path} has a `.` or `..` segment; use the normalised path"
                 ));
             }
+            if fastmock_core::ownership::has_encoded_separator(path) {
+                return Err(format!(
+                    "space {name} owns {owned}: {path} has an encoded slash or backslash (%2F, %5C) or a backslash; use the plain path"
+                ));
+            }
             if !def.path_prefixes.iter().any(|pre| under(path, pre)) {
                 return Err(format!(
                     "space {name} owns {owned}: {path} lies outside these prefixes"
@@ -273,6 +278,7 @@ mod tests {
             json!({"urlPath": "/psp"}),
             json!({"urlPath": "/payments/...x/.hidden/a..b"}),
             json!({"url": "/payments/x?next=../y"}),
+            json!({"url": "/payments/x?next=%2Fy"}),
         ] {
             assert!(ownership(&d, &stub(ok.clone())).is_ok(), "{ok}");
         }
@@ -292,6 +298,12 @@ mod tests {
             json!({"urlPath": "/payments/x/.."}),
             json!({"urlPathTemplate": "/payments/../billing/{id}"}),
             json!({"urlPathTemplate": "/psp/%2E%2E/{id}"}),
+            json!({"url": "/payments/..%2fbilling/x"}),
+            json!({"urlPath": "/payments/..%2Fbilling/x"}),
+            json!({"urlPath": "/payments/a%5cb"}),
+            json!({"urlPath": "/payments/a%5Cb"}),
+            json!({"urlPath": "/payments\\..\\billing/x"}),
+            json!({"urlPathTemplate": "/psp/%2f/{id}"}),
         ] {
             assert!(ownership(&d, &stub(bad.clone())).is_err(), "{bad}");
         }
