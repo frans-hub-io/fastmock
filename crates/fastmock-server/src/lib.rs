@@ -141,6 +141,16 @@ pub async fn build(
         None => access::AccessConfig::default(),
     };
     engine.set_ownership(access.ownership());
+    let problems = spaces::ownership_problems(&access, engine.snapshot().iter().map(|c| &c.stub));
+    for p in problems.iter().take(50) {
+        tracing::warn!(stub_id = %p.stub_id, space = %p.space, reason = %p.reason, "stored stub breaks the rules of its space; fix or delete it");
+    }
+    if problems.len() > 50 {
+        tracing::warn!(
+            count = problems.len(),
+            "more stored stubs break the rules of their space; GET /__admin/info lists them"
+        );
+    }
     let auth = Arc::new(auth::Authenticator::with_access(
         &cfg.admin_tokens,
         cfg.admin_tokens_file.as_deref(),
@@ -221,6 +231,7 @@ pub async fn build(
         plugins: Arc::new(infos),
         pg,
         started: Instant::now(),
+        instance_id: uuid::Uuid::new_v4().simple().to_string().into(),
         ready: Arc::new(AtomicBool::new(false)),
         http,
         policy: policy.clone(),

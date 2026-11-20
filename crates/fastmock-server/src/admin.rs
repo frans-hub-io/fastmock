@@ -1868,6 +1868,15 @@ pub struct InfoResponse {
     pub plugins: Vec<crate::state::PluginInfo>,
     pub principal: Principal,
     pub auth_disabled: bool,
+    /// Random id of the answering server process, new on every start. A change tells clients such as the
+    /// operator that an in-memory server lost its stubs.
+    #[schema(example = "6f1c0d3a9b8e4f27a1c5d2e3f4a5b6c7")]
+    pub instance_id: String,
+    /// Stored stubs the caller can read that break the rules of their space (outside its path prefixes or
+    /// hosts, or in a space the access file no longer defines), typically after the access file changed.
+    /// They stay stored; fix or delete them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[utoipa::path(
@@ -1899,8 +1908,17 @@ pub async fn info(
             .filter(|c| p.allowed(Permission::StubsRead, c.stub.space.as_deref()))
             .count(),
         plugins: (*app.plugins).clone(),
+        warnings: crate::spaces::ownership_problems(
+            app.auth.access(),
+            app.engine.snapshot().iter().map(|c| &c.stub),
+        )
+        .into_iter()
+        .filter(|w| p.allowed(Permission::StubsRead, Some(&w.space)))
+        .map(|w| w.to_string())
+        .collect(),
         principal: p,
         auth_disabled: app.auth.disabled(),
+        instance_id: app.instance_id.to_string(),
     })
 }
 

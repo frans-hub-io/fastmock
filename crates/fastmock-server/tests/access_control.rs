@@ -624,6 +624,47 @@ async fn ownership_rules_apply_on_create_update_and_import() {
             )
             .await;
         assert_eq!(st, 400, "{name}: {v}");
+        for request in [
+            json!({"url": "/pay/../bill/x"}),
+            json!({"urlPath": "/pay/%2e%2e/bill/y"}),
+            json!({"urlPath": "/pay/%2E%2e/bill/y"}),
+            json!({"urlPath": "/pay/./x"}),
+            json!({"urlPathTemplate": "/pay/../bill/{id}"}),
+        ] {
+            let (st, v) = h
+                .call(
+                    Method::POST,
+                    "/stubs",
+                    PAY_T,
+                    Some(json!({"request": request, "response": {"status": 200}})),
+                )
+                .await;
+            assert_eq!(st, 400, "{name}: dot segments in {request}: {v}");
+            assert!(
+                v["error"].as_str().unwrap().contains("segment"),
+                "{name}: {v}"
+            );
+        }
+        let (st, v) = h
+            .call(
+                Method::POST,
+                "/stubs/import",
+                PAY_T,
+                Some(json!({"stubs": [
+                    {"request": {"urlPath": "/pay/%2E%2E/bill/z"}, "response": {"status": 200}}
+                ]})),
+            )
+            .await;
+        assert_eq!(st, 400, "{name}: dot segments in an import: {v}");
+        let (st, v) = h
+            .call(
+                Method::POST,
+                "/import/wiremock",
+                PAY_T,
+                Some(json!({"mappings": {"mappings": [{"request": {"method": "GET", "url": "/pay/../bill/w"}, "response": {"status": 200}}]}, "tag": "dots"})),
+            )
+            .await;
+        assert_eq!(st, 400, "{name}: dot segments in a WireMock import: {v}");
         let created = h
             .ok(
                 Method::POST,
@@ -1593,4 +1634,66 @@ async fn unknown_admin_paths_keep_the_previous_answers_without_access_control() 
     assert_eq!((st, v["required"].clone()), (403, json!("admin")), "{v}");
     let (st, _) = h.call(Method::GET, "/nope", ADMIN, None).await;
     assert_eq!(st, 404);
+}
+
+/// Stubs stored before the access file gained prefixes (or lost the space) are reported in `/info` to the
+/// principals that can read them, and every process start has its own instance id.
+#[tokio::test]
+async fn info_reports_stored_stubs_that_break_their_space_rules() {
+    for (name, storage) in storages().await {
+        let h = H::start(storage, space_tokens(), Some(SPACES)).await;
+        let outside: fastmock_core::Stub = serde_json::from_value(json!({
+            "request": {"urlPath": "/elsewhere/x"}, "response": {"status": 200}, "space": "pay"
+        }))
+        .unwrap();
+        let orphan: fastmock_core::Stub = serde_json::from_value(json!({
+            "request": {"urlPath": "/gone/x"}, "response": {"status": 200}, "space": "gone"
+        }))
+        .unwrap();
+        let fine: fastmock_core::Stub = serde_json::from_value(json!({
+            "request": {"urlPath": "/pay/x"}, "response": {"status": 200}, "space": "pay"
+        }))
+        .unwrap();
+        for s in [&outside, &orphan, &fine] {
+            h.app.stores.stubs.upsert(s).await.unwrap();
+        }
+        h.app.engine.reload().await.unwrap();
+
+        let v = h.ok(Method::GET, "/info", ADMIN, None).await;
+        let warnings: Vec<String> = serde_json::from_value(v["warnings"].clone()).unwrap();
+        assert_eq!(warnings.len(), 2, "{name}: {warnings:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains(&outside.id.to_string())
+                    && w.contains("/elsewhere/x lies outside")),
+            "{name}: {warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains(&orphan.id.to_string())
+                    && w.contains("space gone is not defined")),
+            "{name}: {warnings:?}"
+        );
+        let v = h.ok(Method::GET, "/info", PAY_T, None).await;
+        let warnings: Vec<String> = serde_json::from_value(v["warnings"].clone()).unwrap();
+        assert_eq!(warnings.len(), 1, "{name}: {warnings:?}");
+        let v = h.ok(Method::GET, "/info", BILL_T, None).await;
+        assert!(v.get("warnings").is_none(), "{name}: {v}");
+
+        let id = v["instanceId"].as_str().unwrap().to_string();
+        assert_eq!(id.len(), 32, "{name}: {id}");
+        assert_eq!(
+            h.ok(Method::GET, "/info", ADMIN, None).await["instanceId"],
+            json!(id),
+            "{name}: stable while the process runs"
+        );
+        let other = H::start(StorageKind::Memory, space_tokens(), Some(SPACES)).await;
+        assert_ne!(
+            other.ok(Method::GET, "/info", ADMIN, None).await["instanceId"],
+            json!(id),
+            "{name}: new on every start"
+        );
+    }
 }

@@ -350,7 +350,9 @@ curl -s -H "Authorization: Bearer $FASTMOCK_TOKEN" http://localhost:9090/__admin
 
 `features` lists `tokens` when the server supports [managed tokens](#managed-tokens). `gitSha` is set when the binary was built with the `FASTMOCK_GIT_SHA` environment variable, otherwise `null`.
 `GET /info` returns the version, storage kind, uptime, number of loaded stubs (`stubsLoaded`, only those the caller can see), plugins and the caller's identity:
-`principal` with `name`, `kind`, `role` and `permissions` (`global` and per-space lists). `GET /spaces` lists the
+`principal` with `name`, `kind`, `role` and `permissions` (`global` and per-space lists). `instanceId` is a random
+id of the answering process, new on every start; `warnings` (present when not empty) lists stored stubs that break
+the rules of their space after the access file changed. `GET /spaces` lists the
 spaces the caller can see with its permissions in each ([Access control](../operations/access-control.md#inspecting-your-permissions)).
 
 ## Limits

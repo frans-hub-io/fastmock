@@ -135,6 +135,11 @@ pub fn ownership(def: &SpaceDef, stub: &Stub) -> Result<(), String> {
             ));
         }
         for path in paths {
+            if fastmock_core::ownership::has_dot_segment(path) {
+                return Err(format!(
+                    "space {name} owns {owned}: {path} has a `.` or `..` segment; use the normalised path"
+                ));
+            }
             if !def.path_prefixes.iter().any(|pre| under(path, pre)) {
                 return Err(format!(
                     "space {name} owns {owned}: {path} lies outside these prefixes"
@@ -163,6 +168,46 @@ pub fn ownership(def: &SpaceDef, stub: &Stub) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// A stored stub that breaks the rules of its space: outside its path prefixes or hosts, or in a space
+/// the access file does not define. Stubs are checked when they are written, so this happens only when the
+/// access file changes later.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnershipProblem {
+    pub stub_id: uuid::Uuid,
+    pub space: String,
+    pub reason: String,
+}
+
+impl std::fmt::Display for OwnershipProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "stub {} in space {}: {}",
+            self.stub_id, self.space, self.reason
+        )
+    }
+}
+
+pub fn ownership_problems<'a>(
+    access: &crate::access::AccessConfig,
+    stubs: impl Iterator<Item = &'a Stub>,
+) -> Vec<OwnershipProblem> {
+    stubs
+        .filter_map(|stub| {
+            let space = stub.space.as_ref()?;
+            let reason = match access.space(space) {
+                None => format!("space {space} is not defined in the access file"),
+                Some(def) => ownership(def, stub).err()?,
+            };
+            Some(OwnershipProblem {
+                stub_id: stub.id,
+                space: space.clone(),
+                reason,
+            })
+        })
+        .collect()
 }
 
 /// Validation of a stub before it is stored: the engine rules and the ownership rules of its space.
@@ -226,6 +271,8 @@ mod tests {
             json!({"url": "/psp/a?b=1"}),
             json!({"urlPathTemplate": "/payments/{id}"}),
             json!({"urlPath": "/psp"}),
+            json!({"urlPath": "/payments/...x/.hidden/a..b"}),
+            json!({"url": "/payments/x?next=../y"}),
         ] {
             assert!(ownership(&d, &stub(ok.clone())).is_ok(), "{ok}");
         }
@@ -236,6 +283,15 @@ mod tests {
             json!({"urlPattern": "/payments/.*"}),
             json!({"method": "GET"}),
             json!({"urlPathTemplate": "/{tenant}/payments"}),
+            json!({"url": "/payments/../billing/x"}),
+            json!({"url": "/payments/./x?a=/.."}),
+            json!({"urlPath": "/payments/%2e%2e/billing/y"}),
+            json!({"urlPath": "/payments/%2E%2e/billing/y"}),
+            json!({"urlPath": "/payments/.%2E/billing/y"}),
+            json!({"urlPath": "/payments/%2e"}),
+            json!({"urlPath": "/payments/x/.."}),
+            json!({"urlPathTemplate": "/payments/../billing/{id}"}),
+            json!({"urlPathTemplate": "/psp/%2E%2E/{id}"}),
         ] {
             assert!(ownership(&d, &stub(bad.clone())).is_err(), "{bad}");
         }

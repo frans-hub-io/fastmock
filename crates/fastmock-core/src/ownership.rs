@@ -9,6 +9,15 @@ pub fn under(path: &str, prefix: &str) -> bool {
     p.is_empty() || path == p || path.starts_with(&format!("{p}/"))
 }
 
+/// Whether a path has a `.` or `..` segment, plain or percent-encoded in any case (`%2e`, `.%2E`).
+/// Such a path names a different location than its text says, so ownership checks refuse it.
+pub fn has_dot_segment(path: &str) -> bool {
+    path.split('/').any(|seg| {
+        let s = seg.to_ascii_lowercase().replace("%2e", ".");
+        s == "." || s == ".."
+    })
+}
+
 /// Two prefixes overlap when a path can lie under both.
 pub fn prefixes_overlap(a: &str, b: &str) -> bool {
     under(a.trim_end_matches('/'), b) || under(b.trim_end_matches('/'), a)

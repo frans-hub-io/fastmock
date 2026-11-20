@@ -425,7 +425,7 @@ fn check_prefix(p: &str) -> anyhow::Result<()> {
     {
         bail!("path prefix `{p}` must start with `/`, have no spaces and be at most 512 bytes");
     }
-    if p.contains('?') || p.contains('#') || p.split('/').any(|s| s == "..") {
+    if p.contains('?') || p.contains('#') || fastmock_core::ownership::has_dot_segment(p) {
         bail!("path prefix `{p}` must be a plain path");
     }
     Ok(())

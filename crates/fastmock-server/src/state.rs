@@ -29,6 +29,8 @@ pub struct AppState {
     pub plugins: Arc<Vec<PluginInfo>>,
     pub pg: Option<PgStore>,
     pub started: Instant,
+    /// Random id of this process, new on every start.
+    pub instance_id: Arc<str>,
     pub ready: Arc<AtomicBool>,
     pub http: reqwest::Client,
     pub policy: Arc<crate::outbox::EgressPolicy>,
