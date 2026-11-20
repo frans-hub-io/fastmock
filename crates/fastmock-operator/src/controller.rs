@@ -844,16 +844,88 @@ pub fn deployment_settled(d: &Deployment) -> bool {
         && st.unavailable_replicas.unwrap_or(0) == 0
 }
 
-async fn rollout_settled(ctx: &Ctx, ns: &str, server: &str) -> Result<bool, Error> {
-    let deployments: Api<Deployment> = Api::namespaced(ctx.client.clone(), ns);
-    Ok(deployments
-        .get_opt(server)
-        .await?
-        .is_some_and(|d| deployment_settled(&d)))
+/// What the Deployment of an in-memory server is doing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rollout {
+    /// A new pod is being started to replace the running one.
+    Replacing,
+    /// The pod is not ready (starting, restarted after a crash, failing its probe), or there is no
+    /// Deployment.
+    NotReady,
+    /// Only the current, ready pod is left.
+    Settled,
 }
 
-/// How soon an import into a newly started in-memory server is checked again. A rollout can finish while
-/// the Service still routes to the old pod for a moment; the check catches stubs that went there.
+pub fn rollout_of(d: Option<&Deployment>) -> Rollout {
+    let Some(d) = d else {
+        return Rollout::NotReady;
+    };
+    if deployment_settled(d) {
+        return Rollout::Settled;
+    }
+    let want = d.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1);
+    let st = d.status.clone().unwrap_or_default();
+    if st.observed_generation.unwrap_or(0) < d.metadata.generation.unwrap_or(0)
+        || st.replicas.unwrap_or(0) > want
+        || st.updated_replicas.unwrap_or(0) < want
+    {
+        Rollout::Replacing
+    } else {
+        Rollout::NotReady
+    }
+}
+
+async fn server_rollout(ctx: &Ctx, ns: &str, server: &str) -> Result<Rollout, Error> {
+    let deployments: Api<Deployment> = Api::namespaced(ctx.client.clone(), ns);
+    Ok(rollout_of(deployments.get_opt(server).await?.as_ref()))
+}
+
+/// What a MockApi on an in-memory server does next, from its status, the server's Deployment and the
+/// instance id the admin Service answers with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RestartStep {
+    /// The server is rolling out or not ready: report `ServerRestarting` and remember the instance being
+    /// replaced.
+    Wait { replaced: Option<String> },
+    /// The instance being replaced still answers (its pod is shutting down): report `ServerRestarting` and
+    /// look again shortly.
+    ReplacedAnswers,
+    /// The instance the stubs were imported into answers: count them. With `pending` a restart is being
+    /// confirmed, and only a matching count reports `Synced` again.
+    Check { pending: bool },
+    /// Another instance answers: import into it and confirm that later.
+    Reimport { replaced: Option<String> },
+    /// First import, or a server that reports no instance id: no restart handling.
+    Plain,
+}
+
+fn non_empty(s: &str) -> Option<String> {
+    (!s.is_empty()).then(|| s.to_string())
+}
+
+pub fn restart_step(st: &MockApiStatus, rollout: Rollout, answering: Option<&str>) -> RestartStep {
+    let current = st.server_instance.as_str();
+    let replaced = st.replaced_instance.clone().filter(|r| !r.is_empty());
+    let pending = replaced.is_some() || synced_reason(st) == Some("ServerRestarting");
+    match (rollout, answering) {
+        (Rollout::Replacing, _) => RestartStep::Wait {
+            replaced: non_empty(current).or(replaced),
+        },
+        (Rollout::NotReady, _) => RestartStep::Wait { replaced },
+        (Rollout::Settled, None) => RestartStep::Plain,
+        (Rollout::Settled, Some(x)) if replaced.as_deref() == Some(x) => {
+            RestartStep::ReplacedAnswers
+        }
+        (Rollout::Settled, Some(x)) if x == current => RestartStep::Check { pending },
+        (Rollout::Settled, Some(_)) if current.is_empty() && !pending => RestartStep::Plain,
+        (Rollout::Settled, Some(_)) => RestartStep::Reimport {
+            replaced: replaced.or(non_empty(current)),
+        },
+    }
+}
+
+/// How soon a restarted in-memory server is checked again: after an import into it, and while the
+/// instance it replaces still answers.
 const VERIFY_AFTER_IMPORT: Duration = Duration::from_secs(5);
 
 fn space_not_found_message(space: &str, server: &str) -> String {
@@ -866,6 +938,13 @@ fn synced(st: &MockApiStatus) -> bool {
     st.conditions
         .iter()
         .any(|c| c.type_ == "Synced" && c.status == "True")
+}
+
+fn synced_reason(st: &MockApiStatus) -> Option<&str> {
+    st.conditions
+        .iter()
+        .find(|c| c.type_ == "Synced")
+        .map(|c| c.reason.as_str())
 }
 
 fn warnings_of(r: &Value) -> impl Iterator<Item = String> + '_ {
@@ -955,6 +1034,7 @@ async fn sync_api(api: Arc<MockApi>, ctx: &Ctx) -> Result<Action, Error> {
         applied_hash: hash,
         space: base.space.clone(),
         server_instance: base.server_instance.clone(),
+        replaced_instance: base.replaced_instance.clone(),
         conditions: merge_conditions(&base.conditions, vec![condition("Synced", ok, reason, msg)]),
     };
     let server_name = &api.spec.server_ref.name;
@@ -979,30 +1059,57 @@ async fn sync_api(api: Arc<MockApi>, ctx: &Ctx) -> Result<Action, Error> {
         write_status(&apis, &name, prev, &st).await?;
         return Ok(Action::requeue(Duration::from_secs(15)));
     };
-    let in_memory = server.spec.storage.mode == "memory";
     let mut instance = None;
-    if in_memory {
-        if !rollout_settled(ctx, &ns, server_name).await? {
-            let st = make(
-                base.imported_stubs,
-                base.warnings.clone(),
-                base.applied_hash.clone(),
-                base.last_sync_time.clone(),
-                false,
-                "ServerRestarting",
-                &format!(
-                    "FastMock {server_name} is rolling out; its in-memory stubs are imported again once the new pod is the only one"
-                ),
-            );
-            write_status(&apis, &name, prev, &st).await?;
-            return Ok(Action::requeue(Duration::from_secs(60)));
+    let mut step = RestartStep::Plain;
+    if server.spec.storage.mode == "memory" {
+        let rollout = server_rollout(ctx, &ns, server_name).await?;
+        if rollout == Rollout::Settled {
+            instance = admin.instance().await?;
         }
-        instance = admin.instance().await?;
+        step = restart_step(&base, rollout, instance.as_deref());
+        let waiting = match &step {
+            RestartStep::Wait { replaced } => Some((
+                replaced.clone(),
+                format!(
+                    "FastMock {server_name} is restarting; its in-memory stubs are imported again once the new pod is the only one"
+                ),
+                Duration::from_secs(60),
+            )),
+            RestartStep::ReplacedAnswers => Some((
+                base.replaced_instance.clone(),
+                format!(
+                    "FastMock {server_name} has restarted, but the replaced pod still answers; the stubs are imported once only the new pod answers"
+                ),
+                VERIFY_AFTER_IMPORT,
+            )),
+            _ => None,
+        };
+        if let Some((replaced, msg, after)) = waiting {
+            let st = MockApiStatus {
+                replaced_instance: replaced,
+                ..make(
+                    base.imported_stubs,
+                    base.warnings.clone(),
+                    base.applied_hash.clone(),
+                    base.last_sync_time.clone(),
+                    false,
+                    "ServerRestarting",
+                    &msg,
+                )
+            };
+            write_status(&apis, &name, prev, &st).await?;
+            return Ok(Action::requeue(after));
+        }
     }
-    let new_instance = instance
-        .as_ref()
-        .is_some_and(|i| *i != base.server_instance);
+    let pending = matches!(
+        step,
+        RestartStep::Reimport { .. } | RestartStep::Check { pending: true }
+    );
     let tag = tag_of(&api);
+    let synced_message = |imported: i64, space: &Option<String>| match space {
+        Some(s) => format!("{imported} stubs applied with tag {tag} in space {s}"),
+        None => format!("{imported} stubs applied with tag {tag}"),
+    };
     let inputs = match resolve_inputs(ctx, &ns, &api.spec).await {
         Ok(i) => i,
         Err(e) => {
@@ -1029,23 +1136,42 @@ async fn sync_api(api: Arc<MockApi>, ctx: &Ctx) -> Result<Action, Error> {
         &inputs,
     );
     let mut space_found = true;
-    if base.applied_hash == hash && base.observed_generation == generation && synced(&base) {
-        if new_instance {
-            tracing::info!(mockapi = %name, namespace = %ns, server = %server_name, "in-memory server restarted; re-importing")
-        } else {
-            match admin
-                .count_tagged(&api_tags(&tag), inputs.space.as_deref())
-                .await
-            {
-                Ok(present) if present >= base.imported_stubs => {
-                    return Ok(Action::requeue(RESYNC));
-                }
-                Ok(present) => {
-                    tracing::info!(mockapi = %name, namespace = %ns, present, expected = base.imported_stubs, "stubs missing on the server; re-importing")
-                }
-                Err(Error::AdminNotFound(_)) if inputs.space.is_some() => space_found = false,
-                Err(e) => return Err(e),
+    let unchanged = base.applied_hash == hash && base.observed_generation == generation;
+    if let RestartStep::Reimport { .. } = step {
+        tracing::info!(mockapi = %name, namespace = %ns, server = %server_name, "in-memory server restarted; re-importing")
+    } else if unchanged && (synced(&base) || pending) {
+        match admin
+            .count_tagged(&api_tags(&tag), inputs.space.as_deref())
+            .await
+        {
+            Ok(present) if present >= base.imported_stubs && !pending => {
+                return Ok(Action::requeue(RESYNC));
             }
+            Ok(present) if present >= base.imported_stubs => {
+                if admin.instance().await?.as_deref() != instance.as_deref() {
+                    return Ok(Action::requeue(VERIFY_AFTER_IMPORT));
+                }
+                tracing::info!(mockapi = %name, namespace = %ns, server = %server_name, "stubs confirmed on the restarted in-memory server");
+                let st = MockApiStatus {
+                    replaced_instance: None,
+                    ..make(
+                        base.imported_stubs,
+                        base.warnings.clone(),
+                        hash,
+                        base.last_sync_time.clone(),
+                        true,
+                        "Synced",
+                        &synced_message(base.imported_stubs, &base.space),
+                    )
+                };
+                write_status(&apis, &name, prev, &st).await?;
+                return Ok(Action::requeue(VERIFY_AFTER_IMPORT));
+            }
+            Ok(present) => {
+                tracing::info!(mockapi = %name, namespace = %ns, present, expected = base.imported_stubs, "stubs missing on the server; re-importing")
+            }
+            Err(Error::AdminNotFound(_)) if inputs.space.is_some() => space_found = false,
+            Err(e) => return Err(e),
         }
     }
     if let Some(space) = &inputs.space
@@ -1082,9 +1208,30 @@ async fn sync_api(api: Arc<MockApi>, ctx: &Ctx) -> Result<Action, Error> {
     )
     .await;
     let st = match &outcome {
+        Ok(()) if pending => MockApiStatus {
+            space: inputs.space.clone(),
+            server_instance: instance.clone().unwrap_or_default(),
+            replaced_instance: match &step {
+                RestartStep::Reimport { replaced } => replaced.clone(),
+                _ => base.replaced_instance.clone(),
+            },
+            ..make(
+                imported,
+                warnings,
+                hash,
+                chrono::Utc::now().to_rfc3339(),
+                false,
+                "ServerRestarting",
+                &format!(
+                    "{}; checking that they are on the restarted server",
+                    synced_message(imported, &inputs.space)
+                ),
+            )
+        },
         Ok(()) => MockApiStatus {
             space: inputs.space.clone(),
             server_instance: instance.clone().unwrap_or_default(),
+            replaced_instance: None,
             ..make(
                 imported,
                 warnings,
@@ -1092,10 +1239,7 @@ async fn sync_api(api: Arc<MockApi>, ctx: &Ctx) -> Result<Action, Error> {
                 chrono::Utc::now().to_rfc3339(),
                 true,
                 "Synced",
-                &match &inputs.space {
-                    Some(s) => format!("{imported} stubs applied with tag {tag} in space {s}"),
-                    None => format!("{imported} stubs applied with tag {tag}"),
-                },
+                &synced_message(imported, &inputs.space),
             )
         },
         Err(e) => make(
@@ -1110,7 +1254,7 @@ async fn sync_api(api: Arc<MockApi>, ctx: &Ctx) -> Result<Action, Error> {
     };
     write_status(&apis, &name, prev, &st).await?;
     match outcome {
-        Ok(()) if new_instance => Ok(Action::requeue(VERIFY_AFTER_IMPORT)),
+        Ok(()) if pending => Ok(Action::requeue(VERIFY_AFTER_IMPORT)),
         Ok(()) => Ok(Action::requeue(RESYNC)),
         Err(Error::Spec(_)) => Ok(Action::requeue(RESYNC)),
         Err(e) => Err(e),
@@ -1823,6 +1967,7 @@ mod tests {
         assert_eq!(synced["status"], "False", "{st}");
         assert_eq!(synced["reason"], "ServerRestarting", "{st}");
         assert_eq!(st["appliedHash"], json!(hash), "{st}");
+        assert_eq!(st["replacedInstance"], "old", "{st}");
         assert!(
             admin_calls(&calls)
                 .iter()
@@ -1859,8 +2004,11 @@ mod tests {
             if reimport {
                 assert_eq!(action, Action::requeue(VERIFY_AFTER_IMPORT));
                 let st = written_status(&calls, "mockapis");
-                assert_eq!(condition_of(&st, "Synced")["status"], "True", "{st}");
+                let synced = condition_of(&st, "Synced");
+                assert_eq!(synced["status"], "False", "{st}");
+                assert_eq!(synced["reason"], "ServerRestarting", "{st}");
                 assert_eq!(st["serverInstance"], "new", "{st}");
+                assert_eq!(st["replacedInstance"], "same", "{st}");
             } else {
                 assert_eq!(action, Action::requeue(RESYNC));
             }
@@ -1891,6 +2039,294 @@ mod tests {
                 .any(|c| c.starts_with("POST /__admin/stubs/import"))
         );
         assert_eq!(action, Action::requeue(RESYNC));
+    }
+
+    #[derive(Clone)]
+    struct ServerWorld {
+        deployment: Value,
+        answering: &'static str,
+        has_stub: bool,
+    }
+
+    async fn world_server(world: Arc<Mutex<ServerWorld>>) -> (String, Calls) {
+        mock(Arc::new(move |call: &str, _: &Value| {
+            let w = world.lock().unwrap().clone();
+            if call == format!("GET /apis/apps/v1/namespaces/{NS}/deployments/{SERVER}") {
+                return (200, w.deployment);
+            }
+            kube_objects(call).unwrap_or_else(|| match call {
+                "GET /__admin/info" => (200, json!({"instanceId": w.answering})),
+                "GET /__admin/stubs" if w.has_stub => listing_with_the_stub(),
+                "GET /__admin/stubs" => (200, json!({"stubs": []})),
+                c if c.starts_with("POST /__admin/stubs/import") => (200, json!({"imported": 1})),
+                c if c.starts_with("DELETE /__admin/stubs") => (200, json!({"deleted": 0})),
+                _ => not_found(),
+            })
+        }))
+        .await
+    }
+
+    /// One reconcile: the action, the status the MockApi has afterwards and whether stubs were imported.
+    async fn reconcile_once(
+        ctx: &Ctx,
+        calls: &Calls,
+        status: MockApiStatus,
+    ) -> (Action, MockApiStatus, bool) {
+        calls.lock().unwrap().clear();
+        let action = sync_api(Arc::new(mockapi(None, status.clone())), ctx)
+            .await
+            .unwrap();
+        let imported = admin_calls(calls)
+            .iter()
+            .any(|c| c.starts_with("POST /__admin/stubs/import"));
+        let written = written_status(calls, "mockapis");
+        let next = if written.is_null() {
+            status
+        } else {
+            serde_json::from_value(written).unwrap()
+        };
+        (action, next, imported)
+    }
+
+    fn synced_state(st: &MockApiStatus) -> (String, String) {
+        let c = st.conditions.iter().find(|c| c.type_ == "Synced").unwrap();
+        (c.status.clone(), c.reason.clone())
+    }
+
+    fn restarting() -> (String, String) {
+        ("False".into(), "ServerRestarting".into())
+    }
+
+    #[tokio::test]
+    async fn a_rollout_stays_unsynced_until_the_new_instance_has_the_stubs() {
+        let world = Arc::new(Mutex::new(ServerWorld {
+            deployment: deployment_json(2, 1, 1),
+            answering: "old",
+            has_stub: true,
+        }));
+        let (base, calls) = world_server(world.clone()).await;
+        let ctx = test_ctx(&base);
+        let mut status = synced_status(&unchanged_hash(), None);
+        status.server_instance = "old".into();
+
+        let (_, status, imported) = reconcile_once(&ctx, &calls, status).await;
+        assert_eq!(synced_state(&status), restarting(), "new pod starting");
+        assert!(!imported);
+
+        world.lock().unwrap().deployment = deployment_json(1, 1, 1);
+        let (_, status, imported) = reconcile_once(&ctx, &calls, status).await;
+        assert_eq!(
+            synced_state(&status),
+            restarting(),
+            "rollout finished, the old pod still answers: {status:?}"
+        );
+        assert!(!imported, "nothing is imported into the old pod");
+        assert_eq!(status.server_instance, "old");
+
+        {
+            let mut w = world.lock().unwrap();
+            w.answering = "new";
+            w.has_stub = false;
+        }
+        let (_, status, imported) = reconcile_once(&ctx, &calls, status).await;
+        assert!(imported, "the new instance gets the stubs");
+        assert_eq!(status.server_instance, "new");
+        assert_eq!(
+            synced_state(&status),
+            restarting(),
+            "not confirmed yet: {status:?}"
+        );
+
+        let (_, status, imported) = reconcile_once(&ctx, &calls, status).await;
+        assert!(imported, "the import went to the old pod: imported again");
+        assert_eq!(synced_state(&status), restarting(), "{status:?}");
+
+        world.lock().unwrap().has_stub = true;
+        let (_, status, imported) = reconcile_once(&ctx, &calls, status).await;
+        assert!(!imported);
+        assert_eq!(
+            synced_state(&status),
+            ("True".into(), "Synced".into()),
+            "{status:?}"
+        );
+        assert_eq!(status.server_instance, "new");
+    }
+
+    #[tokio::test]
+    async fn a_pod_that_was_only_unready_is_synced_again_without_an_import() {
+        let world = Arc::new(Mutex::new(ServerWorld {
+            deployment: deployment_json(1, 1, 0),
+            answering: "same",
+            has_stub: true,
+        }));
+        let (base, calls) = world_server(world.clone()).await;
+        let ctx = test_ctx(&base);
+        let mut status = synced_status(&unchanged_hash(), None);
+        status.server_instance = "same".into();
+        let (_, status, _) = reconcile_once(&ctx, &calls, status).await;
+        assert_eq!(synced_state(&status), restarting());
+        assert_eq!(status.replaced_instance, None, "no pod is being replaced");
+        world.lock().unwrap().deployment = deployment_json(1, 1, 1);
+        let (action, status, imported) = reconcile_once(&ctx, &calls, status).await;
+        assert!(!imported, "the same process still has the stubs");
+        assert_eq!(synced_state(&status), ("True".into(), "Synced".into()));
+        assert_eq!(action, Action::requeue(VERIFY_AFTER_IMPORT));
+        let (action, _, imported) = reconcile_once(&ctx, &calls, status).await;
+        assert!(!imported);
+        assert_eq!(action, Action::requeue(RESYNC));
+    }
+
+    #[tokio::test]
+    async fn a_crashed_server_is_unsynced_until_its_new_instance_has_the_stubs() {
+        let world = Arc::new(Mutex::new(ServerWorld {
+            deployment: deployment_json(1, 1, 1),
+            answering: "second",
+            has_stub: false,
+        }));
+        let (base, calls) = world_server(world.clone()).await;
+        let ctx = test_ctx(&base);
+        let mut status = synced_status(&unchanged_hash(), None);
+        status.server_instance = "first".into();
+        let (action, status, imported) = reconcile_once(&ctx, &calls, status).await;
+        assert!(imported);
+        assert_eq!(action, Action::requeue(VERIFY_AFTER_IMPORT));
+        assert_eq!(synced_state(&status), restarting(), "{status:?}");
+        assert_eq!(status.server_instance, "second");
+        assert_eq!(status.replaced_instance.as_deref(), Some("first"));
+        world.lock().unwrap().has_stub = true;
+        let (_, status, imported) = reconcile_once(&ctx, &calls, status).await;
+        assert!(!imported);
+        assert_eq!(synced_state(&status), ("True".into(), "Synced".into()));
+        assert_eq!(status.replaced_instance, None);
+    }
+
+    #[test]
+    fn rollout_states() {
+        let d = |v: Value| serde_json::from_value::<Deployment>(v).unwrap();
+        assert_eq!(rollout_of(None), Rollout::NotReady);
+        assert_eq!(
+            rollout_of(Some(&d(deployment_json(1, 1, 1)))),
+            Rollout::Settled
+        );
+        assert_eq!(
+            rollout_of(Some(&d(deployment_json(2, 1, 2)))),
+            Rollout::Replacing,
+            "surge pod"
+        );
+        assert_eq!(
+            rollout_of(Some(&d(deployment_json(1, 0, 1)))),
+            Rollout::Replacing,
+            "old template"
+        );
+        assert_eq!(
+            rollout_of(Some(&d(deployment_json(1, 1, 0)))),
+            Rollout::NotReady,
+            "unready pod"
+        );
+        let mut stale = deployment_json(1, 1, 1);
+        stale["status"]["observedGeneration"] = json!(1);
+        assert_eq!(
+            rollout_of(Some(&d(stale))),
+            Rollout::Replacing,
+            "new spec not observed yet"
+        );
+    }
+
+    #[test]
+    fn restart_state_transitions() {
+        use RestartStep::*;
+        use Rollout::*;
+        let st = |current: &str, replaced: Option<&str>, reason: &str| MockApiStatus {
+            server_instance: current.into(),
+            replaced_instance: replaced.map(String::from),
+            conditions: vec![condition("Synced", reason == "Synced", reason, "")],
+            ..Default::default()
+        };
+        let some = |s: &str| Some(s.to_string());
+        let synced = st("a", None, "Synced");
+        assert_eq!(
+            restart_step(&synced, Replacing, None),
+            Wait {
+                replaced: some("a")
+            }
+        );
+        assert_eq!(
+            restart_step(&synced, NotReady, None),
+            Wait { replaced: None }
+        );
+        assert_eq!(
+            restart_step(&synced, Settled, Some("a")),
+            Check { pending: false }
+        );
+        assert_eq!(
+            restart_step(&synced, Settled, Some("b")),
+            Reimport {
+                replaced: some("a")
+            }
+        );
+        assert_eq!(restart_step(&synced, Settled, None), Plain);
+        assert_eq!(
+            restart_step(&st("", None, "Synced"), Settled, Some("a")),
+            Plain,
+            "first import"
+        );
+
+        let rolling = st("a", Some("a"), "ServerRestarting");
+        assert_eq!(
+            restart_step(&rolling, Replacing, None),
+            Wait {
+                replaced: some("a")
+            }
+        );
+        assert_eq!(restart_step(&rolling, Settled, Some("a")), ReplacedAnswers);
+        assert_eq!(
+            restart_step(&rolling, Settled, Some("b")),
+            Reimport {
+                replaced: some("a")
+            }
+        );
+
+        let imported = st("b", Some("a"), "ServerRestarting");
+        assert_eq!(restart_step(&imported, Settled, Some("a")), ReplacedAnswers);
+        assert_eq!(
+            restart_step(&imported, Settled, Some("b")),
+            Check { pending: true }
+        );
+        assert_eq!(
+            restart_step(&imported, Settled, Some("c")),
+            Reimport {
+                replaced: some("a")
+            }
+        );
+        assert_eq!(
+            restart_step(&imported, Replacing, None),
+            Wait {
+                replaced: some("b")
+            },
+            "another rollout replaces the new instance"
+        );
+
+        let unready = st("a", None, "ServerRestarting");
+        assert_eq!(
+            restart_step(&unready, Settled, Some("a")),
+            Check { pending: true }
+        );
+        assert_eq!(
+            restart_step(&unready, Settled, Some("b")),
+            Reimport {
+                replaced: some("a")
+            }
+        );
+        assert_eq!(
+            restart_step(&st("", None, "ServerRestarting"), Settled, Some("a")),
+            Reimport { replaced: None },
+            "a server restarted before the first import"
+        );
+        let failed = st("b", Some("a"), "SyncFailed");
+        assert_eq!(
+            restart_step(&failed, Settled, Some("b")),
+            Check { pending: true }
+        );
     }
 
     fn oidc_server(secret_key: &str) -> FastMock {

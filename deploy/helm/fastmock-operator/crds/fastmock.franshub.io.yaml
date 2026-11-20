@@ -405,6 +405,12 @@ spec:
                 default: 0
                 format: int64
                 type: integer
+              replacedInstance:
+                description: |-
+                  Instance id of the in-memory server process a restart replaces. While it is set, `Synced` stays
+                  `False` with reason `ServerRestarting` until the stubs are confirmed on the new instance.
+                nullable: true
+                type: string
               serverInstance:
                 description: |-
                   Instance id of the in-memory server process the stubs were imported into. A server that reports

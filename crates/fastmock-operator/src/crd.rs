@@ -326,6 +326,10 @@ pub struct MockApiStatus {
     /// another id has restarted and lost them, so they are imported again.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub server_instance: String,
+    /// Instance id of the in-memory server process a restart replaces. While it is set, `Synced` stays
+    /// `False` with reason `ServerRestarting` until the stubs are confirmed on the new instance.
+    #[serde(default)]
+    pub replaced_instance: Option<String>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
 }
