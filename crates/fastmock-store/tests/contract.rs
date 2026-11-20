@@ -5,8 +5,8 @@ use std::time::Duration;
 use chrono::Utc;
 use fastmock_core::memory::memory_stores;
 use fastmock_core::{
-    AuditEvent, CallbackFilter, CallbackJob, CallbackStatus, JournalEntry, JournalFilter, Stores,
-    Stub,
+    ApiToken, ApiTokenStatus, AuditEvent, CallbackFilter, CallbackJob, CallbackStatus,
+    JournalEntry, JournalFilter, SpaceFilter, Stores, Stub, TokenStore,
 };
 use fastmock_store::{PgStore, ValkeyStore};
 use serde_json::json;
@@ -78,13 +78,16 @@ async fn stub_store_contract() {
             .map(|i| stub(&format!("/r{i}"), 5, &["batch"]))
             .collect();
         assert_eq!(
-            s.stubs.replace_tag(Some("batch"), &batch).await.unwrap(),
+            s.stubs
+                .replace_tag(Some("batch"), &SpaceFilter::Any, &batch)
+                .await
+                .unwrap(),
             0,
             "{name}"
         );
         assert_eq!(
             s.stubs
-                .replace_tag(Some("batch"), &batch[..1])
+                .replace_tag(Some("batch"), &SpaceFilter::Any, &batch[..1])
                 .await
                 .unwrap(),
             3,
@@ -95,8 +98,22 @@ async fn stub_store_contract() {
             r0 + 2,
             "{name}: one revision per replace"
         );
-        assert_eq!(s.stubs.delete_by_tag("batch").await.unwrap(), 1, "{name}");
-        assert_eq!(s.stubs.delete_by_tag("t2").await.unwrap(), 1, "{name}");
+        assert_eq!(
+            s.stubs
+                .delete_by_tag("batch", &SpaceFilter::Any)
+                .await
+                .unwrap(),
+            1,
+            "{name}"
+        );
+        assert_eq!(
+            s.stubs
+                .delete_by_tag("t2", &SpaceFilter::Any)
+                .await
+                .unwrap(),
+            1,
+            "{name}"
+        );
         assert!(s.stubs.delete(a.id).await.unwrap(), "{name}");
         assert!(!s.stubs.delete(a.id).await.unwrap(), "{name}");
         assert!(s.stubs.list().await.unwrap().is_empty(), "{name}");
@@ -120,6 +137,7 @@ fn entry(source: &str, path: &str, corr: Option<&str>, matched: bool) -> Journal
         matched,
         duration_ms: 3,
         trace_id: Some("0af7651916cd43dd8448eb211c80319c".into()),
+        space: None,
     }
 }
 
@@ -179,7 +197,11 @@ async fn journal_contract() {
             0,
             "{name}"
         );
-        assert_eq!(s.journal.clear().await.unwrap(), 2, "{name}");
+        assert_eq!(
+            s.journal.clear(&SpaceFilter::Any).await.unwrap(),
+            2,
+            "{name}"
+        );
     }
 }
 
@@ -410,6 +432,8 @@ async fn audit_contract() {
                 at: Utc::now(),
                 principal: "ci".into(),
                 role: "admin".into(),
+                principal_kind: Some("token".into()),
+                space: (i == 1).then(|| "payments".to_string()),
                 action: format!("stub.create.{i}"),
                 detail: json!({"i": i}),
             };
@@ -419,6 +443,8 @@ async fn audit_contract() {
         assert_eq!(l.len(), 2, "{name}");
         assert_eq!(l[0].action, "stub.create.2", "{name}: newest first");
         assert_eq!(l[0].detail, json!({"i": 2}), "{name}");
+        assert_eq!(l[0].principal_kind.as_deref(), Some("token"), "{name}");
+        assert_eq!(l[1].space.as_deref(), Some("payments"), "{name}");
         assert_eq!(
             s.audit
                 .purge_older_than(Utc::now() + chrono::Duration::seconds(1))
@@ -522,4 +548,348 @@ async fn outbox_lease_expiry_respects_max_attempts() {
             "{name}: the late worker cannot flip it back"
         );
     }
+}
+
+fn in_space(mut s: Stub, space: Option<&str>) -> Stub {
+    s.space = space.map(String::from);
+    s
+}
+
+#[tokio::test]
+async fn space_scoped_contract() {
+    for (name, s) in all_backends().await {
+        let a = in_space(stub("/a", 5, &["t"]), Some("pay"));
+        let b = in_space(stub("/b", 5, &["t"]), Some("bill"));
+        let g = in_space(stub("/g", 5, &["t"]), None);
+        for x in [&a, &b, &g] {
+            s.stubs.upsert(x).await.unwrap();
+        }
+        assert_eq!(
+            s.stubs.get(a.id).await.unwrap().unwrap().space.as_deref(),
+            Some("pay"),
+            "{name}"
+        );
+        let fresh = in_space(stub("/a2", 5, &["t"]), Some("pay"));
+        assert_eq!(
+            s.stubs
+                .replace_tag(
+                    Some("t"),
+                    &SpaceFilter::area(Some("pay")),
+                    std::slice::from_ref(&fresh)
+                )
+                .await
+                .unwrap(),
+            1,
+            "{name}: only the space's tagged stubs are replaced"
+        );
+        assert!(s.stubs.get(b.id).await.unwrap().is_some(), "{name}");
+        assert!(s.stubs.get(g.id).await.unwrap().is_some(), "{name}");
+        assert_eq!(
+            s.stubs
+                .delete_by_tag("t", &SpaceFilter::Global)
+                .await
+                .unwrap(),
+            1,
+            "{name}"
+        );
+        assert_eq!(
+            s.stubs
+                .clear(&SpaceFilter::In(vec!["bill".into()]))
+                .await
+                .unwrap(),
+            1,
+            "{name}"
+        );
+        let left: Vec<_> = s
+            .stubs
+            .list()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|x| x.id)
+            .collect();
+        assert_eq!(left, vec![fresh.id], "{name}");
+        assert_eq!(s.stubs.clear(&SpaceFilter::Any).await.unwrap(), 1, "{name}");
+
+        for i in 0..30 {
+            let mut e = entry("stubs", &format!("/p{i}"), None, true);
+            e.space = match i % 3 {
+                0 => Some("pay".into()),
+                1 => Some("bill".into()),
+                _ => None,
+            };
+            s.journal.append(&e).await.unwrap();
+        }
+        let pay = JournalFilter {
+            spaces: SpaceFilter::In(vec!["pay".into()]),
+            limit: Some(4),
+            ..Default::default()
+        };
+        assert_eq!(s.journal.count(&pay).await.unwrap(), 10, "{name}");
+        let p1 = s.journal.query_page(&pay, 0).await.unwrap();
+        let p3 = s.journal.query_page(&pay, 8).await.unwrap();
+        assert_eq!(p1.len(), 4, "{name}");
+        assert_eq!(p3.len(), 2, "{name}: last page of the space");
+        assert!(
+            p1.iter()
+                .chain(p3.iter())
+                .all(|e| e.space.as_deref() == Some("pay")),
+            "{name}"
+        );
+        assert_eq!(p1[0].path, "/p27", "{name}: newest first");
+        let both = JournalFilter {
+            spaces: SpaceFilter::In(vec!["pay".into(), "bill".into()]),
+            ..Default::default()
+        };
+        assert_eq!(s.journal.count(&both).await.unwrap(), 20, "{name}");
+        assert_eq!(
+            s.journal
+                .clear(&SpaceFilter::In(vec!["bill".into()]))
+                .await
+                .unwrap(),
+            10,
+            "{name}"
+        );
+        assert_eq!(
+            s.journal.count(&JournalFilter::default()).await.unwrap(),
+            20,
+            "{name}"
+        );
+
+        let mut j1 = CallbackJob::new(
+            "stubs",
+            "http://127.0.0.1:9/x".into(),
+            "POST".into(),
+            BTreeMap::new(),
+            String::new(),
+            Utc::now(),
+            1,
+        );
+        j1.space = Some("pay".into());
+        let j2 = CallbackJob::new(
+            "stubs",
+            "http://127.0.0.1:9/y".into(),
+            "POST".into(),
+            BTreeMap::new(),
+            String::new(),
+            Utc::now(),
+            1,
+        );
+        s.outbox.enqueue(&j1).await.unwrap();
+        s.outbox.enqueue(&j2).await.unwrap();
+        let only_pay = CallbackFilter {
+            spaces: SpaceFilter::In(vec!["pay".into()]),
+            ..Default::default()
+        };
+        let l = s.outbox.list(&only_pay).await.unwrap();
+        assert_eq!(l.len(), 1, "{name}");
+        assert_eq!(l[0].space.as_deref(), Some("pay"), "{name}");
+        assert_eq!(
+            s.outbox.clear(&SpaceFilter::Global).await.unwrap(),
+            1,
+            "{name}"
+        );
+        assert_eq!(
+            s.outbox
+                .list(&CallbackFilter::default())
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "{name}"
+        );
+    }
+}
+
+async fn token_backends() -> Vec<(&'static str, Arc<dyn TokenStore>)> {
+    let mut v: Vec<(&'static str, Arc<dyn TokenStore>)> = vec![(
+        "memory",
+        Arc::new(fastmock_core::memory::MemoryTokens::default()),
+    )];
+    if let Ok(admin_url) = std::env::var("FASTMOCK_TEST_DATABASE_URL") {
+        let db = format!("fm_{}", uuid::Uuid::new_v4().simple());
+        let mut admin = sqlx::PgConnection::connect(&admin_url).await.unwrap();
+        sqlx::query(&format!("create database {db}"))
+            .execute(&mut admin)
+            .await
+            .unwrap();
+        let url = format!("{}/{}", admin_url.rsplit_once('/').unwrap().0, db);
+        let pg = PgStore::connect(&url, 5).await.unwrap();
+        pg.migrate().await.unwrap();
+        v.push(("postgres", Arc::new(pg)));
+    }
+    v
+}
+
+fn api_token(name: &str, hash: &str, expires_in: chrono::Duration) -> ApiToken {
+    let now = Utc::now();
+    ApiToken {
+        id: uuid::Uuid::now_v7(),
+        name: name.into(),
+        sha256: hash.into(),
+        role: "editor".into(),
+        spaces: vec!["alpha".into(), "beta".into()],
+        global: false,
+        description: Some("d".into()),
+        created_by: "ops".into(),
+        created_at: now,
+        expires_at: now + expires_in,
+        last_used_at: None,
+        revoked_at: None,
+        revoked: false,
+        parent_id: None,
+    }
+}
+
+#[tokio::test]
+async fn token_store_contract() {
+    for (name, s) in token_backends().await {
+        let now = Utc::now();
+        let a = api_token("ci", &"a".repeat(64), chrono::Duration::days(1));
+        assert!(s.create(&a, now).await.unwrap(), "{name}");
+        let dup = api_token("ci", &"b".repeat(64), chrono::Duration::days(1));
+        assert!(
+            !s.create(&dup, now).await.unwrap(),
+            "{name}: active names are unique"
+        );
+        let same_hash = api_token("other", &"a".repeat(64), chrono::Duration::days(1));
+        assert!(
+            s.create(&same_hash, now).await.is_err(),
+            "{name}: hashes are unique"
+        );
+        let got = s.by_hash(&"a".repeat(64)).await.unwrap().unwrap();
+        assert_eq!(got.id, a.id, "{name}");
+        assert_eq!(got.spaces, vec!["alpha", "beta"], "{name}");
+        assert_eq!(got.description.as_deref(), Some("d"), "{name}");
+        assert!(
+            s.by_hash(&"c".repeat(64)).await.unwrap().is_none(),
+            "{name}"
+        );
+        assert_eq!(s.count_active(now).await.unwrap(), 1, "{name}");
+
+        s.touch(a.id, now).await.unwrap();
+        let first = s.get(a.id).await.unwrap().unwrap().last_used_at.unwrap();
+        s.touch(a.id, now + chrono::Duration::seconds(30))
+            .await
+            .unwrap();
+        let t = s.get(a.id).await.unwrap().unwrap().last_used_at.unwrap();
+        assert_eq!(
+            t.timestamp(),
+            first.timestamp(),
+            "{name}: at most once per minute"
+        );
+        s.touch(a.id, now + chrono::Duration::seconds(61))
+            .await
+            .unwrap();
+        let t = s.get(a.id).await.unwrap().unwrap().last_used_at.unwrap();
+        assert!(t > first, "{name}");
+
+        assert!(s.revoke(a.id, now).await.unwrap(), "{name}");
+        assert!(!s.revoke(a.id, now).await.unwrap(), "{name}");
+        let r = s.get(a.id).await.unwrap().unwrap();
+        assert_eq!(r.status(Utc::now()), ApiTokenStatus::Revoked, "{name}");
+        assert_eq!(s.count_active(Utc::now()).await.unwrap(), 0, "{name}");
+        assert!(
+            s.create(&dup, Utc::now()).await.unwrap(),
+            "{name}: name free again"
+        );
+
+        let gone = api_token("gone", &"d".repeat(64), chrono::Duration::seconds(-5));
+        assert!(s.create(&gone, Utc::now()).await.unwrap(), "{name}");
+        let again = api_token("gone", &"e".repeat(64), chrono::Duration::days(1));
+        assert!(
+            s.create(&again, Utc::now()).await.unwrap(),
+            "{name}: expired names are reused"
+        );
+        let old = s.get(gone.id).await.unwrap().unwrap();
+        assert_eq!(old.status(Utc::now()), ApiTokenStatus::Expired, "{name}");
+        let list = s.list().await.unwrap();
+        assert_eq!(list.len(), 4, "{name}");
+        assert_eq!(list[0].id, again.id, "{name}: newest first");
+
+        assert_eq!(
+            s.purge_inactive_before(Utc::now() + chrono::Duration::seconds(1))
+                .await
+                .unwrap(),
+            2,
+            "{name}"
+        );
+        assert_eq!(s.list().await.unwrap().len(), 2, "{name}");
+    }
+}
+
+#[tokio::test]
+async fn revocation_is_a_flag_and_expired_tokens_are_not_revoked() {
+    for (name, s) in token_backends().await {
+        assert!(!s.has_any().await.unwrap(), "{name}");
+        let now = Utc::now();
+        let soon = api_token("soon", &"f".repeat(64), chrono::Duration::seconds(30));
+        assert!(s.create(&soon, now).await.unwrap(), "{name}");
+        assert!(s.has_any().await.unwrap(), "{name}");
+        let late_clock = now + chrono::Duration::seconds(29);
+        assert!(s.revoke(soon.id, late_clock).await.unwrap(), "{name}");
+        let t = s.get(soon.id).await.unwrap().unwrap();
+        assert!(t.revoked, "{name}");
+        assert_eq!(
+            t.status(now),
+            ApiTokenStatus::Revoked,
+            "{name}: a replica with an earlier clock sees the revocation"
+        );
+        let old = api_token("old", &"0".repeat(64), chrono::Duration::seconds(-5));
+        assert!(s.create(&old, now).await.unwrap(), "{name}");
+        assert!(
+            !s.revoke(old.id, Utc::now()).await.unwrap(),
+            "{name}: an expired token is not revoked"
+        );
+        let o = s.get(old.id).await.unwrap().unwrap();
+        assert_eq!(o.status(Utc::now()), ApiTokenStatus::Expired, "{name}");
+        assert!(!o.revoked, "{name}");
+        let mut child = api_token("child", &"9".repeat(64), chrono::Duration::days(1));
+        child.parent_id = Some(soon.id);
+        assert!(s.create(&child, now).await.unwrap(), "{name}");
+        assert_eq!(
+            s.get(child.id).await.unwrap().unwrap().parent_id,
+            Some(soon.id),
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_space_of_a_stub_comes_from_its_column() {
+    let Ok(admin_url) = std::env::var("FASTMOCK_TEST_DATABASE_URL") else {
+        eprintln!("FASTMOCK_TEST_DATABASE_URL not set: skipped");
+        return;
+    };
+    let db = format!("fm_{}", uuid::Uuid::new_v4().simple());
+    let mut admin = sqlx::PgConnection::connect(&admin_url).await.unwrap();
+    sqlx::query(&format!("create database {db}"))
+        .execute(&mut admin)
+        .await
+        .unwrap();
+    let url = format!("{}/{}", admin_url.rsplit_once('/').unwrap().0, db);
+    let pg = PgStore::connect(&url, 5).await.unwrap();
+    pg.migrate().await.unwrap();
+    use fastmock_core::StubStore;
+    let mut s = stub("/pay/x", 1, &["t"]);
+    s.space = Some("pay".into());
+    pg.upsert(&s).await.unwrap();
+    sqlx::query("update fm_stubs set definition = definition - 'space' where id = $1")
+        .bind(s.id)
+        .execute(pg.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        StubStore::get(&pg, s.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .space
+            .as_deref(),
+        Some("pay")
+    );
+    assert_eq!(
+        StubStore::list(&pg).await.unwrap()[0].space.as_deref(),
+        Some("pay")
+    );
 }

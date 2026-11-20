@@ -131,6 +131,15 @@ pub struct ValkeySettings {
     pub tls: ValkeyTls,
 }
 
+/// `FASTMOCK_LOG_FORMAT`: `json` (the default) or `text`.
+pub fn log_format_from_env() -> anyhow::Result<LogFormat> {
+    match env("LOG_FORMAT").as_deref().unwrap_or("json") {
+        "json" => Ok(LogFormat::Json),
+        "text" => Ok(LogFormat::Text),
+        other => bail!("FASTMOCK_LOG_FORMAT must be json or text, got {other}"),
+    }
+}
+
 pub fn valkey_from_env() -> anyhow::Result<ValkeySettings> {
     valkey_settings(&env)
 }
@@ -160,6 +169,7 @@ pub struct Config {
     pub auth_disabled: bool,
     pub admin_tokens: Vec<String>,
     pub admin_tokens_file: Option<PathBuf>,
+    pub access_file: Option<PathBuf>,
     pub admin_allowed_origins: Vec<String>,
     pub max_body_bytes: usize,
     pub max_delay: Duration,
@@ -202,6 +212,29 @@ pub struct Config {
     pub journal_scan_timeout: Duration,
     pub journal_scan_max_work: u64,
     pub journal_scan_concurrency: usize,
+    /// Longest lifetime of a managed token, in days (`FASTMOCK_TOKENS_MAX_DAYS`).
+    pub tokens_max_days: u32,
+    /// How long a replica trusts its cached view of a managed token; revocation takes effect within it.
+    pub token_cache_ttl: Duration,
+    /// OIDC sign-in and bearer JWTs (`FASTMOCK_OIDC_*`); off when `None`.
+    pub oidc: Option<crate::oidc::OidcSettings>,
+}
+
+pub const DEFAULT_TOKEN_DAYS: u32 = 90;
+pub const TOKEN_CACHE_TTL: Duration = Duration::from_secs(10);
+
+/// `FASTMOCK_TOKENS_MAX_DAYS`: 1 to 3650, default 365.
+pub fn parse_tokens_max_days(raw: Option<&str>) -> anyhow::Result<u32> {
+    let Some(v) = raw.map(str::trim) else {
+        return Ok(365);
+    };
+    let n: u32 = v.parse().map_err(|_| {
+        anyhow::anyhow!("FASTMOCK_TOKENS_MAX_DAYS must be a whole number of days, got `{v}`")
+    })?;
+    if !(1..=3650).contains(&n) {
+        bail!("FASTMOCK_TOKENS_MAX_DAYS must be between 1 and 3650 days, got {n}");
+    }
+    Ok(n)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -320,6 +353,16 @@ fn env(name: &str) -> Option<String> {
     std::env::var(format!("FASTMOCK_{name}"))
         .ok()
         .filter(|v| !v.trim().is_empty())
+}
+
+/// Like [`env`], except that `FASTMOCK_OIDC_API_AUDIENCE` keeps a blank value, so that a set but
+/// empty audience stops the start instead of silently turning bearer JWTs off.
+fn oidc_env(name: &str) -> Option<String> {
+    if name == "OIDC_API_AUDIENCE" {
+        std::env::var(format!("FASTMOCK_{name}")).ok()
+    } else {
+        env(name)
+    }
 }
 
 fn list(v: &str) -> Vec<String> {
@@ -532,6 +575,7 @@ impl Config {
             auth_disabled: false,
             admin_tokens: tokens,
             admin_tokens_file: None,
+            access_file: None,
             admin_allowed_origins: vec![],
             max_body_bytes: 1024 * 1024,
             max_delay: Duration::from_secs(5),
@@ -573,6 +617,9 @@ impl Config {
             journal_scan_timeout: Duration::from_secs(10),
             journal_scan_max_work: DEFAULT_JOURNAL_SCAN_MAX_WORK,
             journal_scan_concurrency: 2,
+            tokens_max_days: 365,
+            token_cache_ttl: TOKEN_CACHE_TTL,
+            oidc: None,
         }
     }
 
@@ -616,6 +663,7 @@ impl Config {
             auth_disabled: bool_env("AUTH_DISABLED", false)?,
             admin_tokens: env("ADMIN_TOKENS").map(|v| list(&v)).unwrap_or_default(),
             admin_tokens_file: env("ADMIN_TOKENS_FILE").map(PathBuf::from),
+            access_file: env("ACCESS_FILE").map(PathBuf::from),
             admin_allowed_origins: env("ADMIN_ALLOWED_ORIGINS")
                 .map(|v| list(&v))
                 .unwrap_or_default(),
@@ -650,11 +698,7 @@ impl Config {
             plugins: env("PLUGINS").map(|v| list(&v)),
             secrets_dir: env("SECRETS_DIR").map(PathBuf::from),
             stub_poll: dur("STUB_POLL", "5s")?,
-            log_format: match env("LOG_FORMAT").as_deref().unwrap_or("json") {
-                "json" => LogFormat::Json,
-                "text" => LogFormat::Text,
-                other => bail!("FASTMOCK_LOG_FORMAT must be json or text, got {other}"),
-            },
+            log_format: log_format_from_env()?,
             tls: match (env("TLS_CERT_FILE"), env("TLS_KEY_FILE")) {
                 (Some(c), Some(k)) => Some(TlsSettings {
                     cert_file: c.into(),
@@ -702,6 +746,9 @@ impl Config {
             journal_scan_max_work: parse("JOURNAL_SCAN_MAX_WORK", DEFAULT_JOURNAL_SCAN_MAX_WORK)?
                 .max(1),
             journal_scan_concurrency: parse("JOURNAL_SCAN_CONCURRENCY", 2usize)?.max(1),
+            tokens_max_days: parse_tokens_max_days(env("TOKENS_MAX_DAYS").as_deref())?,
+            token_cache_ttl: TOKEN_CACHE_TTL,
+            oidc: crate::oidc::settings::from_env(&oidc_env)?,
         };
         if cfg.max_inflight_body_bytes < cfg.max_body_bytes {
             bail!("FASTMOCK_MAX_INFLIGHT_BODY_BYTES must be at least FASTMOCK_MAX_BODY_BYTES");
@@ -718,6 +765,25 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tokens_max_days_is_validated() {
+        assert_eq!(parse_tokens_max_days(None).unwrap(), 365);
+        assert_eq!(parse_tokens_max_days(Some(" 30 ")).unwrap(), 30);
+        assert_eq!(parse_tokens_max_days(Some("3650")).unwrap(), 3650);
+        for (v, want) in [
+            ("0", "between 1 and 3650"),
+            ("3651", "between 1 and 3650"),
+            ("-1", "whole number"),
+            ("90d", "whole number"),
+        ] {
+            let e = parse_tokens_max_days(Some(v)).unwrap_err().to_string();
+            assert!(
+                e.contains("FASTMOCK_TOKENS_MAX_DAYS") && e.contains(want),
+                "{v}: {e}"
+            );
+        }
+    }
 
     #[test]
     fn passwords_are_url_encoded() {

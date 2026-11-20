@@ -9,7 +9,43 @@ data:
   FASTMOCK_ADMIN_LISTEN: "0.0.0.0:9090"
   FASTMOCK_STORAGE: {{ .Values.storage.mode | quote }}
   FASTMOCK_LOG_FORMAT: {{ .Values.logFormat | quote }}
+  {{- if .Values.admin.tokensSecret.name }}
   FASTMOCK_ADMIN_TOKENS_FILE: /etc/fastmock/admin/tokens
+  {{- end }}
+  {{- $oidc := .Values.oidc | default dict }}
+  {{- if $oidc.issuer }}
+  FASTMOCK_OIDC_ISSUER: {{ $oidc.issuer | quote }}
+  FASTMOCK_OIDC_CLIENT_ID: {{ $oidc.clientId | quote }}
+  FASTMOCK_OIDC_CLIENT_SECRET_FILE: /etc/fastmock/oidc/client-secret
+  FASTMOCK_OIDC_REDIRECT_URL: {{ $oidc.redirectUrl | quote }}
+  {{- with $oidc.scopes }}
+  FASTMOCK_OIDC_SCOPES: {{ join " " . | quote }}
+  {{- end }}
+  {{- with dig "claims" "username" "" $oidc }}
+  FASTMOCK_OIDC_USERNAME_CLAIM: {{ . | quote }}
+  {{- end }}
+  {{- with dig "claims" "groups" "" $oidc }}
+  FASTMOCK_OIDC_GROUPS_CLAIM: {{ . | quote }}
+  {{- end }}
+  {{- with $oidc.apiAudience }}
+  FASTMOCK_OIDC_API_AUDIENCE: {{ . | quote }}
+  {{- end }}
+  {{- if $oidc.trustOutboundCA }}
+  FASTMOCK_OIDC_CA_FILE: /etc/fastmock/outbound-ca/ca.crt
+  {{- end }}
+  {{- with dig "session" "ttl" "" $oidc }}
+  FASTMOCK_OIDC_SESSION_TTL: {{ . | quote }}
+  {{- end }}
+  {{- with dig "session" "idle" "" $oidc }}
+  FASTMOCK_OIDC_SESSION_IDLE: {{ . | quote }}
+  {{- end }}
+  {{- with $oidc.allowedHosts }}
+  FASTMOCK_OIDC_ALLOWED_HOSTS: {{ join "," . | quote }}
+  {{- end }}
+  {{- end }}
+  {{- if include "fastmock.accessEnabled" . }}
+  FASTMOCK_ACCESS_FILE: /etc/fastmock/access/access.yaml
+  {{- end }}
   {{- if .Values.secrets.existingSecret }}
   FASTMOCK_SECRETS_DIR: /etc/fastmock/secrets
   {{- end }}

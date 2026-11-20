@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::matcher::{CompiledStub, NearMiss};
 use crate::model::{
     CallbackDef, CallbackJob, CallbackStatus, ChunkedDribbleDelay, Fault, GlobalSettings,
-    ResponseDef, ResponseMode, SCENARIO_STARTED, SignatureEncoding, Stub,
+    ResponseDef, ResponseMode, SCENARIO_STARTED, SignatureEncoding, SpaceFilter, Stub,
 };
 use crate::plugin::current_traceparent;
 use crate::request::CapturedRequest;
@@ -122,6 +122,7 @@ pub struct EngineResponse {
     pub status_message: Option<String>,
     pub chunked_dribble_delay: Option<ChunkedDribbleDelay>,
     pub response_index: usize,
+    pub space: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -142,10 +143,28 @@ pub struct Engine {
     reload_lock: tokio::sync::Mutex<()>,
     files: std::sync::Mutex<FileCache>,
     settings: RwLock<(Instant, Arc<GlobalSettings>)>,
+    ownership: RwLock<Arc<crate::ownership::Ownership>>,
 }
 
-fn scenario_key(name: &str) -> String {
-    format!("scenario:{name}")
+pub const SCENARIO_PREFIX: &str = "scenario:";
+/// Prefix of the scenario keys of spaces: `scenario@{space}:{name}`. Global keys start with
+/// `scenario:`, so no global name can reach space data.
+pub const SPACE_SCENARIO_PREFIX: &str = "scenario@";
+
+/// Hot-store key of a scenario: `scenario:{name}` globally, `scenario@{space}:{name}` in a space.
+pub fn scenario_key(space: Option<&str>, name: &str) -> String {
+    match space {
+        Some(s) => format!("{SPACE_SCENARIO_PREFIX}{s}:{name}"),
+        None => format!("{SCENARIO_PREFIX}{name}"),
+    }
+}
+
+/// Data-store namespace of body files: `files` globally, `files@{space}` in a space.
+pub fn files_namespace(space: Option<&str>) -> String {
+    match space {
+        Some(s) => format!("{FILES_NAMESPACE}@{s}"),
+        None => FILES_NAMESPACE.to_string(),
+    }
 }
 
 impl Engine {
@@ -166,6 +185,7 @@ impl Engine {
                 Instant::now() - SETTINGS_TTL * 2,
                 Arc::new(GlobalSettings::default()),
             )),
+            ownership: RwLock::new(Arc::default()),
         }
     }
 
@@ -425,12 +445,17 @@ impl Engine {
         self.cache.read().unwrap().clone()
     }
 
-    pub fn near_misses(&self, req: &CapturedRequest, limit: usize) -> Vec<NearMiss> {
+    pub fn near_misses(
+        &self,
+        req: &CapturedRequest,
+        limit: usize,
+        spaces: &SpaceFilter,
+    ) -> Vec<NearMiss> {
         let json = req.json();
         let mut v: Vec<NearMiss> = self
             .snapshot()
             .iter()
-            .filter(|c| c.stub.enabled)
+            .filter(|c| c.stub.enabled && spaces.matches(c.stub.space.as_deref()))
             .map(|c| c.near_miss(req, json))
             .filter(|n| n.score > 0.0)
             .collect();
@@ -478,17 +503,43 @@ impl Engine {
         *self.settings.write().unwrap() = (Instant::now(), Arc::new(s));
     }
 
+    /// Paths and hosts owned by spaces; requests under them skip the stubs of other spaces.
+    pub fn set_ownership(&self, o: crate::ownership::Ownership) {
+        *self.ownership.write().unwrap() = Arc::new(o);
+    }
+
+    /// The one space owning a request path and host, if any.
+    pub fn owner(&self, path: &str, host: Option<&str>, port: Option<u16>) -> Option<String> {
+        let o = self.ownership.read().unwrap().clone();
+        let owners = o.owners(path, host, port);
+        match owners.as_slice() {
+            [first, rest @ ..] if rest.iter().all(|r| r == first) => Some(first.to_string()),
+            _ => None,
+        }
+    }
+
     pub fn invalidate_files(&self) {
         self.files.lock().unwrap().clear();
     }
 
     pub async fn body_file(&self, name: &str) -> anyhow::Result<Option<Arc<BodyFile>>> {
-        if let Some((at, f)) = self.files.lock().unwrap().get(name)
+        self.body_file_in(None, name).await
+    }
+
+    /// A body file of the global area or of one space.
+    pub async fn body_file_in(
+        &self,
+        space: Option<&str>,
+        name: &str,
+    ) -> anyhow::Result<Option<Arc<BodyFile>>> {
+        let ns = files_namespace(space);
+        let cache_key = format!("{ns}\0{name}");
+        if let Some((at, f)) = self.files.lock().unwrap().get(&cache_key)
             && at.elapsed() < FILE_CACHE_TTL
         {
             return Ok(f.clone());
         }
-        let loaded = match self.stores.data.get(FILES_NAMESPACE, name).await? {
+        let loaded = match self.stores.data.get(&ns, name).await? {
             Some(v) => match decode_body_file(&v) {
                 Some(f) => Some(Arc::new(f)),
                 None => {
@@ -508,7 +559,7 @@ impl Engine {
             if cache.len() >= FILE_CACHE_MAX_ENTRIES || cached + size > FILE_CACHE_MAX_BYTES {
                 cache.clear();
             }
-            cache.insert(name.to_string(), (Instant::now(), loaded.clone()));
+            cache.insert(cache_key, (Instant::now(), loaded.clone()));
         }
         Ok(loaded)
     }
@@ -546,9 +597,14 @@ impl Engine {
         let json = req.json();
         let stubs = self.snapshot();
         let now = Utc::now();
+        let ownership = self.ownership.read().unwrap().clone();
+        let owners = ownership.owners(&req.path, req.host.as_deref(), req.port);
         'attempt: for _ in 0..8 {
             for cs in stubs.iter() {
-                if !cs.stub.enabled || cs.stub.is_expired(now) {
+                if !cs.stub.enabled
+                    || cs.stub.is_expired(now)
+                    || !crate::ownership::Ownership::admits(&owners, cs.stub.space.as_deref())
+                {
                     continue;
                 }
                 let Some(params) = cs.match_request(req, json) else {
@@ -563,7 +619,7 @@ impl Engine {
                     if name.len() > MAX_SCENARIO_NAME {
                         anyhow::bail!("rendered scenario name exceeds {MAX_SCENARIO_NAME} bytes");
                     }
-                    let key = scenario_key(&name);
+                    let key = scenario_key(cs.stub.space.as_deref(), &name);
                     let raw = self.stores.hot.get(&key).await?;
                     let current = raw.clone().unwrap_or_else(|| SCENARIO_STARTED.to_string());
                     if sc.required_state.as_ref().is_some_and(|r| *r != current) {
@@ -612,7 +668,11 @@ impl Engine {
                     continue 'attempt;
                 }
                 let index = self.pick_response(&cs.stub).await?;
-                return Ok(Some(self.respond(cs, index, &ctx).await?));
+                return Ok(Some(
+                    crate::plugin::SPACE
+                        .scope(cs.stub.space.clone(), self.respond(cs, index, &ctx))
+                        .await?,
+                ));
             }
             return Ok(None);
         }
@@ -675,10 +735,15 @@ impl Engine {
             } else {
                 n.clone()
             };
-            let file = if valid_file_name(&name) {
-                self.body_file(&name).await?
-            } else {
+            let file = if !valid_file_name(&name) {
                 None
+            } else if let Some(space) = &stub.space {
+                match self.body_file_in(Some(space), &name).await? {
+                    Some(f) => Some(f),
+                    None => self.body_file_in(None, &name).await?,
+                }
+            } else {
+                self.body_file_in(None, &name).await?
             };
             let Some(file) = file else {
                 metrics::counter!("fastmock_body_file_missing_total").increment(1);
@@ -740,7 +805,8 @@ impl Engine {
         }
         let mut correlation = None;
         for c in &stub.callbacks {
-            let job = self.build_callback(c, ctx).await;
+            let mut job = self.build_callback(c, ctx).await;
+            job.space = stub.space.clone();
             if correlation.is_none() {
                 correlation = job.correlation.clone();
             }
@@ -770,6 +836,7 @@ impl Engine {
             status_message: r.status_message.clone(),
             chunked_dribble_delay: r.chunked_dribble_delay.clone(),
             response_index: index,
+            space: stub.space.clone(),
         })
     }
 
@@ -841,23 +908,63 @@ impl Engine {
         job
     }
 
-    pub async fn scenario_states(&self) -> anyhow::Result<Vec<(String, String)>> {
-        Ok(self
+    /// Stored scenario states as `(space, name, state)`.
+    pub async fn scenario_states(&self) -> anyhow::Result<Vec<(Option<String>, String, String)>> {
+        let mut out: Vec<(Option<String>, String, String)> = self
             .stores
             .hot
-            .scan("scenario:", 10_000)
+            .scan(SCENARIO_PREFIX, 10_000)
             .await?
             .into_iter()
-            .map(|(k, v)| (k.trim_start_matches("scenario:").to_string(), v))
-            .collect())
+            .filter_map(|(k, v)| Some((None, k.strip_prefix(SCENARIO_PREFIX)?.to_string(), v)))
+            .collect();
+        out.extend(
+            self.stores
+                .hot
+                .scan(SPACE_SCENARIO_PREFIX, 10_000)
+                .await?
+                .into_iter()
+                .filter_map(|(k, v)| {
+                    let (space, name) = k.strip_prefix(SPACE_SCENARIO_PREFIX)?.split_once(':')?;
+                    Some((Some(space.to_string()), name.to_string(), v))
+                }),
+        );
+        Ok(out)
     }
 
-    pub async fn set_scenario_state(&self, name: &str, state: &str) -> anyhow::Result<()> {
-        self.stores.hot.set(&scenario_key(name), state, None).await
+    pub async fn set_scenario_state(
+        &self,
+        space: Option<&str>,
+        name: &str,
+        state: &str,
+    ) -> anyhow::Result<()> {
+        self.stores
+            .hot
+            .set(&scenario_key(space, name), state, None)
+            .await
     }
 
     pub async fn reset_scenarios(&self) -> anyhow::Result<u64> {
-        self.stores.hot.delete_prefix("scenario:").await
+        Ok(self.stores.hot.delete_prefix(SCENARIO_PREFIX).await?
+            + self.stores.hot.delete_prefix(SPACE_SCENARIO_PREFIX).await?)
+    }
+
+    /// Resets the scenarios of the global area only.
+    pub async fn reset_global_scenarios(&self) -> anyhow::Result<u64> {
+        self.stores.hot.delete_prefix(SCENARIO_PREFIX).await
+    }
+
+    /// Resets the scenarios of the given spaces only.
+    pub async fn reset_scenarios_in(&self, spaces: &[String]) -> anyhow::Result<u64> {
+        let mut n = 0;
+        for s in spaces {
+            n += self
+                .stores
+                .hot
+                .delete_prefix(&format!("{SPACE_SCENARIO_PREFIX}{s}:"))
+                .await?;
+        }
+        Ok(n)
     }
 }
 

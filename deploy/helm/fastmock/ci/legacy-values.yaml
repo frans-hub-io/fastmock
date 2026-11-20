@@ -1,0 +1,12 @@
+replicaCount: 1
+
+admin:
+  tokensSecret:
+    name: fastmock-admin-tokens
+
+storage:
+  mode: memory
+
+oidc: null
+
+access: null

@@ -366,7 +366,10 @@ async fn reimport_with_overrides(
             .validate(s)
             .map_err(|e| anyhow::anyhow!("re-applying APIMetadata: {e}"))?;
     }
-    app.stores.stubs.replace_tag(Some(tag), &r.stubs).await?;
+    app.stores
+        .stubs
+        .replace_tag(Some(tag), &fastmock_core::SpaceFilter::Global, &r.stubs)
+        .await?;
     app.engine.reload().await?;
     Ok(())
 }
@@ -397,10 +400,13 @@ async fn record_inner(
     if let (Some(old_tag), Some(new_tag)) = (old.as_ref().and_then(|o| o.tag.clone()), &info.tag)
         && old_tag != *new_tag
     {
-        app.stores.stubs.delete_by_tag(&old_tag).await?;
         app.stores
             .stubs
-            .delete_by_tag(&examples_tag(&old_tag))
+            .delete_by_tag(&old_tag, &fastmock_core::SpaceFilter::Global)
+            .await?;
+        app.stores
+            .stubs
+            .delete_by_tag(&examples_tag(&old_tag), &fastmock_core::SpaceFilter::Global)
             .await?;
         app.engine.reload().await?;
     }
@@ -583,8 +589,16 @@ pub async fn delete_service(
         .ok_or_else(|| crate::admin::not_found("service"))?;
     let mut deleted = 0;
     if let Some(tag) = &svc.tag {
-        deleted += app.stores.stubs.delete_by_tag(tag).await?;
-        deleted += app.stores.stubs.delete_by_tag(&examples_tag(tag)).await?;
+        deleted += app
+            .stores
+            .stubs
+            .delete_by_tag(tag, &fastmock_core::SpaceFilter::Global)
+            .await?;
+        deleted += app
+            .stores
+            .stubs
+            .delete_by_tag(&examples_tag(tag), &fastmock_core::SpaceFilter::Global)
+            .await?;
     }
     app.stores.data.delete(SPECS_NAMESPACE, &id).await?;
     app.stores.data.delete(NAMESPACE, &id).await?;
@@ -673,6 +687,8 @@ async fn store_converted(
             tag: &tag,
             replace,
             dry_run,
+            space: None,
+            host: None,
         },
         c.stubs,
         c.warnings,
@@ -1046,6 +1062,8 @@ async fn apply_examples(
             tag: &ex_tag,
             replace: true,
             dry_run,
+            space: None,
+            host: None,
         },
         stubs,
         warnings,
@@ -1128,6 +1146,8 @@ async fn apply_metadata(
                 tag: &tag,
                 replace: true,
                 dry_run,
+                space: None,
+                host: None,
             },
             r.stubs,
             warnings,

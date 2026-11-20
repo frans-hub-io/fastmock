@@ -8,10 +8,16 @@ use crate::template::Templates;
 
 tokio::task_local! {
     pub static TRACEPARENT: Option<String>;
+    /// The space of the stub or of the owned path the current data-plane request belongs to.
+    pub static SPACE: Option<String>;
 }
 
 pub fn current_traceparent() -> Option<String> {
     TRACEPARENT.try_with(|t| t.clone()).ok().flatten()
+}
+
+pub fn current_space() -> Option<String> {
+    SPACE.try_with(|s| s.clone()).ok().flatten()
 }
 
 #[derive(Clone, Debug)]
@@ -82,6 +88,9 @@ impl PluginContext {
         if job.traceparent.is_none() {
             job.traceparent = current_traceparent();
         }
+        if job.space.is_none() {
+            job.space = current_space();
+        }
         self.stores.outbox.enqueue(&job).await
     }
 
@@ -96,5 +105,62 @@ pub trait Plugin: Send + Sync {
     fn router(&self, ctx: PluginContext) -> anyhow::Result<axum::Router>;
     fn admin_router(&self, _ctx: PluginContext) -> Option<axum::Router> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn callbacks_inherit_the_space_of_the_request() {
+        let stores = crate::memory::memory_stores(10);
+        let ctx = PluginContext {
+            name: "t".into(),
+            stores: stores.clone(),
+            settings: PluginSettings::default(),
+            templates: Arc::new(Templates::new()),
+            secrets: Arc::new(crate::storage::NoSecrets),
+        };
+        let job = |url: &str| {
+            CallbackJob::new(
+                "t",
+                url.to_string(),
+                "POST".into(),
+                BTreeMap::new(),
+                String::new(),
+                chrono::Utc::now(),
+                1,
+            )
+        };
+        SPACE
+            .scope(
+                Some("pay".into()),
+                ctx.schedule_callback(job("http://198.51.100.1/in")),
+            )
+            .await
+            .unwrap();
+        ctx.schedule_callback(job("http://198.51.100.1/out"))
+            .await
+            .unwrap();
+        let mut seen: Vec<(String, Option<String>)> = stores
+            .outbox
+            .list(&crate::CallbackFilter::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|j| (j.url, j.space))
+            .collect();
+        seen.sort();
+        assert_eq!(
+            seen,
+            [
+                (
+                    "http://198.51.100.1/in".to_string(),
+                    Some("pay".to_string())
+                ),
+                ("http://198.51.100.1/out".to_string(), None)
+            ]
+        );
     }
 }

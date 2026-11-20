@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::Context;
 use fastmock_core::Stores;
 
-pub use postgres::{PgStore, PgTls, SslMode, pg_connect_options};
+pub use postgres::{AppliedMigration, PgStore, PgTls, SslMode, pg_connect_options};
 pub use valkey::{ValkeyStore, ValkeyTls, valkey_client};
 
 pub const DEFAULT_MIGRATION_TIMEOUT: Duration = Duration::from_secs(120);
@@ -66,20 +66,27 @@ pub async fn connect_postgres(
     .context("connecting to PostgreSQL")
 }
 
-pub async fn migrate(pg: &PgStore, timeout: Duration) -> anyhow::Result<()> {
+pub async fn migrate(pg: &PgStore, timeout: Duration) -> anyhow::Result<Vec<AppliedMigration>> {
     tracing::info!(
         target_version = PgStore::expected_schema_version(),
         "applying database migrations"
     );
-    tokio::time::timeout(timeout, pg.migrate())
+    let applied = tokio::time::timeout(timeout, pg.migrate())
         .await
         .with_context(|| format!("migrations did not finish within {timeout:?}"))?
-        .context("applying database migrations")
+        .context("applying database migrations")?;
+    if applied.is_empty() {
+        tracing::info!(
+            version = PgStore::expected_schema_version(),
+            "database schema is up to date, no migration applied"
+        );
+    }
+    Ok(applied)
 }
 
 pub async fn prepare_schema(pg: &PgStore, options: &StorageOptions) -> anyhow::Result<()> {
     match options.migrate {
-        MigrateMode::Auto => migrate(pg, options.migration_timeout).await,
+        MigrateMode::Auto => migrate(pg, options.migration_timeout).await.map(|_| ()),
         MigrateMode::Skip => {
             pg.check_schema()
                 .await

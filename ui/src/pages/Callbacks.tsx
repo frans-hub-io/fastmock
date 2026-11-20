@@ -7,15 +7,18 @@ import { useSearchParams } from 'react-router';
 import { client, unwrap } from '../api/client';
 import { confirmAction, useApiMutation } from '../api/mutations';
 import type { CallbackJob } from '../api/types';
-import { useCan } from '../auth/useAuth';
+import { useCan, useSpace, useSpaceQuery } from '../auth/useAuth';
 import { BodyView, KeyValueTable, MethodBadge, PageHeader, Time } from '../components/common';
+import { SpaceBadge } from '../components/spaces';
 import { EmptyState, ErrorState, LoadingState } from '../components/States';
 import { formatAbsolute, headerValue } from '../lib/format';
 
 const STATUS_COLOR: Record<string, string> = { pending: 'blue', sent: 'green', failed: 'red' };
 
 export default function Callbacks() {
-  const canEdit = useCan('editor');
+  const canEdit = useCan()('callbacks:delete');
+  const spaces = useSpace();
+  const spaceQ = useSpaceQuery();
   const [params, setParams] = useSearchParams();
   const status = params.get('status') ?? 'all';
   const [correlation, setCorrelation] = useState(params.get('correlation') ?? '');
@@ -24,7 +27,7 @@ export default function Callbacks() {
   const [dSource] = useDebouncedValue(source, 300);
   const [selected, setSelected] = useState<CallbackJob | null>(null);
 
-  const query = { status: status === 'all' ? undefined : status, correlation: dCorr || undefined, source: dSource || undefined, limit: 500 };
+  const query = { status: status === 'all' ? undefined : status, correlation: dCorr || undefined, source: dSource || undefined, limit: 500, ...spaceQ };
   const q = useQuery({
     queryKey: ['callbacks', 'list', query],
     queryFn: () => unwrap(client.GET('/__admin/callbacks', { params: { query } })),
@@ -32,7 +35,7 @@ export default function Callbacks() {
     placeholderData: keepPreviousData,
   });
   const clear = useApiMutation<void, { deleted: number }>({
-    fn: () => unwrap(client.DELETE('/__admin/callbacks')),
+    fn: () => unwrap(client.DELETE('/__admin/callbacks', { params: { query: spaceQ } })),
     invalidate: [['callbacks']],
     success: (d) => `Deleted ${d.deleted} callbacks`,
   });
@@ -48,7 +51,7 @@ export default function Callbacks() {
               variant="light"
               color="red"
               leftSection={<IconTrash size={16} />}
-              onClick={() => confirmAction({ title: 'Delete all callbacks?', message: 'Pending deliveries are cancelled and history is removed.', confirm: 'Delete all', onConfirm: () => clear.mutate() })}
+              onClick={() => confirmAction({ title: spaces.current ? `Delete all callbacks of space ${spaces.current}?` : 'Delete all callbacks?', message: 'Pending deliveries are cancelled and history is removed.', confirm: 'Delete all', onConfirm: () => clear.mutate() })}
             >
               Clear outbox
             </Button>
@@ -92,6 +95,7 @@ export default function Callbacks() {
                   <Table.Th>Last result</Table.Th>
                   <Table.Th>Due</Table.Th>
                   <Table.Th>Correlation</Table.Th>
+                  {spaces.enabled && <Table.Th>Space</Table.Th>}
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -132,6 +136,11 @@ export default function Callbacks() {
                       <Time at={c.dueAt} />
                     </Table.Td>
                     <Table.Td className="mono">{c.correlation ?? '—'}</Table.Td>
+                    {spaces.enabled && (
+                      <Table.Td>
+                        <SpaceBadge space={c.space} />
+                      </Table.Td>
+                    )}
                   </Table.Tr>
                 ))}
               </Table.Tbody>

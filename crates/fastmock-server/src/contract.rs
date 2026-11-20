@@ -19,9 +19,11 @@ use tokio::time::Instant;
 use tracing::Instrument;
 use uuid::Uuid;
 
-use crate::admin::{ApiError, ApiResult, ErrorBody, audit_event as audit, bad, require};
+use crate::access::Permission;
+use crate::admin::{ApiError, ApiResult, ErrorBody, audit_event_in as audit, bad, require};
 use crate::asyncmock::parse_spec;
-use crate::auth::{Principal, Role};
+use crate::auth::Principal;
+use crate::spaces::{self, SpaceQuery};
 use crate::state::AppState;
 use fastmock_core::outbound::{blocked_outbound_header, blocked_reason};
 
@@ -190,6 +192,9 @@ pub struct ContractRun {
     /// the caller is a viewer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub details_hidden: bool,
+    /// Space the run was started in; absent in the global area.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1247,6 +1252,8 @@ pub struct ContractRunList {
 #[into_params(parameter_in = Query)]
 pub struct RunListQuery {
     pub limit: Option<usize>,
+    /// Only runs of this space.
+    pub space: Option<String>,
 }
 
 #[utoipa::path(
@@ -1255,6 +1262,8 @@ pub struct RunListQuery {
     tag = "contract-tests",
     operation_id = "startContractTest",
     summary = "Start a contract test run",
+    description = "The run belongs to the target space (`space` parameter). `secretHeaders` need `contracts:secrets` there; `specRef` reads the global service catalog and needs global `stubs:read`.",
+    params(SpaceQuery),
     request_body = ContractTestRequest,
     responses(
         (status = 202, description = "The run started in the background", body = ContractTestStarted),
@@ -1262,21 +1271,30 @@ pub struct RunListQuery {
         (status = 404, description = "specRef not found", body = ErrorBody),
         (status = 429, description = "Too many runs in progress", body = ErrorBody),
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
-        (status = 403, description = "The token lacks the editor role, or the admin role when secretHeaders is set", body = ErrorBody),
+        (status = 403, description = "The token lacks the editor role, or the global permission contracts:secrets (admin role bound globally) when secretHeaders is set", body = ErrorBody),
     ),
     security(("bearer" = []))
 )]
 pub async fn start(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
+    Query(q): Query<SpaceQuery>,
     Json(req): Json<ContractTestRequest>,
 ) -> ApiResult<Response> {
+    let space = spaces::target(&app, &p, Permission::ContractsWrite, q.space.as_deref())?;
+    if req.spec_ref.is_some() {
+        require(&p, Permission::StubsRead, None)?;
+    }
     if !req.secret_headers.is_empty() {
-        require(&p, Role::Admin).map_err(|_| {
-            ApiError(
-                StatusCode::FORBIDDEN,
-                "secretHeaders require the admin role".into(),
-            )
+        require(&p, Permission::ContractsSecrets, None).map_err(|e| {
+            if app.legacy_setup() {
+                ApiError(
+                    StatusCode::FORBIDDEN,
+                    "secretHeaders require the admin role".into(),
+                )
+            } else {
+                e
+            }
         })?;
     }
     let doc = match (&req.spec, &req.spec_ref) {
@@ -1399,11 +1417,13 @@ pub async fn start(
         error: None,
         results: vec![],
         details_hidden: false,
+        space: space.clone(),
     };
     save(&app, &run).await?;
     audit(
         &app,
         &p,
+        space.as_deref(),
         "contract_test.start",
         json!({"id": run.id, "kind": kind, "targetUrl": run.target_url, "operations": operations,
             "secretHeaders": secret_headers.iter().map(|(k, _)| k.to_ascii_lowercase()).collect::<Vec<_>>()}),
@@ -1452,14 +1472,17 @@ pub async fn start(
 )]
 pub async fn list(
     State(app): State<AppState>,
+    Extension(p): Extension<Principal>,
     Query(q): Query<RunListQuery>,
 ) -> ApiResult<Json<ContractRunList>> {
+    let sel = spaces::select(&app, &p, Permission::ContractsRead, q.space.as_deref())?;
     let mut rows = app.stores.data.list(NAMESPACE, 100_000).await?;
     rows.sort_by(|a, b| b.0.cmp(&a.0));
     let limit = q.limit.unwrap_or(50).clamp(1, MAX_RUNS_KEPT);
     let runs = rows
         .into_iter()
         .filter_map(|(_, v)| serde_json::from_value::<ContractRun>(v).ok())
+        .filter(|r| sel.matches(r.space.as_deref()))
         .take(limit)
         .map(|mut r| {
             r.results.clear();
@@ -1494,11 +1517,18 @@ pub async fn get_run(
         .get(NAMESPACE, &id.to_string())
         .await?
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "contract test run not found".into()))?;
-    if p.role >= Role::Editor {
+    let mut run: ContractRun = serde_json::from_value(v.clone())
+        .map_err(|e| anyhow::anyhow!("stored contract run is invalid: {e}"))?;
+    spaces::item(
+        &p,
+        Permission::ContractsRead,
+        Permission::ContractsRead,
+        run.space.as_deref(),
+        "contract test run",
+    )?;
+    if p.allowed(Permission::ContractsDetails, run.space.as_deref()) {
         return Ok(Json(v));
     }
-    let mut run: ContractRun = serde_json::from_value(v)
-        .map_err(|e| anyhow::anyhow!("stored contract run is invalid: {e}"))?;
     viewer_view(&mut run);
     Ok(Json(
         serde_json::to_value(run).map_err(anyhow::Error::from)?,
@@ -1525,13 +1555,35 @@ pub async fn delete_run(
     Extension(p): Extension<Principal>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
+    let not_found = || ApiError(StatusCode::NOT_FOUND, "contract test run not found".into());
+    let stored = app
+        .stores
+        .data
+        .get(NAMESPACE, &id.to_string())
+        .await?
+        .ok_or_else(not_found)?;
+    let space = stored
+        .get("space")
+        .and_then(Value::as_str)
+        .map(String::from);
+    spaces::item(
+        &p,
+        Permission::ContractsRead,
+        Permission::ContractsWrite,
+        space.as_deref(),
+        "contract test run",
+    )?;
     if !app.stores.data.delete(NAMESPACE, &id.to_string()).await? {
-        return Err(ApiError(
-            StatusCode::NOT_FOUND,
-            "contract test run not found".into(),
-        ));
+        return Err(not_found());
     }
-    audit(&app, &p, "contract_test.delete", json!({"id": id})).await;
+    audit(
+        &app,
+        &p,
+        space.as_deref(),
+        "contract_test.delete",
+        json!({"id": id}),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1725,10 +1777,10 @@ components:
             "startedAt": Utc::now(), "startedBy": "ci",
             "summary": {"total": 1, "passed": 0, "failed": 1, "errors": 0},
             "results": [{"operation": "getPet", "verdict": "failed", "durationMs": 3,
-                "errors": ["body /card: \"4111111111111111\" is not of type integer"],
+                "errors": ["body /card: \"card-secret-marker-errors\" is not of type integer"],
                 "request": {"method": "GET", "url": "http://a.example.com/p", "headers": {}},
-                "response": {"status": 200, "contentType": "application/json", "bodyExcerpt": "{\"card\":\"4111\"}", "bodyBytes": 20},
-                "topic": "t", "messages": [{"partition": 0, "offset": 1, "key": "k", "excerpt": "secret", "errors": ["x"]}]}]
+                "response": {"status": 200, "contentType": "application/json", "bodyExcerpt": "{\"card\":\"card-secret-marker-body\"}", "bodyBytes": 20},
+                "topic": "t", "messages": [{"partition": 0, "offset": 1, "key": "k", "excerpt": "card-secret-marker-message", "errors": ["x"]}]}]
         }))
         .unwrap();
         viewer_view(&mut run);
@@ -1741,7 +1793,7 @@ components:
         assert!(r.get("request").is_none());
         assert_eq!(r["errors"], json!([]));
         assert_eq!(r["messages"][0]["excerpt"], "");
-        assert!(!v.to_string().contains("4111"));
+        assert!(!v.to_string().contains("card-secret-marker"), "{v}");
     }
 
     #[test]

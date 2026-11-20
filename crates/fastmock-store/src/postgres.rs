@@ -7,8 +7,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fastmock_core::{
-    AuditEvent, AuditFilter, AuditStore, CallbackFilter, CallbackJob, CallbackStatus, DataStore,
-    JournalEntry, JournalFilter, JournalStore, OutboxStore, StoreResult, Stub, StubStore,
+    ApiToken, AuditEvent, AuditFilter, AuditStore, CallbackFilter, CallbackJob, CallbackStatus,
+    DataStore, JournalEntry, JournalFilter, JournalStore, OutboxStore, SpaceFilter, StoreResult,
+    Stub, StubStore, TokenStore,
 };
 use serde_json::Value;
 use sqlx::migrate::Migrator;
@@ -29,8 +30,26 @@ fn no_nul(s: &str) -> String {
 static MIGRATOR: LazyLock<Migrator> = LazyLock::new(|| {
     let mut m = sqlx::migrate!("./migrations");
     m.set_ignore_missing(true);
+    m.set_locking(false);
     m
 });
+
+/// The advisory lock key sqlx uses for a database, so that older binaries, which let sqlx take the
+/// lock, and this one never migrate at the same time.
+fn migration_lock_id(database: &str) -> i64 {
+    let mut crc: u32 = 0xffff_ffff;
+    for b in database.bytes() {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0xedb8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    0x3d32_ad9e * i64::from(!crc)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SslMode {
@@ -210,6 +229,28 @@ pub fn pg_connect_options(url: &str, tls: &PgTls) -> anyhow::Result<PgConnectPla
     })
 }
 
+/// A migration applied by [`PgStore::migrate`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppliedMigration {
+    pub version: i64,
+    pub name: String,
+    pub duration: Duration,
+}
+
+async fn applied_versions(conn: &mut sqlx::PgConnection) -> anyhow::Result<Vec<i64>> {
+    let present: bool = sqlx::query_scalar("select to_regclass('_sqlx_migrations') is not null")
+        .fetch_one(&mut *conn)
+        .await?;
+    if !present {
+        return Ok(Vec::new());
+    }
+    Ok(
+        sqlx::query_scalar("select version from _sqlx_migrations where success")
+            .fetch_all(&mut *conn)
+            .await?,
+    )
+}
+
 #[derive(Clone)]
 pub struct PgStore {
     pool: PgPool,
@@ -242,9 +283,57 @@ impl PgStore {
         Ok(Self { pool })
     }
 
-    pub async fn migrate(&self) -> anyhow::Result<()> {
-        MIGRATOR.run(&self.pool).await?;
-        Ok(())
+    /// Applies pending migrations under the migration lock and returns the ones this call applied, each
+    /// logged with its version, name and duration. The lock is polled rather than waited for: a session
+    /// blocked on it would hold a snapshot that a concurrent index build waits for.
+    pub async fn migrate(&self) -> anyhow::Result<Vec<AppliedMigration>> {
+        let mut conn = self.pool.acquire().await?;
+        let database: String = sqlx::query_scalar("select current_database()")
+            .fetch_one(&mut *conn)
+            .await?;
+        let key = migration_lock_id(&database);
+        while !sqlx::query_scalar::<_, bool>("select pg_try_advisory_lock($1)")
+            .bind(key)
+            .fetch_one(&mut *conn)
+            .await?
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        let result = async {
+            let before = applied_versions(&mut conn).await?;
+            MIGRATOR.run_direct(&mut *conn).await?;
+            let rows: Vec<(i64, String, i64)> = sqlx::query_as(
+                "select version, description, execution_time from _sqlx_migrations where success order by version",
+            )
+            .fetch_all(&mut *conn)
+            .await?;
+            Ok::<_, anyhow::Error>(
+                rows.into_iter()
+                    .filter(|(v, _, _)| !before.contains(v))
+                    .map(|(version, name, nanos)| AppliedMigration {
+                        version,
+                        name,
+                        duration: Duration::from_nanos(nanos.max(0) as u64),
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        }
+        .await;
+        let unlocked = sqlx::query("select pg_advisory_unlock($1)")
+            .bind(key)
+            .execute(&mut *conn)
+            .await;
+        let applied = result?;
+        unlocked?;
+        for m in &applied {
+            tracing::info!(
+                version = m.version,
+                name = %m.name,
+                duration_ms = m.duration.as_millis() as u64,
+                "applied database migration"
+            );
+        }
+        Ok(applied)
     }
 
     pub fn expected_schema_version() -> i64 {
@@ -329,25 +418,40 @@ impl PgStore {
     }
 }
 
+fn push_spaces<'a>(qb: &mut QueryBuilder<'a, Postgres>, f: &'a SpaceFilter) {
+    match f {
+        SpaceFilter::Any => {}
+        SpaceFilter::Global => {
+            qb.push(" and space is null");
+        }
+        SpaceFilter::In(list) => {
+            qb.push(" and space = any(").push_bind(list).push(")");
+        }
+    }
+}
+
+/// The space comes from its column: an older binary that rewrites the definition keeps the column.
 fn row_to_stub(r: &PgRow) -> StoreResult<Stub> {
     let def: Value = r.try_get("definition")?;
     let mut s: Stub = serde_json::from_value(def)?;
     s.updated_at = Some(r.try_get("updated_at")?);
+    s.space = r.try_get("space")?;
     Ok(s)
 }
 
 #[async_trait]
 impl StubStore for PgStore {
     async fn list(&self) -> StoreResult<Vec<Stub>> {
-        let rows =
-            sqlx::query("select definition, updated_at from fm_stubs order by updated_at desc, id")
-                .fetch_all(&self.pool)
-                .await?;
+        let rows = sqlx::query(
+            "select definition, updated_at, space from fm_stubs order by updated_at desc, id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter().map(row_to_stub).collect()
     }
 
     async fn get(&self, id: Uuid) -> StoreResult<Option<Stub>> {
-        let row = sqlx::query("select definition, updated_at from fm_stubs where id = $1")
+        let row = sqlx::query("select definition, updated_at, space from fm_stubs where id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
@@ -359,13 +463,14 @@ impl StubStore for PgStore {
         s.updated_at = None;
         let mut tx = self.pool.begin().await?;
         sqlx::query(
-            "insert into fm_stubs (id, definition, priority, tags, updated_at) values ($1, $2, $3, $4, clock_timestamp())
-             on conflict (id) do update set definition = excluded.definition, priority = excluded.priority, tags = excluded.tags, updated_at = clock_timestamp()",
+            "insert into fm_stubs (id, definition, priority, tags, space, updated_at) values ($1, $2, $3, $4, $5, clock_timestamp())
+             on conflict (id) do update set definition = excluded.definition, priority = excluded.priority, tags = excluded.tags, space = excluded.space, updated_at = clock_timestamp()",
         )
         .bind(s.id)
         .bind(serde_json::to_value(&s)?)
         .bind(s.priority)
         .bind(&s.tags)
+        .bind(&s.space)
         .execute(&mut *tx)
         .await?;
         Self::bump(&mut tx).await?;
@@ -378,12 +483,13 @@ impl StubStore for PgStore {
         s.updated_at = None;
         let mut tx = self.pool.begin().await?;
         let n = sqlx::query(
-            "insert into fm_stubs (id, definition, priority, tags, updated_at) values ($1, $2, $3, $4, clock_timestamp()) on conflict (id) do nothing",
+            "insert into fm_stubs (id, definition, priority, tags, space, updated_at) values ($1, $2, $3, $4, $5, clock_timestamp()) on conflict (id) do nothing",
         )
         .bind(s.id)
         .bind(serde_json::to_value(&s)?)
         .bind(s.priority)
         .bind(&s.tags)
+        .bind(&s.space)
         .execute(&mut *tx)
         .await?
         .rows_affected();
@@ -408,13 +514,12 @@ impl StubStore for PgStore {
         Ok(n > 0)
     }
 
-    async fn delete_by_tag(&self, tag: &str) -> StoreResult<u64> {
+    async fn delete_by_tag(&self, tag: &str, spaces: &SpaceFilter) -> StoreResult<u64> {
         let mut tx = self.pool.begin().await?;
-        let n = sqlx::query("delete from fm_stubs where $1 = any(tags)")
-            .bind(tag)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+        let mut qb = QueryBuilder::<Postgres>::new("delete from fm_stubs where ");
+        qb.push_bind(tag).push(" = any(tags)");
+        push_spaces(&mut qb, spaces);
+        let n = qb.build().execute(&mut *tx).await?.rows_affected();
         if n > 0 {
             Self::bump(&mut tx).await?;
         }
@@ -422,34 +527,47 @@ impl StubStore for PgStore {
         Ok(n)
     }
 
-    async fn replace_tag(&self, tag: Option<&str>, stubs: &[Stub]) -> StoreResult<u64> {
+    async fn replace_tag(
+        &self,
+        tag: Option<&str>,
+        spaces: &SpaceFilter,
+        stubs: &[Stub],
+    ) -> StoreResult<u64> {
         let mut tx = self.pool.begin().await?;
         let removed = match tag {
-            Some(t) => sqlx::query("delete from fm_stubs where $1 = any(tags)")
-                .bind(t)
-                .execute(&mut *tx)
-                .await?
-                .rows_affected(),
+            Some(t) => {
+                let mut qb = QueryBuilder::<Postgres>::new("delete from fm_stubs where ");
+                qb.push_bind(t).push(" = any(tags)");
+                push_spaces(&mut qb, spaces);
+                qb.build().execute(&mut *tx).await?.rows_affected()
+            }
             None => 0,
         };
         for chunk in stubs.chunks(500) {
             let mut qb = QueryBuilder::<Postgres>::new(
-                "insert into fm_stubs (id, definition, priority, tags, updated_at) ",
+                "insert into fm_stubs (id, definition, priority, tags, space, updated_at) ",
             );
             let mut rows = Vec::with_capacity(chunk.len());
             for s in chunk {
                 let mut s = s.clone();
                 s.updated_at = None;
-                rows.push((s.id, serde_json::to_value(&s)?, s.priority, s.tags.clone()));
+                rows.push((
+                    s.id,
+                    serde_json::to_value(&s)?,
+                    s.priority,
+                    s.tags.clone(),
+                    s.space.clone(),
+                ));
             }
-            qb.push_values(rows, |mut b, (id, def, prio, tags)| {
+            qb.push_values(rows, |mut b, (id, def, prio, tags, space)| {
                 b.push_bind(id)
                     .push_bind(def)
                     .push_bind(prio)
                     .push_bind(tags)
+                    .push_bind(space)
                     .push("clock_timestamp()");
             });
-            qb.push(" on conflict (id) do update set definition = excluded.definition, priority = excluded.priority, tags = excluded.tags, updated_at = clock_timestamp()");
+            qb.push(" on conflict (id) do update set definition = excluded.definition, priority = excluded.priority, tags = excluded.tags, space = excluded.space, updated_at = clock_timestamp()");
             qb.build().execute(&mut *tx).await?;
         }
         Self::bump(&mut tx).await?;
@@ -457,12 +575,11 @@ impl StubStore for PgStore {
         Ok(removed)
     }
 
-    async fn clear(&self) -> StoreResult<u64> {
+    async fn clear(&self, spaces: &SpaceFilter) -> StoreResult<u64> {
         let mut tx = self.pool.begin().await?;
-        let n = sqlx::query("delete from fm_stubs")
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+        let mut qb = QueryBuilder::<Postgres>::new("delete from fm_stubs where true");
+        push_spaces(&mut qb, spaces);
+        let n = qb.build().execute(&mut *tx).await?.rows_affected();
         Self::bump(&mut tx).await?;
         tx.commit().await?;
         Ok(n)
@@ -505,7 +622,16 @@ fn journal_where<'a>(qb: &mut QueryBuilder<'a, Postgres>, f: &'a JournalFilter) 
     if let Some(v) = f.since {
         qb.push(" and at >= ").push_bind(v);
     }
+    push_spaces(qb, &f.spaces);
 }
+
+/// Columns read back for journal entries. Queries never select `*`: a replica of an earlier release keeps
+/// its prepared statements while a newer one adds columns, and PostgreSQL rejects a cached plan whose
+/// result type changed.
+const JOURNAL_COLUMNS: &str = "id, at, source, method, path, query, headers, body, status, response_body, stub_id, correlation, matched, duration_ms, trace_id, space";
+
+/// Columns read back for callback jobs; see [`JOURNAL_COLUMNS`].
+const OUTBOX_COLUMNS: &str = "id, source, correlation, url, method, headers, body, due_at, attempts, max_attempts, status, last_error, last_status, created_at, sent_at, traceparent, space";
 
 fn row_to_entry(r: &PgRow) -> StoreResult<JournalEntry> {
     let headers: Value = r.try_get("headers")?;
@@ -525,6 +651,7 @@ fn row_to_entry(r: &PgRow) -> StoreResult<JournalEntry> {
         matched: r.try_get("matched")?,
         duration_ms: r.try_get::<i64, _>("duration_ms")? as u64,
         trace_id: r.try_get("trace_id")?,
+        space: r.try_get("space")?,
     })
 }
 
@@ -533,7 +660,7 @@ impl JournalStore for PgStore {
     async fn append_many(&self, entries: &[JournalEntry]) -> StoreResult<()> {
         for chunk in entries.chunks(500) {
             let mut qb = QueryBuilder::<Postgres>::new(
-                "insert into fm_journal (at, source, method, path, query, headers, body, status, response_body, stub_id, correlation, matched, duration_ms, trace_id) ",
+                "insert into fm_journal (at, source, method, path, query, headers, body, status, response_body, stub_id, correlation, matched, duration_ms, trace_id, space) ",
             );
             let mut rows = Vec::with_capacity(chunk.len());
             for e in chunk {
@@ -553,7 +680,8 @@ impl JournalStore for PgStore {
                     .push_bind(e.correlation.as_deref().map(no_nul))
                     .push_bind(e.matched)
                     .push_bind(e.duration_ms as i64)
-                    .push_bind(e.trace_id.clone());
+                    .push_bind(e.trace_id.clone())
+                    .push_bind(e.space.clone());
             });
             qb.build().execute(&self.pool).await?;
         }
@@ -562,8 +690,8 @@ impl JournalStore for PgStore {
 
     async fn append(&self, e: &JournalEntry) -> StoreResult<i64> {
         let id: i64 = sqlx::query_scalar(
-            "insert into fm_journal (at, source, method, path, query, headers, body, status, response_body, stub_id, correlation, matched, duration_ms, trace_id)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) returning id",
+            "insert into fm_journal (at, source, method, path, query, headers, body, status, response_body, stub_id, correlation, matched, duration_ms, trace_id, space)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) returning id",
         )
         .bind(e.at)
         .bind(&e.source)
@@ -579,13 +707,14 @@ impl JournalStore for PgStore {
         .bind(e.matched)
         .bind(e.duration_ms as i64)
         .bind(&e.trace_id)
+        .bind(&e.space)
         .fetch_one(&self.pool)
         .await?;
         Ok(id)
     }
 
     async fn query(&self, f: &JournalFilter) -> StoreResult<Vec<JournalEntry>> {
-        let mut qb = QueryBuilder::new("select * from fm_journal");
+        let mut qb = QueryBuilder::new(format!("select {JOURNAL_COLUMNS} from fm_journal"));
         journal_where(&mut qb, f);
         qb.push(" order by id desc limit ")
             .push_bind(f.limit.unwrap_or(100).clamp(1, 10_000));
@@ -599,11 +728,10 @@ impl JournalStore for PgStore {
         Ok(qb.build_query_scalar().fetch_one(&self.pool).await?)
     }
 
-    async fn clear(&self) -> StoreResult<u64> {
-        Ok(sqlx::query("delete from fm_journal")
-            .execute(&self.pool)
-            .await?
-            .rows_affected())
+    async fn clear(&self, spaces: &SpaceFilter) -> StoreResult<u64> {
+        let mut qb = QueryBuilder::<Postgres>::new("delete from fm_journal where true");
+        push_spaces(&mut qb, spaces);
+        Ok(qb.build().execute(&self.pool).await?.rows_affected())
     }
 
     async fn purge_older_than(&self, at: DateTime<Utc>) -> StoreResult<u64> {
@@ -614,15 +742,17 @@ impl JournalStore for PgStore {
             .rows_affected())
     }
     async fn get(&self, id: i64) -> StoreResult<Option<JournalEntry>> {
-        let row = sqlx::query("select * from fm_journal where id = $1")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?;
+        let row = sqlx::query(&format!(
+            "select {JOURNAL_COLUMNS} from fm_journal where id = $1"
+        ))
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
         row.as_ref().map(row_to_entry).transpose()
     }
 
     async fn query_page(&self, f: &JournalFilter, offset: i64) -> StoreResult<Vec<JournalEntry>> {
-        let mut qb = QueryBuilder::new("select * from fm_journal");
+        let mut qb = QueryBuilder::new(format!("select {JOURNAL_COLUMNS} from fm_journal"));
         journal_where(&mut qb, f);
         qb.push(" order by id desc limit ")
             .push_bind(f.limit.unwrap_or(100).clamp(1, 10_000))
@@ -677,6 +807,7 @@ fn row_to_job(r: &PgRow) -> StoreResult<CallbackJob> {
         created_at: r.try_get("created_at")?,
         sent_at: r.try_get("sent_at")?,
         traceparent: r.try_get("traceparent")?,
+        space: r.try_get("space")?,
     })
 }
 
@@ -684,8 +815,8 @@ fn row_to_job(r: &PgRow) -> StoreResult<CallbackJob> {
 impl OutboxStore for PgStore {
     async fn enqueue(&self, j: &CallbackJob) -> StoreResult<()> {
         sqlx::query(
-            "insert into fm_outbox (id, source, correlation, url, method, headers, body, due_at, attempts, max_attempts, status, last_error, last_status, created_at, sent_at, traceparent)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+            "insert into fm_outbox (id, source, correlation, url, method, headers, body, due_at, attempts, max_attempts, status, last_error, last_status, created_at, sent_at, traceparent, space)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
         )
         .bind(j.id)
         .bind(&j.source)
@@ -703,6 +834,7 @@ impl OutboxStore for PgStore {
         .bind(j.created_at)
         .bind(j.sent_at)
         .bind(&j.traceparent)
+        .bind(&j.space)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -722,18 +854,18 @@ impl OutboxStore for PgStore {
         .bind(now)
         .execute(&self.pool)
         .await?;
-        let rows = sqlx::query(
+        let rows = sqlx::query(&format!(
             "with due as (
-                select id from fm_outbox
+                select id as due_id from fm_outbox
                 where status = 'pending' and attempts < max_attempts and due_at <= $1 and (lease_until is null or lease_until <= $1)
                 order by due_at
                 limit $2
                 for update skip locked
             )
             update fm_outbox o set lease_until = $3, attempts = o.attempts + 1
-            from due where o.id = due.id
-            returning o.*",
-        )
+            from due where o.id = due.due_id
+            returning {OUTBOX_COLUMNS}"
+        ))
         .bind(now)
         .bind(limit.max(0))
         .bind(lease_until)
@@ -795,7 +927,8 @@ impl OutboxStore for PgStore {
     }
 
     async fn list(&self, f: &CallbackFilter) -> StoreResult<Vec<CallbackJob>> {
-        let mut qb = QueryBuilder::new("select * from fm_outbox where true");
+        let mut qb =
+            QueryBuilder::new(format!("select {OUTBOX_COLUMNS} from fm_outbox where true"));
         if let Some(v) = &f.source {
             qb.push(" and source = ").push_bind(v);
         }
@@ -805,6 +938,7 @@ impl OutboxStore for PgStore {
         if let Some(v) = f.status {
             qb.push(" and status = ").push_bind(v.as_str());
         }
+        push_spaces(&mut qb, &f.spaces);
         qb.push(" order by created_at desc, id desc limit ")
             .push_bind(f.limit.unwrap_or(100).clamp(1, 10_000));
         let rows = qb.build().fetch_all(&self.pool).await?;
@@ -819,11 +953,10 @@ impl OutboxStore for PgStore {
         )
     }
 
-    async fn clear(&self) -> StoreResult<u64> {
-        Ok(sqlx::query("delete from fm_outbox")
-            .execute(&self.pool)
-            .await?
-            .rows_affected())
+    async fn clear(&self, spaces: &SpaceFilter) -> StoreResult<u64> {
+        let mut qb = QueryBuilder::<Postgres>::new("delete from fm_outbox where true");
+        push_spaces(&mut qb, spaces);
+        Ok(qb.build().execute(&self.pool).await?.rows_affected())
     }
 
     async fn purge_finished_older_than(&self, at: DateTime<Utc>) -> StoreResult<u64> {
@@ -925,6 +1058,8 @@ fn row_to_audit(r: &PgRow) -> StoreResult<AuditEvent> {
         at: r.try_get("at")?,
         principal: r.try_get("principal")?,
         role: r.try_get("role")?,
+        principal_kind: r.try_get("principal_kind")?,
+        space: r.try_get("space")?,
         action: r.try_get("action")?,
         detail: r.try_get("detail")?,
     })
@@ -933,10 +1068,12 @@ fn row_to_audit(r: &PgRow) -> StoreResult<AuditEvent> {
 #[async_trait]
 impl AuditStore for PgStore {
     async fn record(&self, e: &AuditEvent) -> StoreResult<()> {
-        sqlx::query("insert into fm_audit (at, principal, role, action, detail) values ($1, $2, $3, $4, $5)")
+        sqlx::query("insert into fm_audit (at, principal, role, principal_kind, space, action, detail) values ($1, $2, $3, $4, $5, $6, $7)")
             .bind(e.at)
             .bind(&e.principal)
             .bind(&e.role)
+            .bind(&e.principal_kind)
+            .bind(&e.space)
             .bind(&e.action)
             .bind(&e.detail)
             .execute(&self.pool)
@@ -945,7 +1082,7 @@ impl AuditStore for PgStore {
     }
 
     async fn list(&self, limit: i64) -> StoreResult<Vec<AuditEvent>> {
-        let rows = sqlx::query("select id, at, principal, role, action, detail from fm_audit order by id desc limit $1")
+        let rows = sqlx::query("select id, at, principal, role, principal_kind, space, action, detail from fm_audit order by id desc limit $1")
             .bind(limit.clamp(1, 10_000))
             .fetch_all(&self.pool)
             .await?;
@@ -954,7 +1091,7 @@ impl AuditStore for PgStore {
 
     async fn query(&self, f: &AuditFilter) -> StoreResult<Vec<AuditEvent>> {
         let mut qb = QueryBuilder::<Postgres>::new(
-            "select id, at, principal, role, action, detail from fm_audit where true",
+            "select id, at, principal, role, principal_kind, space, action, detail from fm_audit where true",
         );
         match (f.action_prefix(), &f.action) {
             (Some(p), _) => {
@@ -985,5 +1122,147 @@ impl AuditStore for PgStore {
             .execute(&self.pool)
             .await?
             .rows_affected())
+    }
+}
+
+const TOKEN_COLUMNS: &str = "id, name, sha256, role, spaces, global, description, created_by, created_at, expires_at, last_used_at, revoked_at, revoked, parent_id";
+
+fn row_to_token(r: &PgRow) -> StoreResult<ApiToken> {
+    Ok(ApiToken {
+        id: r.try_get("id")?,
+        name: r.try_get("name")?,
+        sha256: r.try_get("sha256")?,
+        role: r.try_get("role")?,
+        spaces: r.try_get("spaces")?,
+        global: r.try_get("global")?,
+        description: r.try_get("description")?,
+        created_by: r.try_get("created_by")?,
+        created_at: r.try_get("created_at")?,
+        expires_at: r.try_get("expires_at")?,
+        last_used_at: r.try_get("last_used_at")?,
+        revoked_at: r.try_get("revoked_at")?,
+        revoked: r.try_get("revoked")?,
+        parent_id: r.try_get("parent_id")?,
+    })
+}
+
+#[async_trait]
+impl TokenStore for PgStore {
+    async fn create(&self, t: &ApiToken, now: DateTime<Utc>) -> StoreResult<bool> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("update fm_api_tokens set revoked_at = expires_at where name = $1 and revoked_at is null and expires_at <= $2")
+            .bind(&t.name)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        let inserted = sqlx::query(&format!(
+            "insert into fm_api_tokens ({TOKEN_COLUMNS}) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) on conflict (name) where revoked_at is null do nothing"
+        ))
+        .bind(t.id)
+        .bind(no_nul(&t.name))
+        .bind(&t.sha256)
+        .bind(&t.role)
+        .bind(&t.spaces)
+        .bind(t.global)
+        .bind(t.description.as_deref().map(no_nul))
+        .bind(no_nul(&t.created_by))
+        .bind(t.created_at)
+        .bind(t.expires_at)
+        .bind(t.last_used_at)
+        .bind(t.revoked_at)
+        .bind(t.revoked)
+        .bind(t.parent_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            == 1;
+        tx.commit().await?;
+        Ok(inserted)
+    }
+
+    async fn get(&self, id: Uuid) -> StoreResult<Option<ApiToken>> {
+        let r = sqlx::query(&format!(
+            "select {TOKEN_COLUMNS} from fm_api_tokens where id = $1"
+        ))
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        r.as_ref().map(row_to_token).transpose()
+    }
+
+    async fn by_hash(&self, sha256: &str) -> StoreResult<Option<ApiToken>> {
+        let r = sqlx::query(&format!(
+            "select {TOKEN_COLUMNS} from fm_api_tokens where sha256 = $1"
+        ))
+        .bind(sha256)
+        .fetch_optional(&self.pool)
+        .await?;
+        r.as_ref().map(row_to_token).transpose()
+    }
+
+    async fn list(&self) -> StoreResult<Vec<ApiToken>> {
+        let rows = sqlx::query(&format!(
+            "select {TOKEN_COLUMNS} from fm_api_tokens order by created_at desc, id desc limit 10000"
+        ))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_token).collect()
+    }
+
+    async fn revoke(&self, id: Uuid, at: DateTime<Utc>) -> StoreResult<bool> {
+        Ok(sqlx::query(
+            "update fm_api_tokens set revoked = true, revoked_at = $2 where id = $1 and revoked_at is null and expires_at > $2",
+        )
+        .bind(id)
+        .bind(at)
+        .execute(&self.pool)
+        .await?
+        .rows_affected()
+            == 1)
+    }
+
+    async fn has_any(&self) -> StoreResult<bool> {
+        Ok(
+            sqlx::query_scalar("select exists (select 1 from fm_api_tokens)")
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
+
+    async fn touch(&self, id: Uuid, at: DateTime<Utc>) -> StoreResult<()> {
+        sqlx::query("update fm_api_tokens set last_used_at = $2 where id = $1 and (last_used_at is null or last_used_at <= $2 - interval '1 minute')")
+            .bind(id)
+            .bind(at)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn count_active(&self, now: DateTime<Utc>) -> StoreResult<i64> {
+        Ok(sqlx::query_scalar(
+            "select count(*) from fm_api_tokens where not revoked and expires_at > $1",
+        )
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    async fn purge_inactive_before(&self, at: DateTime<Utc>) -> StoreResult<u64> {
+        Ok(
+            sqlx::query("delete from fm_api_tokens where revoked_at < $1 or expires_at < $1")
+                .bind(at)
+                .execute(&self.pool)
+                .await?
+                .rows_affected(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn migration_lock_matches_sqlx() {
+        assert_eq!(super::migration_lock_id("postgres"), 368907709894077238);
+        assert_eq!(super::migration_lock_id("fastmock"), 3340988666452667578);
     }
 }

@@ -28,8 +28,24 @@
 {{- if and (eq .Values.storage.database.migrations.mode "job") (or .Values.postgresql.enabled .Values.cnpg.enabled) }}
 {{- fail "storage.database.migrations.mode=job needs an external database: the databases installed with the release do not exist yet when the migration Job runs" }}
 {{- end }}
-{{- if not .Values.admin.tokensSecret.name }}
-{{- fail "admin.tokensSecret.name is required: FastMock never runs without admin authentication" }}
+{{- $oidc := .Values.oidc | default dict }}
+{{- $oidcSecret := $oidc.clientSecret | default dict }}
+{{- if and (not .Values.admin.tokensSecret.name) (not $oidc.issuer) }}
+{{- fail "admin.tokensSecret.name or oidc.issuer is required: FastMock never runs without admin authentication" }}
+{{- end }}
+{{- if $oidc.issuer }}
+{{- if not $oidc.clientId }}
+{{- fail "oidc.clientId is required when oidc.issuer is set" }}
+{{- end }}
+{{- if not $oidcSecret.existingSecret }}
+{{- fail "oidc.clientSecret.existingSecret is required when oidc.issuer is set: a Secret holding the client secret" }}
+{{- end }}
+{{- if not $oidc.redirectUrl }}
+{{- fail "oidc.redirectUrl is required when oidc.issuer is set: the public admin URL followed by /__admin/auth/callback" }}
+{{- end }}
+{{- if and $oidc.trustOutboundCA (not .Values.outboundCA.configMap) }}
+{{- fail "oidc.trustOutboundCA needs outboundCA.configMap" }}
+{{- end }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
@@ -60,6 +76,9 @@ spec:
         {{- end }}
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if include "fastmock.accessEnabled" . }}
+        checksum/access: {{ include (print $.Template.BasePath "/access.yaml") . | sha256sum }}
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -177,9 +196,21 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
+            {{- if .Values.admin.tokensSecret.name }}
             - name: admin-tokens
               mountPath: /etc/fastmock/admin
               readOnly: true
+            {{- end }}
+            {{- if $oidc.issuer }}
+            - name: oidc
+              mountPath: /etc/fastmock/oidc
+              readOnly: true
+            {{- end }}
+            {{- if include "fastmock.accessEnabled" . }}
+            - name: access
+              mountPath: /etc/fastmock/access
+              readOnly: true
+            {{- end }}
             {{- if .Values.secrets.existingSecret }}
             - name: secrets
               mountPath: /etc/fastmock/secrets
@@ -221,6 +252,7 @@ spec:
               readOnly: true
             {{- end }}
       volumes:
+        {{- if .Values.admin.tokensSecret.name }}
         - name: admin-tokens
           secret:
             secretName: {{ .Values.admin.tokensSecret.name }}
@@ -228,6 +260,24 @@ spec:
               - key: {{ .Values.admin.tokensSecret.key }}
                 path: tokens
             defaultMode: 0440
+        {{- end }}
+        {{- if $oidc.issuer }}
+        - name: oidc
+          secret:
+            secretName: {{ $oidcSecret.existingSecret }}
+            items:
+              - key: {{ $oidcSecret.key | default "client-secret" }}
+                path: client-secret
+            defaultMode: 0440
+        {{- end }}
+        {{- if include "fastmock.accessEnabled" . }}
+        - name: access
+          configMap:
+            name: {{ include "fastmock.fullname" . }}-access
+            items:
+              - key: access.yaml
+                path: access.yaml
+        {{- end }}
         {{- if .Values.secrets.existingSecret }}
         - name: secrets
           secret:

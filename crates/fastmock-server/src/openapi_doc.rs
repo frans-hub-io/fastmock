@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use axum::http::{HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use utoipa::OpenApi;
-use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityScheme};
 
 use crate::{admin, files, imports, journal_api, snapshot};
 
@@ -18,11 +18,14 @@ impl utoipa::Modify for BearerScheme {
                 HttpBuilder::new()
                     .scheme(HttpAuthScheme::Bearer)
                     .description(Some(
-                        "Admin token from FASTMOCK_ADMIN_TOKENS. GET/HEAD and read-only POSTs need viewer, other changes editor; deleting all stubs, reset and the audit log need admin.",
+                        "Static admin token from FASTMOCK_ADMIN_TOKENS, a managed token from POST /__admin/tokens or, with FASTMOCK_OIDC_API_AUDIENCE, a JWT from the OIDC provider. The UI may instead use the SSO session cookie (see the `session` scheme). Every route needs a permission (`resource:action`); the built-in roles viewer, editor and admin are permission sets, custom roles and space bindings come from FASTMOCK_ACCESS_FILE. Without an access file: GET/HEAD and read-only POSTs need viewer, other changes editor; deleting all stubs, reset, the audit log and managing other tokens (`/__admin/tokens*`, `tokens:read`/`tokens:write`) and reading the access configuration (`/__admin/access`, `access:read`) need admin. Routes without a rule need admin.",
                     ))
                     .build(),
             ),
         );
+        let mut cookie = ApiKeyValue::new("__Host-fastmock_session");
+        cookie.description = Some("SSO session cookie set by GET /__admin/auth/callback; accepted by every /__admin route instead of a bearer token when no Authorization header is sent. Requests other than GET and HEAD need the `X-FastMock-Request: 1` header.".into());
+        components.add_security_scheme("session", SecurityScheme::ApiKey(ApiKey::Cookie(cookie)));
     }
 }
 
@@ -63,6 +66,7 @@ impl utoipa::Modify for BearerScheme {
         admin::kv_delete,
         admin::reset,
         admin::info,
+        admin::list_spaces,
         admin::version,
         admin::plugins,
         admin::list_audit,
@@ -93,6 +97,8 @@ impl utoipa::Modify for BearerScheme {
         (name = "chaos", description = "Probabilistic faults and delays"),
         (name = "grpc", description = "gRPC descriptor sets"),
         (name = "audit", description = "Audit log"),
+        (name = "access", description = "Spaces, roles and bindings of the access file (read-only)"),
+        (name = "auth", description = "SSO sign-in for the UI (OIDC, backend for frontend)"),
         (name = "system", description = "Server information")
     )
 )]
@@ -108,8 +114,63 @@ pub fn spec() -> utoipa::openapi::OpenApi {
     doc.merge(crate::contract::ContractApi::openapi());
     doc.merge(crate::services::ServicesApi::openapi());
     doc.merge(crate::admin_core::CoreApi::openapi());
+    doc.merge(crate::tokens::TokensApi::openapi());
+    doc.merge(crate::oidc::routes::AuthApi::openapi());
     normalize_tags(&mut doc);
+    standard_responses(&mut doc);
     doc
+}
+
+/// Every route behind the admin authentication can answer `403` (a missing permission, or a browser
+/// `Origin` that is not allowed), and every route with a `space` parameter `404` (an unknown space, or
+/// one the caller cannot see). Operations that do not document them get the generic description.
+fn standard_responses(doc: &mut utoipa::openapi::OpenApi) {
+    use utoipa::openapi::path::ParameterIn;
+    use utoipa::openapi::{ContentBuilder, Ref, RefOr, ResponseBuilder};
+    let error = |description: &str| -> RefOr<utoipa::openapi::Response> {
+        RefOr::T(
+            ResponseBuilder::new()
+                .description(description)
+                .content(
+                    "application/json",
+                    ContentBuilder::new()
+                        .schema(Some(Ref::from_schema_name("ErrorBody")))
+                        .build(),
+                )
+                .build(),
+        )
+    };
+    for (path, item) in doc.paths.paths.iter_mut() {
+        if path == "/openapi.json" || path.starts_with("/__admin/auth/") {
+            continue;
+        }
+        for op in [
+            &mut item.get,
+            &mut item.put,
+            &mut item.post,
+            &mut item.delete,
+            &mut item.patch,
+            &mut item.head,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let responses = &mut op.responses.responses;
+            responses.entry("403".into()).or_insert_with(|| {
+                error("Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed")
+            });
+            let has_space = op
+                .parameters
+                .iter()
+                .flatten()
+                .any(|p| p.name == "space" && matches!(p.parameter_in, ParameterIn::Query));
+            if has_space {
+                responses
+                    .entry("404".into())
+                    .or_insert_with(|| error("Unknown space, or a space the caller cannot see"));
+            }
+        }
+    }
 }
 
 fn normalize_tags(doc: &mut utoipa::openapi::OpenApi) {
@@ -207,6 +268,41 @@ mod tests {
     }
 
     #[test]
+    fn importers_document_space_and_host() {
+        let v: Value = serde_json::from_str(spec_json()).unwrap();
+        for path in [
+            "/__admin/import",
+            "/__admin/import/openapi",
+            "/__admin/import/wiremock",
+            "/__admin/import/postman",
+            "/__admin/import/har",
+            "/__admin/import/mockserver",
+            "/__admin/stubs/import",
+        ] {
+            let op = &v["paths"][path]["post"];
+            let names: Vec<&str> = op["parameters"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{path}: no parameters"))
+                .iter()
+                .filter(|p| p["in"] == "query")
+                .filter_map(|p| p["name"].as_str())
+                .collect();
+            for want in ["space", "host"] {
+                assert!(names.contains(&want), "{path}: no {want} parameter");
+            }
+            for status in ["403", "404"] {
+                assert!(op["responses"].get(status).is_some(), "{path}: no {status}");
+            }
+        }
+        let days =
+            v["components"]["schemas"]["CreateToken"]["properties"]["expiresInDays"]["description"]
+                .as_str()
+                .unwrap();
+        assert!(days.contains("FASTMOCK_TOKENS_MAX_DAYS"), "{days}");
+        assert!(days.contains("lower"), "{days}");
+    }
+
+    #[test]
     fn openapi_spec_is_well_formed() {
         let v: Value = serde_json::from_str(spec_json()).unwrap();
         assert!(v["openapi"].as_str().unwrap().starts_with("3.1"));
@@ -259,11 +355,12 @@ mod tests {
                 let security = op["security"]
                     .as_array()
                     .unwrap_or_else(|| panic!("{where_}: no security"));
-                if path == "/openapi.json" {
+                if path == "/openapi.json" || path.starts_with("/__admin/auth/") {
                     assert!(
-                        security
-                            .iter()
-                            .all(|s| s.as_object().is_some_and(|o| o.is_empty()))
+                        security.iter().all(|s| s
+                            .as_object()
+                            .is_some_and(|o| o.is_empty() || o.contains_key("session"))),
+                        "{where_}: unexpected security"
                     );
                 } else {
                     assert!(
@@ -274,6 +371,20 @@ mod tests {
                         op["responses"].get("401").is_some(),
                         "{where_}: 401 not documented"
                     );
+                    assert!(
+                        op["responses"].get("403").is_some(),
+                        "{where_}: 403 not documented"
+                    );
+                    let takes_space = op["parameters"].as_array().is_some_and(|ps| {
+                        ps.iter()
+                            .any(|p| p["name"] == "space" && p["in"] == "query")
+                    });
+                    if takes_space {
+                        assert!(
+                            op["responses"].get("404").is_some(),
+                            "{where_}: takes space but 404 not documented"
+                        );
+                    }
                 }
                 if let Some(params) = op["parameters"].as_array() {
                     for p in params {

@@ -5,7 +5,8 @@ import { useState } from 'react';
 import { useFeature } from '../api/features';
 import { client, unwrap } from '../api/client';
 import { confirmAction, useApiMutation } from '../api/mutations';
-import { useCan } from '../auth/useAuth';
+import { useCan, useSpace, useSpaceChoice, useSpaceQuery } from '../auth/useAuth';
+import { SpaceBadge, SpaceField } from '../components/spaces';
 import { CodeEditor } from '../components/CodeEditor';
 import { BodyView, KeyValueTable, PageHeader, Time } from '../components/common';
 import { KeyValueEditor } from '../components/MatcherList';
@@ -139,14 +140,16 @@ function StartForm() {
   const [headers, setHeaders] = useState<Record<string, string> | undefined>();
   const [secretHeaders, setSecretHeaders] = useState<Record<string, string> | undefined>();
   const [timeoutMs, setTimeoutMs] = useState<number | ''>('');
+  const [space, setSpace] = useSpaceChoice('contracts:write');
+  const canSecrets = useCan()('contracts:secrets', space);
   const start = useApiMutation<void, { id: string }>({
     fn: () =>
-      unwrap(client.POST('/__admin/contract-tests', { body: {
+      unwrap(client.POST('/__admin/contract-tests', { params: { query: space ? { space } : {} }, body: {
         ...(source === 'ref' ? { specRef } : { spec: parseSpec(spec) as never }),
         ...(targetUrl ? { targetUrl } : {}),
         ...(operations.length ? { operations } : {}),
         ...(headers ? { headers } : {}),
-        ...(secretHeaders ? { secretHeaders } : {}),
+        ...(secretHeaders && canSecrets ? { secretHeaders } : {}),
         ...(timeoutMs ? { timeoutMs } : {}),
       } })),
     invalidate: [['contract-tests']],
@@ -158,6 +161,7 @@ function StartForm() {
         New run
       </Title>
       <Stack gap="sm">
+        <SpaceField perm="contracts:write" value={space} onChange={setSpace} />
         <SegmentedControl
           value={source}
           onChange={(v) => setSource(v)}
@@ -183,7 +187,9 @@ function StartForm() {
         <TextInput label="Target URL" description="The implementation under test (HTTP APIs). Outbound calls obey the egress policy." placeholder="https://service.example.com" value={targetUrl} onChange={(e) => setTargetUrl(e.currentTarget.value)} />
         <TagsInput label="Operations" description="Empty = all operations" value={operations} onChange={setOperations} />
         <KeyValueEditor label="Headers" value={headers} onChange={setHeaders} />
-        <KeyValueEditor label="Secret headers: header name → secret name (admin role; FASTMOCK_CONTRACT_SECRETS binds each secret to its hosts)" value={secretHeaders} onChange={setSecretHeaders} />
+        {canSecrets && (
+          <KeyValueEditor label="Secret headers: header name → secret name (contracts:secrets permission; FASTMOCK_CONTRACT_SECRETS binds each secret to its hosts)" value={secretHeaders} onChange={setSecretHeaders} />
+        )}
         <NumberInput label="Timeout per call (ms)" value={timeoutMs} onChange={(v) => setTimeoutMs(typeof v === 'number' ? v : '')} min={100} max={120000} w={220} />
         <Group>
           <Button leftSection={<IconPlayerPlay size={16} />} loading={start.isPending} disabled={source === 'ref' ? !specRef : !spec.trim()} onClick={() => start.mutate()}>
@@ -196,11 +202,14 @@ function StartForm() {
 }
 
 function ContractTestsInner() {
-  const canEdit = useCan('editor');
+  const can = useCan();
+  const canEdit = can('contracts:write');
+  const spaces = useSpace();
+  const spaceQ = useSpaceQuery();
   const [selected, setSelected] = useState<string | null>(null);
   const q = useQuery({
-    queryKey: ['contract-tests'],
-    queryFn: () => unwrap(client.GET('/__admin/contract-tests', { params: { query: { limit: 100 } } })),
+    queryKey: ['contract-tests', spaceQ],
+    queryFn: () => unwrap(client.GET('/__admin/contract-tests', { params: { query: { limit: 100, ...spaceQ } } })),
     refetchInterval: (query) => (query.state.data?.runs.some((r) => r.status === 'running') ? 2000 : 10000),
   });
   const del = useApiMutation<string>({ fn: (id) => unwrap(client.DELETE('/__admin/contract-tests/{id}', { params: { path: { id } } })), invalidate: [['contract-tests']], success: 'Run deleted' });
@@ -229,6 +238,7 @@ function ContractTestsInner() {
                   <Table.Th>Service / target</Table.Th>
                   <Table.Th>Result</Table.Th>
                   <Table.Th>By</Table.Th>
+                  {spaces.enabled && <Table.Th>Space</Table.Th>}
                   <Table.Th />
                 </Table.Tr>
               </Table.Thead>
@@ -249,8 +259,13 @@ function ContractTestsInner() {
                       {r.summary.passed}/{r.summary.total}
                     </Table.Td>
                     <Table.Td>{r.startedBy}</Table.Td>
+                    {spaces.enabled && (
+                      <Table.Td>
+                        <SpaceBadge space={r.space} />
+                      </Table.Td>
+                    )}
                     <Table.Td onClick={(e) => e.stopPropagation()}>
-                      {canEdit && (
+                      {can('contracts:write', r.space ?? null) && (
                         <ActionIcon variant="subtle" color="red" aria-label="Delete run" onClick={() => confirmAction({ title: 'Delete run?', message: 'The run and its results are removed.', confirm: 'Delete', onConfirm: () => del.mutate(r.id) })}>
                           <IconTrash size={16} />
                         </ActionIcon>

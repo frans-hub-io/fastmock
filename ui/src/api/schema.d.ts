@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/__admin/access": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The access configuration (read-only)
+         * @description Spaces, roles (with expanded permissions) and bindings of the access file (`FASTMOCK_ACCESS_FILE`), plus the global role of every static token written `name:role:hash` in `FASTMOCK_ADMIN_TOKENS` or `FASTMOCK_ADMIN_TOKENS_FILE` (`source: adminTokens`). Needs `access:read`, a global permission of the built-in admin role. Changes need a new access file or token list and a restart. Token values and hashes, file paths and OIDC settings are never included.
+         */
+        get: operations["getAccess"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/__admin/async-mocks": {
         parameters: {
             query?: never;
@@ -77,6 +97,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/__admin/auth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * SSO sign-in callback
+         * @description The identity provider redirects here. FastMock checks `state` (single use) and the login cookie, exchanges the code with the PKCE verifier, validates the ID token (signature, `iss`, `aud`, `azp`, `exp`, `iat`, `nonce`), reads the username and groups (falling back to userinfo for groups), and creates a session when the user has at least one binding. Success redirects to the `return` path with the session cookie; failure redirects to `/ui/?loginError=<code>` where code is `invalid_state`, `idp_error`, `failed`, `no_access` or `unavailable`.
+         */
+        get: operations["loginCallback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/auth/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Sign-in methods for the login page
+         * @description No authentication. Tells the UI whether SSO sign-in is configured.
+         */
+        get: operations["getAuthConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Start SSO sign-in
+         * @description No authentication. Redirects the browser to the identity provider (authorization code flow with `state`, `nonce` and PKCE S256) and sets a short-lived login cookie that ties the callback to this browser. The pending login is kept for 10 minutes in the shared hot store.
+         */
+        get: operations["login"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * End the SSO session
+         * @description Deletes the session of the cookie and clears the cookie. Needs the `X-FastMock-Request: 1` header. When the provider has an `end_session_endpoint`, `logoutUrl` tells the UI where to send the browser to end the provider session too; it carries `client_id`, `post_logout_redirect_uri` and, when the session holds one, the sign-in's ID token as `id_token_hint`.
+         */
+        post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/__admin/callbacks": {
         parameters: {
             query?: never;
@@ -91,7 +191,10 @@ export interface paths {
         get: operations["listCallbacks"];
         put?: never;
         post?: never;
-        /** Delete all callback jobs, including pending ones */
+        /**
+         * Delete all callback jobs, including pending ones
+         * @description Deletes the jobs of `space`, or of everything the caller may delete.
+         */
         delete: operations["clearCallbacks"];
         options?: never;
         head?: never;
@@ -127,7 +230,10 @@ export interface paths {
         /** List contract test runs */
         get: operations["listContractTests"];
         put?: never;
-        /** Start a contract test run */
+        /**
+         * Start a contract test run
+         * @description The run belongs to the target space (`space` parameter). `secretHeaders` need `contracts:secrets` there; `specRef` reads the global service catalog and needs global `stubs:read`.
+         */
         post: operations["startContractTest"];
         delete?: never;
         options?: never;
@@ -376,7 +482,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Generate stubs from an OpenAPI 3 document */
+        /**
+         * Generate stubs from an OpenAPI 3 document
+         * @description The stubs go to the target space (`space` parameter); only imports into the global area are recorded in the service catalog.
+         */
         post: operations["importOpenApi"];
         delete?: never;
         options?: never;
@@ -435,7 +544,7 @@ export interface paths {
         put?: never;
         /**
          * Convert WireMock mappings into stubs
-         * @description Unsupported parts come back as warnings.
+         * @description Unsupported parts come back as warnings. The stubs go to the target space (`space` parameter).
          */
         post: operations["importWireMock"];
         delete?: never;
@@ -602,7 +711,10 @@ export interface paths {
         get: operations["listRequests"];
         put?: never;
         post?: never;
-        /** Clear the request journal */
+        /**
+         * Clear the request journal
+         * @description Deletes the entries of `space`, or of everything the caller may delete.
+         */
         delete: operations["clearRequests"];
         options?: never;
         head?: never;
@@ -658,7 +770,7 @@ export interface paths {
         put?: never;
         /**
          * Explain why a request does not match
-         * @description Returns the five closest stubs with the matchers that failed.
+         * @description Returns the five closest stubs (of `space`, or of the spaces the caller may read) with the matchers that failed.
          */
         post: operations["nearMisses"];
         delete?: never;
@@ -752,7 +864,10 @@ export interface paths {
         get: operations["listScenarios"];
         put?: never;
         post?: never;
-        /** Reset every scenario to Started */
+        /**
+         * Reset every scenario to Started
+         * @description Resets the scenarios of `space`, or of everything the caller may change.
+         */
         delete: operations["resetScenarios"];
         options?: never;
         head?: never;
@@ -852,6 +967,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/__admin/spaces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Spaces the caller can see
+         * @description Spaces come from the access file (`FASTMOCK_ACCESS_FILE`). A principal holding a permission globally sees every space; a principal bound to spaces sees only those.
+         */
+        get: operations["listSpaces"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/__admin/stubs": {
         parameters: {
             query?: never;
@@ -865,11 +1000,14 @@ export interface paths {
          */
         get: operations["listStubs"];
         put?: never;
-        /** Create a stub */
+        /**
+         * Create a stub
+         * @description The stub goes to the space in its `space` field or the `space` parameter; without either, to the global area (or the caller's only space). Stubs in a space with ownership rules must stay inside them.
+         */
         post: operations["createStub"];
         /**
          * Delete stubs by tag, or all stubs
-         * @description Without `tag` every stub is deleted, which needs the admin role.
+         * @description Without `tag` every stub (of `space`, when given) is deleted, which needs `stubs:purge` (admin role). With `tag`, the tagged stubs of every space the caller may change, or of `space`, are deleted.
          */
         delete: operations["deleteStubs"];
         options?: never;
@@ -891,7 +1029,10 @@ export interface paths {
         get: operations["listStubCounters"];
         put?: never;
         post?: never;
-        /** Reset `times` and response sequence counters */
+        /**
+         * Reset `times` and response sequence counters
+         * @description Resets the counters of the stubs of `space`, or of every stub the caller may change.
+         */
         delete: operations["resetStubCounters"];
         options?: never;
         head?: never;
@@ -926,7 +1067,7 @@ export interface paths {
         put?: never;
         /**
          * Bulk import FastMock stubs
-         * @description With `replaceTag`, stubs carrying that tag are deleted first and the tag is added to every imported stub, in one transaction. At most 10000 stubs.
+         * @description With `replaceTag`, stubs carrying that tag (in the target space) are deleted first and the tag is added to every imported stub, in one transaction. At most 10000 stubs. Every stub goes to the target space (`space` parameter; without it the global area or the caller's only space).
          */
         post: operations["importStubs"];
         delete?: never;
@@ -1000,7 +1141,7 @@ export interface paths {
         get: operations["getStub"];
         /**
          * Create or replace a stub
-         * @description The id in the path wins over an id in the body. The audit log records the changed fields.
+         * @description The id in the path wins over an id in the body. The audit log records the changed fields. An existing stub keeps its space; a new one goes to the space given like for `POST /stubs`.
          */
         put: operations["putStub"];
         post?: never;
@@ -1013,6 +1154,94 @@ export interface paths {
          * @description RFC 7396 JSON merge patch applied to the stored stub: objects merge, `null` removes a field, arrays and scalars replace. The id cannot change.
          */
         patch: operations["patchStub"];
+        trace?: never;
+    };
+    "/__admin/tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List managed tokens
+         * @description Metadata only, newest first, including revoked and expired tokens (kept for 90 days). Lists the tokens for which the caller holds `tokens:read` in every scope; global tokens need it globally, `*` tokens globally or through a `*` grant.
+         */
+        get: operations["listTokens"];
+        put?: never;
+        /**
+         * Create a managed token
+         * @description Returns the token value once. The caller needs `tokens:write` and every permission of the role in each requested scope (globally for `global: true`), so a token never holds more than its creator; a caller bound only to spaces cannot create global tokens. `spaces: ["*"]` grants the role in every space, including spaces added to the access file later: it needs `tokens:write` and every permission of the role globally or through the caller's own `*` grant (being bound to every current space one by one is not enough). Expiry is mandatory; a token created by a managed token expires no later than that token and is revoked with it.
+         */
+        post: operations["createToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/tokens/options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Choices for creating a token
+         * @description The roles the caller may grant and where, and the lifetime limits. Needs `tokens:write` somewhere. A role is grantable in a scope when the caller holds `tokens:write` and every permission of the role there.
+         */
+        get: operations["getTokenOptions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/tokens/self": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The caller's own managed token
+         * @description Any managed token may read its own metadata. Other principals get 404.
+         */
+        get: operations["getOwnToken"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/tokens/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One managed token
+         * @description Needs `tokens:read` in every scope of the token; tokens outside the caller's scopes answer 404.
+         */
+        get: operations["getToken"];
+        put?: never;
+        post?: never;
+        /**
+         * Revoke a managed token
+         * @description Needs `tokens:write` in every scope of the token (for a `*` token, globally or through a `*` grant); a managed token may always revoke itself. Every replica rejects the token within 10 seconds. Tokens created by this token, directly or not, are revoked with it. Revoking a token that is no longer active (revoked or expired) changes nothing and records no audit event.
+         */
+        delete: operations["revokeToken"];
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/__admin/verify": {
@@ -1096,6 +1325,89 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description A binding: of the access file, or the global role of a static token. */
+        AccessBinding: {
+            /**
+             * @description `token:<name>`, `user:<name>` or `group:<name>`.
+             * @example group:payments-dev
+             */
+            subject: string;
+            /** @example editor */
+            role: string;
+            /** @description The role is granted everywhere. */
+            global: boolean;
+            /**
+             * @description Spaces the role is granted in: `["*"]` for every space; empty for a global binding.
+             * @example [
+             *       "payments"
+             *     ]
+             */
+            spaces: string[];
+            /**
+             * @description `accessFile` for a binding of the access file; `adminTokens` for the global role of a
+             *     static token written `name:role:hash` (subject `token:<name>`).
+             */
+            source: components["schemas"]["AccessBindingSource"];
+        };
+        /**
+         * @description Where a binding comes from.
+         * @enum {string}
+         */
+        AccessBindingSource: "accessFile" | "adminTokens";
+        /** @description A built-in role or a custom role of the access file. */
+        AccessRole: {
+            /** @example stub-author */
+            name: string;
+            /** @description `viewer`, `editor` or `admin`; false for custom roles of the access file. */
+            builtin: boolean;
+            /**
+             * @description The role's permissions, with wildcards expanded.
+             * @example [
+             *       "stubs:read",
+             *       "stubs:write"
+             *     ]
+             */
+            permissions: string[];
+        };
+        /** @description A space of the access file. */
+        AccessSpace: {
+            /** @example payments */
+            name: string;
+            /**
+             * @description Data-plane path prefixes the space's stubs must stay under (empty: no restriction).
+             * @example [
+             *       "/payments/"
+             *     ]
+             */
+            pathPrefixes: string[];
+            /**
+             * @description Hosts the space's stubs must match (empty: no restriction).
+             * @example [
+             *       "psp.example.com"
+             *     ]
+             */
+            hosts: string[];
+        };
+        /**
+         * @description The access configuration, read-only: spaces and roles of the access file, its bindings and
+         *     the global roles of static tokens.
+         */
+        AccessView: {
+            /** @description An access file (`FASTMOCK_ACCESS_FILE`) is loaded. */
+            configured: boolean;
+            /** @description OIDC sign-in or OIDC bearer tokens are enabled. */
+            oidc: boolean;
+            /** @description Spaces, sorted by name. */
+            spaces: components["schemas"]["AccessSpace"][];
+            /** @description Built-in roles first (viewer, editor, admin), then the custom roles sorted by name. */
+            roles: components["schemas"]["AccessRole"][];
+            /**
+             * @description Bindings of the access file in file order, then the roles of static tokens written
+             *     `name:role:hash` in entry order. Static tokens written `name::hash` have only their
+             *     access-file bindings.
+             */
+            bindings: components["schemas"]["AccessBinding"][];
+        };
         /** @enum {string} */
         ApiKind: "REST" | "SOAP" | "GRAPHQL" | "EVENT" | "GRPC" | "GENERIC";
         ArtifactImportResult: components["schemas"]["ImportResult"] & {
@@ -1141,12 +1453,23 @@ export interface components {
             /** Format: date-time */
             at: string;
             principal: string;
+            /** @description Role names of the principal's bindings, comma-separated. */
             role: string;
+            /** @description `token`, `apiToken`, `user` or `anonymous`; absent on events recorded before it was kept. */
+            principalKind?: string | null;
+            /** @description Space the change applied to; absent for global changes. */
+            space?: string | null;
             action: string;
             detail: unknown;
         };
         AuditList: {
             events: components["schemas"]["AuditEvent"][];
+        };
+        AuthConfig: {
+            /** @description SSO sign-in is configured (`FASTMOCK_OIDC_ISSUER`). */
+            oidc: boolean;
+            /** @description Sign-in with an admin token is always available. */
+            tokenLogin: boolean;
         };
         AutoImportResult: components["schemas"]["ImportResult"] | components["schemas"]["ImportAsyncApiResponse"];
         BasicAuth: {
@@ -1226,6 +1549,8 @@ export interface components {
             /** Format: date-time */
             sentAt?: string | null;
             traceparent?: string | null;
+            /** @description Space of the stub that scheduled the callback. */
+            space?: string | null;
         };
         CallbackList: {
             callbacks: components["schemas"]["CallbackJob"][];
@@ -1290,6 +1615,8 @@ export interface components {
              *     the caller is a viewer.
              */
             detailsHidden?: boolean;
+            /** @description Space the run was started in; absent in the global area. */
+            space?: string | null;
         };
         ContractRunList: {
             runs: components["schemas"]["ContractRun"][];
@@ -1323,6 +1650,42 @@ export interface components {
             /** Format: int64 */
             count: number;
         };
+        CreateToken: {
+            /**
+             * @description `[A-Za-z0-9._@-]`, at most 128 characters; unique among active tokens and distinct from the static token names.
+             * @example ci-billing
+             */
+            name: string;
+            /**
+             * @description Built-in role (`viewer`, `editor`, `admin`) or a custom role of the access file.
+             * @example editor
+             */
+            role: string;
+            /**
+             * @description Spaces the role is granted in, or `["*"]` (the only entry) for every space of the access file, including spaces added later. Set either `spaces` or `global: true`.
+             * @example [
+             *       "billing"
+             *     ]
+             */
+            spaces?: string[] | null;
+            /** @description Grant the role everywhere. */
+            global?: boolean | null;
+            /**
+             * Format: int32
+             * @description Lifetime in days: 1 to `FASTMOCK_TOKENS_MAX_DAYS` (default 365); when omitted, 90 or `FASTMOCK_TOKENS_MAX_DAYS` when that is lower.
+             * @example 30
+             */
+            expiresInDays?: number | null;
+            /** @example CI pipeline of the billing team */
+            description?: string | null;
+        };
+        CreatedToken: components["schemas"]["TokenInfo"] & {
+            /**
+             * @description The token value (`fm_` and 64 hex digits). Returned only in this response: store it now.
+             * @example fm_3f9c0d5e8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0
+             */
+            token: string;
+        };
         /** @enum {string} */
         DateTruncation: "first second of minute" | "first minute of hour" | "first hour of day" | "first day of month" | "first day of next month" | "last day of month" | "first day of year" | "first day of next year" | "last day of year";
         Delay: {
@@ -1352,6 +1715,8 @@ export interface components {
             /** @example stub not found */
             error: string;
             details: string[];
+            /** @description On 403: the built-in role (for principals holding only global built-in roles) or the permission the request needs. */
+            required?: string | null;
         };
         ExportResult: {
             stubs: components["schemas"]["Stub"][];
@@ -1366,6 +1731,8 @@ export interface components {
             /** Format: int64 */
             size: number;
             updatedAt?: string | null;
+            /** @description Space of the file; absent in the global area. `name` is relative to the space. */
+            space?: string | null;
         };
         FileList: {
             total: number;
@@ -1381,6 +1748,31 @@ export interface components {
             fixedDelayMs?: number | null;
             delay?: null | components["schemas"]["Delay"];
             proxyPassThrough?: boolean;
+        };
+        /** @description A role and the scopes in which the caller may grant it. */
+        GrantableRole: {
+            /** @example editor */
+            name: string;
+            /** @description `viewer`, `editor` or `admin`; false for custom roles of the access file. */
+            builtin: boolean;
+            /**
+             * @example [
+             *       "stubs:read",
+             *       "stubs:write"
+             *     ]
+             */
+            permissions: string[];
+            /** @description The caller may create global tokens with this role. */
+            global: boolean;
+            /**
+             * @description Spaces in which the caller may create tokens with this role.
+             * @example [
+             *       "payments"
+             *     ]
+             */
+            spaces: string[];
+            /** @description The caller may create tokens with this role and `spaces: ["*"]` (every space, including spaces added later): it holds `tokens:write` and every permission of the role globally or through its own `*` grant, and the access file defines at least one space. */
+            allSpaces: boolean;
         };
         GraphQlImport: {
             /** @description GraphQL SDL. A `# microcksId: <name> : <version>` comment names the service. */
@@ -1478,10 +1870,23 @@ export interface components {
             storage: string;
             /** Format: int64 */
             uptimeSeconds: number;
+            /** @description Loaded stubs the caller may read. */
             stubsLoaded: number;
             plugins: components["schemas"]["PluginInfo"][];
             principal: components["schemas"]["Principal"];
             authDisabled: boolean;
+            /**
+             * @description Random id of the answering server process, new on every start. A change tells clients such as the
+             *     operator that an in-memory server lost its stubs.
+             * @example 6f1c0d3a9b8e4f27a1c5d2e3f4a5b6c7
+             */
+            instanceId: string;
+            /**
+             * @description Stored stubs the caller can read that break the rules of their space (outside its path prefixes or
+             *     hosts, or in a space the access file no longer defines), typically after the access file changed.
+             *     They stay stored; fix or delete them.
+             */
+            warnings?: string[];
         };
         JournalEntry: {
             /** Format: int64 */
@@ -1506,6 +1911,8 @@ export interface components {
             /** Format: int64 */
             durationMs: number;
             traceId?: string | null;
+            /** @description Space of the stub that matched; absent for unmatched requests and global stubs. */
+            space?: string | null;
         };
         JournalFilter: {
             source?: string | null;
@@ -1552,6 +1959,12 @@ export interface components {
             medianMs: number;
             /** Format: double */
             sigma: number;
+        };
+        LogoutResponse: {
+            /** @description A session was found and deleted. */
+            loggedOut: boolean;
+            /** @description The provider's end-session URL; the UI navigates there to end the IdP session too. */
+            logoutUrl?: string | null;
         };
         MessageDef: {
             topic: string;
@@ -1661,6 +2074,35 @@ export interface components {
         };
         /** @enum {string} */
         OutputFormat: "FULL" | "IDS";
+        PermissionsView: {
+            /**
+             * @description Permissions granted everywhere.
+             * @example [
+             *       "stubs:read",
+             *       "info:read"
+             *     ]
+             */
+            global: string[];
+            /**
+             * @description Permissions granted only in single spaces, by space; the effective permissions in a space are these plus the global ones. Permissions granted through `spaces: ["*"]` appear under every configured space.
+             * @example {
+             *       "payments": [
+             *         "stubs:write",
+             *         "journal:read"
+             *       ]
+             *     }
+             */
+            spaces: {
+                [key: string]: string[];
+            };
+            /**
+             * @description Permissions granted in every space through `spaces: ["*"]`, including spaces added to the access file later (empty when none).
+             * @example [
+             *       "stubs:read"
+             *     ]
+             */
+            allSpaces: string[];
+        };
         PluginInfo: {
             name: string;
             description: string;
@@ -1681,8 +2123,15 @@ export interface components {
         };
         Principal: {
             name: string;
+            /** @description The highest built-in role whose permissions the principal holds everywhere (`viewer` when it holds less); kept for older clients, decide with `permissions`. */
             role: components["schemas"]["Role"];
+            kind: components["schemas"]["PrincipalKind"];
+            permissions: components["schemas"]["PermissionsView"];
+            /** @description OIDC users: the group names from the identity provider (`kind: user` only). */
+            groups?: string[] | null;
         };
+        /** @enum {string} */
+        PrincipalKind: "token" | "apiToken" | "user" | "anonymous";
         ProxyDef: {
             baseUrl: string;
             additionalHeaders?: {
@@ -1835,6 +2284,8 @@ export interface components {
         ScenarioState: {
             name: string;
             state: string;
+            /** @description Space of the scenario; absent in the global area. */
+            space?: string | null;
         };
         SequenceResult: {
             verified: boolean;
@@ -1932,6 +2383,20 @@ export interface components {
             replace?: boolean;
             dryRun?: boolean;
         };
+        SpaceInfo: {
+            /** @example payments */
+            name: string;
+            description?: string | null;
+            /** @description Data-plane path prefixes the space's stubs must stay under (empty: no restriction). */
+            pathPrefixes: string[];
+            /** @description Hosts the space's stubs must match (empty: no restriction). */
+            hosts: string[];
+            /** @description The caller's effective permissions in the space. */
+            permissions: string[];
+        };
+        SpaceList: {
+            spaces: components["schemas"]["SpaceInfo"][];
+        };
         SseEvent: {
             event?: string | null;
             id?: string | null;
@@ -2002,6 +2467,11 @@ export interface components {
             tags?: string[];
             metadata?: unknown;
             enabled?: boolean;
+            /**
+             * @description Space the stub belongs to (see access control); absent for the global area. Set on create and never
+             *     changed afterwards.
+             */
+            space?: string | null;
             /** Format: date-time */
             updatedAt?: string | null;
         };
@@ -2022,6 +2492,67 @@ export interface components {
             limit?: number | null;
             stubs: components["schemas"]["Stub"][];
         };
+        /** @description Metadata of a managed token; the value is never shown again after creation. */
+        TokenInfo: {
+            /** Format: uuid */
+            id: string;
+            /** @example ci-billing */
+            name: string;
+            /** @example editor */
+            role: string;
+            /** @description Spaces of the token: `["*"]` for every space; empty for a global token. */
+            spaces: string[];
+            global: boolean;
+            description?: string | null;
+            /**
+             * @description Name of the principal that created the token.
+             * @example ops
+             */
+            createdBy: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /**
+             * Format: date-time
+             * @description Last use, recorded at most once per minute.
+             */
+            lastUsedAt?: string | null;
+            /** Format: date-time */
+            revokedAt?: string | null;
+            status: components["schemas"]["TokenStatus"];
+            /**
+             * Format: uuid
+             * @description The managed token that created this one; it expires no later than that token and is revoked
+             *     with it.
+             */
+            parentId?: string | null;
+        };
+        TokenList: {
+            tokens: components["schemas"]["TokenInfo"][];
+        };
+        /** @description What the caller may choose when creating a token. */
+        TokenOptions: {
+            /**
+             * Format: int32
+             * @description Longest lifetime in days (`FASTMOCK_TOKENS_MAX_DAYS`).
+             * @example 365
+             */
+            maxDays: number;
+            /**
+             * Format: int32
+             * @description Lifetime used when `expiresInDays` is omitted.
+             * @example 90
+             */
+            defaultDays: number;
+            /**
+             * @description Every role, built-in first, with the scopes where the caller may grant it (the escalation rule
+             *     applied to the caller).
+             */
+            roles: components["schemas"]["GrantableRole"][];
+        };
+        /** @enum {string} */
+        TokenStatus: "active" | "expired" | "revoked";
         /**
          * @description How Kafka topics are named: after the channel (default) or as Microcks does,
          *     `<service name without spaces and dashes>-<version>-<channel with / replaced by ->`.
@@ -2128,6 +2659,44 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getAccess: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The access configuration */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccessView"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Requires access:read */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     listAsyncMocks: {
         parameters: {
             query?: {
@@ -2150,6 +2719,15 @@ export interface operations {
             };
             /** @description Missing or invalid token */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2182,6 +2760,15 @@ export interface operations {
             };
             /** @description Missing or invalid token */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2423,6 +3010,164 @@ export interface operations {
             };
         };
     };
+    loginCallback: {
+        parameters: {
+            query?: {
+                code?: string;
+                state?: string;
+                error?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirect to the UI */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description SSO is not configured */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getAuthConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sign-in methods */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthConfig"];
+                };
+            };
+        };
+    };
+    login: {
+        parameters: {
+            query?: {
+                /** @description Where the browser goes after sign-in: a relative path under `/ui/` (default `/ui/`). */
+                return?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirect to the identity provider */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `return` is not a relative path under /ui/ */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description SSO is not configured */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Too many sign-in attempts on this replica */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The identity provider has not been discovered yet, or the session store is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Must be `1` */
+                "X-FastMock-Request": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Logged out */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogoutResponse"];
+                };
+            };
+            /** @description Missing X-FastMock-Request header or origin not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description SSO is not configured */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Session store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     listCallbacks: {
         parameters: {
             query?: {
@@ -2431,6 +3176,8 @@ export interface operations {
                 /** @description pending, sent or failed */
                 status?: string;
                 limit?: number;
+                /** @description Only jobs of this space. */
+                space?: string;
             };
             header?: never;
             path?: never;
@@ -2465,11 +3212,35 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     clearCallbacks: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2503,6 +3274,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     getChaos: {
@@ -2525,6 +3305,15 @@ export interface operations {
             };
             /** @description Missing or invalid token */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2639,6 +3428,8 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: number;
+                /** @description Only runs of this space. */
+                space?: string;
             };
             header?: never;
             path?: never;
@@ -2664,11 +3455,35 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     startContractTest: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2706,7 +3521,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description The token lacks the editor role, or the admin role when secretHeaders is set */
+            /** @description The token lacks the editor role, or the global permission contracts:secrets (admin role bound globally) when secretHeaders is set */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -2758,6 +3573,15 @@ export interface operations {
             };
             /** @description Missing or invalid token */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2828,6 +3652,8 @@ export interface operations {
         parameters: {
             query?: {
                 tag?: string;
+                /** @description Only stubs of this space. */
+                space?: string;
             };
             header?: never;
             path?: never;
@@ -2853,11 +3679,35 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     listFiles: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2882,11 +3732,35 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     getFile: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path: {
                 /** @description File name, may contain `/` */
@@ -2923,6 +3797,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description No such file */
             404: {
                 headers: {
@@ -2936,7 +3819,13 @@ export interface operations {
     };
     putFile: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path: {
                 /** @description File name: [A-Za-z0-9._-/], at most 512 bytes, no `..` */
@@ -2995,6 +3884,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Too many files */
             409: {
                 headers: {
@@ -3015,7 +3913,13 @@ export interface operations {
     };
     deleteFile: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path: {
                 /** @description File name */
@@ -3090,6 +3994,15 @@ export interface operations {
             };
             /** @description Missing or invalid token */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3228,6 +4141,14 @@ export interface operations {
                 dryRun?: boolean;
                 /** @description Force a format instead of detecting it. */
                 format?: string;
+                /** @description Space the stubs go to (OpenAPI, WireMock, MockServer, Postman and HAR only). */
+                space?: string;
+                /**
+                 * @description `request.host` for every imported stub that has none (OpenAPI, WireMock, MockServer, Postman and HAR
+                 *     only). For a space that owns hosts it must be one of them; it defaults to the space's only host and
+                 *     is required when the space owns several.
+                 */
+                host?: string;
             };
             header?: never;
             path?: never;
@@ -3274,6 +4195,15 @@ export interface operations {
             };
             /** @description Requires the editor role */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3420,7 +4350,18 @@ export interface operations {
     };
     importHar: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space the stubs go to. Without it, the global area, or the caller's only space when it is bound to
+                 *     spaces.
+                 */
+                space?: string;
+                /**
+                 * @description `request.host` for every imported stub that has none. For a space that owns hosts it must be one of
+                 *     them; it defaults to the space's only host and is required when the space owns several.
+                 */
+                host?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3489,6 +4430,15 @@ export interface operations {
             };
             /** @description Requires the editor role */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3581,6 +4531,13 @@ export interface operations {
                 replace?: boolean;
                 /** @description Convert and validate only; nothing is stored. */
                 dryRun?: boolean;
+                /** @description Space the stubs go to. */
+                space?: string;
+                /**
+                 * @description `request.host` for every imported stub that has none. For a space that owns hosts it must be one
+                 *     of them; it defaults to the space's only host and is required when the space owns several.
+                 */
+                host?: string;
             };
             header?: never;
             path?: never;
@@ -3648,6 +4605,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Body too large */
             413: {
                 headers: {
@@ -3661,7 +4627,18 @@ export interface operations {
     };
     importOpenApi: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space the stubs go to. Without it, the global area, or the caller's only space when it is bound to
+                 *     spaces.
+                 */
+                space?: string;
+                /**
+                 * @description `request.host` for every imported stub that has none. For a space that owns hosts it must be one of
+                 *     them; it defaults to the space's only host and is required when the space owns several.
+                 */
+                host?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3714,6 +4691,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Body too large */
             413: {
                 headers: {
@@ -3727,7 +4713,18 @@ export interface operations {
     };
     importPostman: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space the stubs go to. Without it, the global area, or the caller's only space when it is bound to
+                 *     spaces.
+                 */
+                space?: string;
+                /**
+                 * @description `request.host` for every imported stub that has none. For a space that owns hosts it must be one of
+                 *     them; it defaults to the space's only host and is required when the space owns several.
+                 */
+                host?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3813,6 +4810,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Body too large */
             413: {
                 headers: {
@@ -3882,7 +4888,18 @@ export interface operations {
     };
     importWireMock: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space the stubs go to. Without it, the global area, or the caller's only space when it is bound to
+                 *     spaces.
+                 */
+                space?: string;
+                /**
+                 * @description `request.host` for every imported stub that has none. For a space that owns hosts it must be one of
+                 *     them; it defaults to the space's only host and is required when the space owns several.
+                 */
+                host?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3941,6 +4958,15 @@ export interface operations {
             };
             /** @description Requires the editor role */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4043,11 +5069,26 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     getKv: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path: {
                 /** @description Key, 1..512 bytes */
@@ -4084,6 +5125,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description No such key */
             404: {
                 headers: {
@@ -4097,7 +5147,13 @@ export interface operations {
     };
     putKv: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path: {
                 /** @description Key, 1..512 bytes */
@@ -4145,11 +5201,26 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     deleteKv: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path: {
                 /** @description Key, 1..512 bytes */
@@ -4229,6 +5300,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     recordingStatus: {
@@ -4251,6 +5331,15 @@ export interface operations {
             };
             /** @description Missing or invalid token */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4431,6 +5520,8 @@ export interface operations {
                 since?: string;
                 limit?: number;
                 offset?: number;
+                /** @description Only entries of this space (matched by its stubs). */
+                space?: string;
             };
             header?: never;
             path?: never;
@@ -4465,11 +5556,35 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     clearRequests: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4503,6 +5618,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     countRequests: {
@@ -4519,6 +5643,8 @@ export interface operations {
                 since?: string;
                 limit?: number;
                 offset?: number;
+                /** @description Only entries of this space (matched by its stubs). */
+                space?: string;
             };
             header?: never;
             path?: never;
@@ -4544,6 +5670,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Too many journal scans are running, or the scan exceeded FASTMOCK_JOURNAL_SCAN_TIMEOUT */
             503: {
                 headers: {
@@ -4557,7 +5701,13 @@ export interface operations {
     };
     countRequestsByFilter: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4595,6 +5745,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Too many journal scans are running, or the scan exceeded FASTMOCK_JOURNAL_SCAN_TIMEOUT */
             503: {
                 headers: {
@@ -4615,6 +5783,8 @@ export interface operations {
                 since?: string;
                 /** @description Maximum number of entries to return (default 100). */
                 limit?: number;
+                /** @description Only entries of this space. */
+                space?: string;
             };
             header?: never;
             path?: never;
@@ -4667,6 +5837,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The scan exceeds FASTMOCK_JOURNAL_SCAN_MAX_WORK */
             422: {
                 headers: {
@@ -4689,7 +5877,13 @@ export interface operations {
     };
     nearMisses: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4736,6 +5930,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description The request to explain exceeds 1 MiB */
             422: {
                 headers: {
@@ -4765,6 +5977,8 @@ export interface operations {
                 since?: string;
                 /** @description Maximum number of entries to return (default 100). */
                 limit?: number;
+                /** @description Only entries of this space. */
+                space?: string;
             };
             header?: never;
             path?: never;
@@ -4810,6 +6024,15 @@ export interface operations {
             };
             /** @description Requires the editor role */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4878,6 +6101,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     getRequest: {
@@ -4912,6 +6144,15 @@ export interface operations {
             };
             /** @description Missing or invalid token */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4970,7 +6211,13 @@ export interface operations {
     };
     listScenarios: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4995,11 +6242,35 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     resetScenarios: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5033,11 +6304,26 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     setScenarioState: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path: {
                 /** @description Scenario name */
@@ -5085,6 +6371,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     listServices: {
@@ -5121,6 +6416,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     getService: {
@@ -5146,6 +6450,15 @@ export interface operations {
             };
             /** @description Missing or invalid token */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5244,6 +6557,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Unknown service or no stored document */
             404: {
                 headers: {
@@ -5275,6 +6597,15 @@ export interface operations {
             };
             /** @description Missing or invalid token */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5347,10 +6678,50 @@ export interface operations {
             };
         };
     };
+    listSpaces: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Spaces with the caller's permissions in each */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpaceList"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     listStubs: {
         parameters: {
             query?: {
                 tag?: string;
+                /** @description Only stubs of this space. */
+                space?: string;
                 q?: string;
                 enabled?: boolean;
                 limit?: number;
@@ -5389,11 +6760,35 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     createStub: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5455,6 +6850,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description A stub with this id exists */
             409: {
                 headers: {
@@ -5479,6 +6883,8 @@ export interface operations {
         parameters: {
             query?: {
                 tag?: string;
+                /** @description Only stubs of this space. */
+                space?: string;
             };
             header?: never;
             path?: never;
@@ -5513,11 +6919,26 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     listStubCounters: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5542,11 +6963,35 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     resetStubCounters: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5585,11 +7030,26 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     findStubsByMetadata: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5633,11 +7093,40 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     importStubs: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space the stubs go to. Without it, the global area, or the caller's only space when it is bound to
+                 *     spaces.
+                 */
+                space?: string;
+                /**
+                 * @description `request.host` for every imported stub that has none. For a space that owns hosts it must be one of
+                 *     them; it defaults to the space's only host and is required when the space owns several.
+                 */
+                host?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5684,6 +7173,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Body too large */
             413: {
                 headers: {
@@ -5697,7 +7195,13 @@ export interface operations {
     };
     removeStubsByMetadata: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5750,6 +7254,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     listUnusedStubs: {
@@ -5757,6 +7270,8 @@ export interface operations {
             query?: {
                 /** @description Only journal entries at or after this instant (RFC 3339) count as hits. */
                 since?: string;
+                /** @description Only stubs of this space. */
+                space?: string;
             };
             header?: never;
             path?: never;
@@ -5775,6 +7290,24 @@ export interface operations {
             };
             /** @description Missing or invalid token */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5824,6 +7357,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     getStub: {
@@ -5856,6 +7398,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description No such stub */
             404: {
                 headers: {
@@ -5869,7 +7420,13 @@ export interface operations {
     };
     putStub: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path: {
                 /** @description Stub id */
@@ -5912,6 +7469,15 @@ export interface operations {
             };
             /** @description Requires the editor role */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6049,9 +7615,339 @@ export interface operations {
             };
         };
     };
-    verify: {
+    listTokens: {
+        parameters: {
+            query?: {
+                /** @description Only tokens granted in this space; tokens with `spaces: ["*"]` belong to every space. */
+                space?: string;
+                /** @description `active`, `expired` or `revoked`. */
+                status?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tokens */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenList"];
+                };
+            };
+            /** @description Invalid status */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Requires tokens:read */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    createToken: {
         parameters: {
             query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateToken"];
+            };
+        };
+        responses: {
+            /** @description Created; `token` is shown only here */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatedToken"];
+                };
+            };
+            /** @description Invalid name, role, scope or lifetime */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The caller cannot grant this role in these scopes */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description An active token or a static token has this name, or authentication is disabled (`FASTMOCK_AUTH_DISABLED=true`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getTokenOptions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Options */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenOptions"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Requires tokens:write */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getOwnToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Token */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenInfo"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The caller is not a managed token */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Token id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Token */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenInfo"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Requires tokens:read */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    revokeToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Token id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The token after revocation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenInfo"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Requires tokens:write in every scope of the token */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Authentication is disabled (`FASTMOCK_AUTH_DISABLED=true`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    verify: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -6098,6 +7994,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Expectation not met (`VerifyResult`), or the scan exceeds FASTMOCK_JOURNAL_SCAN_MAX_WORK (`ErrorBody`) */
             422: {
                 headers: {
@@ -6120,7 +8034,13 @@ export interface operations {
     };
     verifySequence: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -6176,6 +8096,24 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown space, or a space the caller cannot see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Sequence not found (`SequenceResult`), or the scan exceeds FASTMOCK_JOURNAL_SCAN_MAX_WORK (`ErrorBody`) */
             422: {
                 headers: {
@@ -6216,6 +8154,15 @@ export interface operations {
             };
             /** @description Missing or invalid token */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

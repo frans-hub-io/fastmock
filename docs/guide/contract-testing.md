@@ -19,7 +19,8 @@ when the service breaks its contract.
 
 The examples use `FASTMOCK_TOKEN` for an editor or admin token and the admin API on `localhost:9090`. Listing runs
 and reading their verdicts needs `viewer`; request and response details need `editor`; starting and deleting runs
-needs `editor`, and starting a run with `secretHeaders` needs `admin`.
+needs `editor`, and starting a run with `secretHeaders` needs `admin` bound globally (the global permission
+`contracts:secrets`).
 
 ## Starting a run
 
@@ -48,7 +49,7 @@ The answer is `202 Accepted`; the run continues in the background.
 | `targetUrl` | URL | required for OpenAPI | Base URL of the service under test. Operation paths are appended to its path: `https://h/api/v3` + `/pet/{petId}`. |
 | `operations` | array of strings | all | Only these operations: OpenAPI `operationId` or `"METHOD /path"` (case-insensitive method); AsyncAPI operation id, mock name or topic. At most 200. |
 | `headers` | map | none | Headers added to every request (they replace generated header parameters of the same name). Routing and framing headers are refused, see [below](#headers-that-are-never-sent). |
-| `secretHeaders` | map header -> secret name | none | Headers whose values are server-side secrets bound to the target host; needs the `admin` role, see [Secrets](#secrets-and-redaction). |
+| `secretHeaders` | map header -> secret name | none | Headers whose values are server-side secrets bound to the target host; needs the global permission `contracts:secrets` (the `admin` role bound globally), see [Secrets](#secrets-and-redaction). |
 | `timeoutMs` | integer | `5000` | Per request, for connecting, sending and reading the response, 1..60000. |
 | `messageCount` | integer | `1` | AsyncAPI: messages to consume per operation, 1..100. |
 | `waitMs` | integer | `10000` | AsyncAPI: how long to wait for those messages, 1..120000. |
@@ -258,14 +259,19 @@ Rules:
   bound answers `400`.
 - Contract secrets are separate from stub secrets. A name in `FASTMOCK_STUB_SECRETS` (the HMAC keys of callbacks)
   can never be used in a contract test, and FastMock refuses to start when a name appears in both lists.
-- Starting a run with `secretHeaders` needs the `admin` role. Editors can still run contract tests without them.
+- Starting a run with `secretHeaders` needs the permission `contracts:secrets`, which only global bindings grant:
+  the built-in `admin` role bound globally has it, and a role bound only in spaces never does (an `admin` binding
+  in a space is accepted but lacks it). A custom role that lists `contracts:secrets` by name must be bound with
+  `global: true`; the access file refuses it in a space binding
+  ([Access control: bindings](../operations/access-control.md#bindings)). Editors and space-bound principals can
+  still run contract tests without secret headers.
 - A secret value must be at least 8 bytes long. Secret header values are never stored: they show as `***` in the run.
   Once a run has used a secret, its exact value is also masked wherever it appears in stored data of this replica:
   response excerpts, error texts, and the request journal (headers, query strings, bodies). A service that echoes
   the credential back therefore does not reveal it.
 - Anyone who can start a run with the secret can send it to every bound host. Bind a secret only to the service it
   belongs to, never to a host that routes back to FastMock or to a host that an editor controls, and keep
-  `secretHeaders` for admins.
+  `contracts:secrets` for global admins.
 
 Other stored data goes through the same redaction as the request journal (`FASTMOCK_REDACT_HEADERS`,
 `FASTMOCK_REDACT_JSON_KEYS`): sensitive headers, query parameters and JSON fields in request bodies, response
@@ -357,6 +363,6 @@ after it started (its replica stopped before it finished) is marked `error`.
 |---|---|
 | `202` | The run started. |
 | `400` | Both or neither of `spec` and `specRef`; the document is not OpenAPI 3.x or AsyncAPI 2.x/3.0; no operation selected; more than 200 requests; `targetUrl` missing (OpenAPI), invalid, denied by the egress policy or pointing at FastMock itself; a secret that is not in `FASTMOCK_CONTRACT_SECRETS`, has no value, is shorter than 8 bytes or is not bound to the target host; `secretHeaders` without an HTTP `targetUrl`; an invalid header or a [header that is never sent](#headers-that-are-never-sent); a Kafka topic outside `FASTMOCK_KAFKA_CONTRACT_TOPICS`; `timeoutMs`, `messageCount` or `waitMs` out of range. |
-| `401` / `403` | Missing token, a viewer token on `POST` or `DELETE`, or a non-admin token with `secretHeaders`. |
+| `401` / `403` | Missing token, a viewer token on `POST` or `DELETE`, or `secretHeaders` from a principal without the global permission `contracts:secrets`. |
 | `404` | Unknown `specRef` or run id. |
 | `429` | 4 runs are already running on this replica. |

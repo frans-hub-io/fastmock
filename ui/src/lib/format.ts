@@ -12,9 +12,11 @@ export function formatRelative(at: string | number | Date, now: number = Date.no
   const suffix = diff >= 0 ? 'ago' : 'from now';
   if (abs < 5) return 'just now';
   if (abs < 60) return `${abs}s ${suffix}`;
-  if (abs < 3600) return `${Math.floor(abs / 60)}m ${suffix}`;
-  if (abs < 86400) return `${Math.floor(abs / 3600)}h ${suffix}`;
-  return `${Math.floor(abs / 86400)}d ${suffix}`;
+  const minutes = Math.round(abs / 60);
+  if (minutes < 60) return `${minutes}m ${suffix}`;
+  const hours = Math.round(abs / 3600);
+  if (hours < 24) return `${hours}h ${suffix}`;
+  return `${Math.round(abs / 86400)}d ${suffix}`;
 }
 
 export function formatDuration(seconds: number): string {

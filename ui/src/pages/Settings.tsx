@@ -21,7 +21,7 @@ function modeOf(d: Delay | null | undefined): DelayMode {
 }
 
 function SettingsInner() {
-  const canEdit = useCan('editor');
+  const canEdit = useCan()('chaos:write');
   const q = useQuery({ queryKey: ['settings'], queryFn: () => unwrap(client.GET('/__admin/settings')) });
   const [defaultDelay, setDefaultDelay] = useState<number | ''>('');
   const [mode, setMode] = useState<DelayMode>('none');

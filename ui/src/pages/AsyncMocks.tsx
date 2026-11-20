@@ -12,7 +12,8 @@ import { EmptyState, ErrorState, FeatureGate, LoadingState } from '../components
 import { pretty } from '../lib/format';
 
 function AsyncInner() {
-  const canEdit = useCan('editor');
+  const can = useCan();
+  const canEdit = can('stubs:write', null);
   const [tag, setTag] = useState('');
   const [edit, setEdit] = useState<AsyncMock | null>(null);
   const [text, setText] = useState('');

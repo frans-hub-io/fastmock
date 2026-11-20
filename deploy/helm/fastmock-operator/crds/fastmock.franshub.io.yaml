@@ -30,6 +30,26 @@ spec:
         properties:
           spec:
             properties:
+              access:
+                description: 'Access control for the server: a ConfigMap with its access file.'
+                nullable: true
+                properties:
+                  configMapRef:
+                    description: The access file (custom roles, spaces, bindings), mounted read-only and passed as `FASTMOCK_ACCESS_FILE`.
+                    properties:
+                      key:
+                        default: access.yaml
+                        description: Key holding the access file.
+                        type: string
+                      name:
+                        description: 'ConfigMap in the namespace of the FastMock; it must carry the label `fastmock.franshub.io/allow-mount: "true"`.'
+                        type: string
+                    required:
+                    - name
+                    type: object
+                required:
+                - configMapRef
+                type: object
               adminTokensSecret:
                 nullable: true
                 properties:
@@ -53,6 +73,79 @@ spec:
                 items:
                   type: string
                 type: array
+              oidc:
+                description: SSO sign-in (OIDC) for the UI and bearer JWTs for the admin API.
+                nullable: true
+                properties:
+                  allowedHosts:
+                    description: Hosts besides the issuer's that the discovery document may point to.
+                    items:
+                      type: string
+                    type: array
+                  apiAudience:
+                    description: Enables bearer JWTs on the admin API for this audience.
+                    nullable: true
+                    type: string
+                  caConfigMapRef:
+                    description: PEM bundle of extra CAs for the IdP connections, passed as `FASTMOCK_OIDC_CA_FILE`.
+                    nullable: true
+                    properties:
+                      key:
+                        default: ca.crt
+                        type: string
+                      name:
+                        description: 'ConfigMap in the namespace of the FastMock; it must carry the label `fastmock.franshub.io/allow-mount: "true"`.'
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  clientId:
+                    type: string
+                  clientSecretRef:
+                    description: The client secret, mounted read-only and passed as `FASTMOCK_OIDC_CLIENT_SECRET_FILE`.
+                    properties:
+                      key:
+                        default: client-secret
+                        type: string
+                      name:
+                        description: 'Secret in the namespace of the FastMock; it must carry the label `fastmock.franshub.io/allow-mount: "true"`.'
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  groupsClaim:
+                    description: Default `groups`; dotted paths such as `realm_access.roles` work.
+                    nullable: true
+                    type: string
+                  issuer:
+                    description: Issuer URL (https); discovery from `/.well-known/openid-configuration`.
+                    type: string
+                  redirectUrl:
+                    description: Public admin URL followed by `/__admin/auth/callback`.
+                    type: string
+                  scopes:
+                    description: Default `openid profile email`.
+                    items:
+                      type: string
+                    type: array
+                  sessionIdle:
+                    description: Idle timeout, default `1h`.
+                    nullable: true
+                    type: string
+                  sessionTtl:
+                    description: Absolute session lifetime, default `8h`.
+                    nullable: true
+                    type: string
+                  usernameClaim:
+                    description: Default `preferred_username`.
+                    nullable: true
+                    type: string
+                required:
+                - clientId
+                - clientSecretRef
+                - issuer
+                - redirectUrl
+                type: object
               otelEndpoint:
                 nullable: true
                 type: string
@@ -238,6 +331,11 @@ spec:
                 required:
                 - name
                 type: object
+              space:
+                description: Space of the FastMock server the stubs go to; it must be defined in the server's access file. With the operator policy `spaceFromNamespace` the space is the MockApi namespace.
+                nullable: true
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+                type: string
               stubs:
                 default: []
                 items:
@@ -307,6 +405,21 @@ spec:
                 default: 0
                 format: int64
                 type: integer
+              replacedInstance:
+                description: |-
+                  Instance id of the in-memory server process a restart replaces. While it is set, `Synced` stays
+                  `False` with reason `ServerRestarting` until the stubs are confirmed on the new instance.
+                nullable: true
+                type: string
+              serverInstance:
+                description: |-
+                  Instance id of the in-memory server process the stubs were imported into. A server that reports
+                  another id has restarted and lost them, so they are imported again.
+                type: string
+              space:
+                description: Space the stubs were applied to; absent for the global area.
+                nullable: true
+                type: string
               warnings:
                 default: []
                 items:

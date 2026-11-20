@@ -46,26 +46,15 @@ export interface CodeEditorProps {
   testId?: string;
 }
 
-const lightHighlight = HighlightStyle.define([
-  { tag: tags.propertyName, color: '#364fc7' },
-  { tag: tags.string, color: '#2b8a3e' },
-  { tag: [tags.number, tags.bool, tags.null], color: '#c2255c' },
-  { tag: [tags.tagName], color: '#1864ab' },
-  { tag: [tags.attributeName], color: '#e8590c' },
-  { tag: tags.comment, color: '#868e96', fontStyle: 'italic' },
-  { tag: tags.keyword, color: '#862e9c' },
-  { tag: [tags.punctuation, tags.bracket], color: '#495057' },
-]);
-
-const darkHighlight = HighlightStyle.define([
-  { tag: tags.propertyName, color: '#91a7ff' },
-  { tag: tags.string, color: '#8ce99a' },
-  { tag: [tags.number, tags.bool, tags.null], color: '#faa2c1' },
-  { tag: [tags.tagName], color: '#74c0fc' },
-  { tag: [tags.attributeName], color: '#ffc078' },
-  { tag: tags.comment, color: '#909296', fontStyle: 'italic' },
-  { tag: tags.keyword, color: '#e599f7' },
-  { tag: [tags.punctuation, tags.bracket], color: '#c1c2c5' },
+// Colors from the brand code tokens, which follow the color scheme.
+const codeHighlight = HighlightStyle.define([
+  { tag: [tags.propertyName, tags.tagName], color: 'var(--fh-code-key)' },
+  { tag: tags.string, color: 'var(--fh-code-string)' },
+  { tag: [tags.number, tags.bool, tags.null], color: 'var(--fh-code-number)' },
+  { tag: [tags.attributeName, tags.keyword], color: 'var(--fh-code-keyword)' },
+  { tag: tags.comment, color: 'var(--fh-code-comment)', fontStyle: 'italic' },
+  { tag: [tags.punctuation, tags.bracket], color: 'var(--fh-color-text-muted)' },
+  { tag: tags.invalid, color: 'var(--fh-code-error)' },
 ]);
 
 function baseTheme(dark: boolean): Extension {
@@ -73,7 +62,7 @@ function baseTheme(dark: boolean): Extension {
     {
       '&': {
         backgroundColor: 'var(--fm-code-bg)',
-        color: 'var(--mantine-color-text)',
+        color: 'var(--fh-code-fg)',
       },
       '.cm-scroller': { fontFamily: 'var(--mantine-font-family-monospace)', lineHeight: '1.5' },
       '.cm-content': { caretColor: 'var(--mantine-color-text)' },
@@ -85,7 +74,7 @@ function baseTheme(dark: boolean): Extension {
       '.cm-activeLine': { backgroundColor: dark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.035)' },
       '.cm-activeLineGutter': { backgroundColor: dark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)' },
       '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': {
-        backgroundColor: dark ? 'rgba(116,143,252,0.35)' : 'rgba(76,110,245,0.22)',
+        backgroundColor: 'var(--fh-color-selection)',
       },
       '.cm-tooltip': {
         backgroundColor: 'var(--mantine-color-body)',
@@ -165,7 +154,7 @@ export function CodeEditor({
       EditorView.lineWrapping,
       keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap, ...lintKeymap]),
       languageExtension(language),
-      themeComp.current.of([baseTheme(dark), syntaxHighlighting(dark ? darkHighlight : lightHighlight)]),
+      themeComp.current.of([baseTheme(dark), syntaxHighlighting(codeHighlight)]),
       roComp.current.of([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]),
       EditorView.theme({
         '&': { minHeight: `${minHeight}px`, maxHeight: `${maxHeight}px` },
@@ -217,7 +206,7 @@ export function CodeEditor({
 
   useEffect(() => {
     view.current?.dispatch({
-      effects: themeComp.current.reconfigure([baseTheme(dark), syntaxHighlighting(dark ? darkHighlight : lightHighlight)]),
+      effects: themeComp.current.reconfigure([baseTheme(dark), syntaxHighlighting(codeHighlight)]),
     });
   }, [dark]);
 

@@ -51,6 +51,7 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| concat!("fastmock:", env!("CARGO_PKG_VERSION")).into()),
             &std::env::var("FASTMOCK_OPERATOR_ALLOWED_IMAGE_PREFIXES").unwrap_or_default(),
         ),
+        space_from_namespace: policy::bool_env("FASTMOCK_OPERATOR_SPACE_FROM_NAMESPACE")?,
         failures: std::sync::Mutex::new(std::collections::HashMap::new()),
     });
     let namespace = std::env::var("FASTMOCK_OPERATOR_NAMESPACE")
@@ -78,6 +79,7 @@ async fn main() -> anyhow::Result<()> {
         %listen,
         default_image = %ctx.images.default_image,
         allowed_image_prefixes = ?ctx.images.allowed_prefixes,
+        space_from_namespace = ctx.space_from_namespace,
         "fastmock-operator started"
     );
     controller::run(ctx, namespace).await;
@@ -109,5 +111,19 @@ mod tests {
         let storage = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
             ["properties"]["storage"];
         assert_eq!(storage["default"]["mode"], "memory");
+        let access = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+            ["properties"]["access"]["properties"]["configMapRef"];
+        assert_eq!(access["properties"]["key"]["default"], "access.yaml");
+        assert_eq!(access["required"], serde_json::json!(["name"]));
+        let oidc = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]
+            ["oidc"];
+        assert_eq!(
+            oidc["required"],
+            serde_json::json!(["clientId", "clientSecretRef", "issuer", "redirectUrl"])
+        );
+        assert_eq!(
+            oidc["properties"]["clientSecretRef"]["properties"]["key"]["default"],
+            "client-secret"
+        );
     }
 }

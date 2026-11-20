@@ -16,7 +16,7 @@ const KIND_COLOR: Record<string, string> = { REST: 'blue', SOAP: 'orange', GRAPH
 const KINDS = ['REST', 'SOAP', 'GRAPHQL', 'EVENT', 'GRPC', 'GENERIC'];
 
 function ServiceDetail({ id }: { id: string }) {
-  const canEdit = useCan('editor');
+  const canEdit = useCan()('stubs:write', null);
   const navigate = useNavigate();
   const q = useQuery({ queryKey: ['services', id], queryFn: () => unwrap(client.GET('/__admin/services/{id}', { params: { path: { id } } })) });
   const spec = useQuery({

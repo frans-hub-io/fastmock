@@ -8,6 +8,7 @@ const DENIED_ENV: &[&str] = &[
     "FASTMOCK_AUTH_DISABLED",
     "FASTMOCK_ADMIN_TOKENS",
     "FASTMOCK_ADMIN_TOKENS_FILE",
+    "FASTMOCK_ACCESS_FILE",
     "FASTMOCK_SECRETS_DIR",
     "FASTMOCK_CALLBACK_DENIED_CIDRS",
     "FASTMOCK_CALLBACK_ALLOWED_HOSTS",
@@ -20,7 +21,7 @@ const DENIED_ENV: &[&str] = &[
     "FASTMOCK_ADMIN_LISTEN",
 ];
 
-const DENIED_ENV_PREFIXES: &[&str] = &["FASTMOCK_SECRET_", "LD_"];
+const DENIED_ENV_PREFIXES: &[&str] = &["FASTMOCK_SECRET_", "FASTMOCK_OIDC_", "LD_"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImagePolicy {
@@ -117,6 +118,12 @@ pub fn referenced_secrets(spec: &FastMockSpec) -> Vec<(String, String)> {
     if let Some(r) = &spec.admin_tokens_secret {
         out.push(("adminTokensSecret".to_string(), r.name.clone()));
     }
+    if let Some(o) = &spec.oidc {
+        out.push((
+            "oidc.clientSecretRef".to_string(),
+            o.client_secret_ref.name.clone(),
+        ));
+    }
     for s in &spec.image_pull_secrets {
         out.push(("imagePullSecrets".to_string(), s.clone()));
     }
@@ -125,6 +132,20 @@ pub fn referenced_secrets(spec: &FastMockSpec) -> Vec<(String, String)> {
     out
 }
 
+/// Reads a boolean operator setting (`true`/`false`, default false).
+pub fn bool_env(name: &str) -> anyhow::Result<bool> {
+    parse_bool(name, std::env::var(name).ok().as_deref())
+}
+
+fn parse_bool(name: &str, v: Option<&str>) -> anyhow::Result<bool> {
+    match v.map(str::trim) {
+        None | Some("") | Some("false") => Ok(false),
+        Some("true") => Ok(true),
+        Some(other) => anyhow::bail!("{name} must be true or false, got {other}"),
+    }
+}
+
+/// Mount opt-in of a referenced Secret or ConfigMap: the label `fastmock.franshub.io/allow-mount: "true"`.
 pub fn secret_allowed(labels: Option<&BTreeMap<String, String>>) -> bool {
     labels
         .and_then(|l| l.get(ALLOW_MOUNT_LABEL))
@@ -202,6 +223,11 @@ mod tests {
             ("LD_PRELOAD".to_string(), "/x.so".to_string()),
             ("FASTMOCK_MAX_DELAY".to_string(), "5s".to_string()),
             ("FASTMOCK_PLUGIN_RCS_URL".to_string(), "x".to_string()),
+            (
+                "Fastmock_Access_File".to_string(),
+                "/tmp/a.yaml".to_string(),
+            ),
+            ("FASTMOCK_OIDC_ISSUER".to_string(), "https://x".to_string()),
             ("RUST_LOG".to_string(), "debug".to_string()),
         ]);
         let denied = denied_env_keys(&env);
@@ -209,8 +235,10 @@ mod tests {
             denied,
             vec![
                 "FASTMOCK_AUTH_DISABLED",
+                "FASTMOCK_OIDC_ISSUER",
                 "FASTMOCK_SECRET_DB",
                 "FASTMOCK_VALKEY_PREFIX",
+                "Fastmock_Access_File",
                 "LD_PRELOAD",
                 "fastmock_admin_tokens"
             ]
@@ -238,13 +266,31 @@ mod tests {
                 key: "tokens".into(),
             }),
             image_pull_secrets: vec!["pull".into()],
+            oidc: Some(crate::crd::OidcSpec {
+                client_secret_ref: crate::crd::OidcSecretRef {
+                    name: "sso".into(),
+                    key: "client-secret".into(),
+                },
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let names: Vec<String> = referenced_secrets(&spec)
             .into_iter()
             .map(|(_, n)| n)
             .collect();
-        assert_eq!(names, vec!["payments-secrets", "db", "tokens", "pull"]);
+        assert_eq!(
+            names,
+            vec!["payments-secrets", "db", "tokens", "sso", "pull"]
+        );
+    }
+
+    #[test]
+    fn booleans() {
+        assert!(!parse_bool("X", None).unwrap());
+        assert!(!parse_bool("X", Some("false")).unwrap());
+        assert!(parse_bool("X", Some("true")).unwrap());
+        assert!(parse_bool("X", Some("yes")).is_err());
     }
 
     #[test]

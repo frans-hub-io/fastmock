@@ -115,6 +115,7 @@ nav:
       - operations/helm.md
       - operations/operator.md
       - operations/security.md
+      - operations/access-control.md
       - operations/database.md
       - operations/multi-cluster.md
       - operations/observability.md

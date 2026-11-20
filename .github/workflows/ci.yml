@@ -145,6 +145,8 @@ jobs:
         run: |
           helm lint --strict deploy/helm/fastmock-operator
           helm template fastmock-operator deploy/helm/fastmock-operator > /dev/null
+          helm lint --strict deploy/helm/fastmock-operator --set policy=null
+          helm template fastmock-operator deploy/helm/fastmock-operator --set policy=null > /dev/null
 
   java:
     runs-on: ubuntu-24.04

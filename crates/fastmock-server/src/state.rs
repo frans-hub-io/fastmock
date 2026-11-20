@@ -29,6 +29,8 @@ pub struct AppState {
     pub plugins: Arc<Vec<PluginInfo>>,
     pub pg: Option<PgStore>,
     pub started: Instant,
+    /// Random id of this process, new on every start.
+    pub instance_id: Arc<str>,
     pub ready: Arc<AtomicBool>,
     pub http: reqwest::Client,
     pub policy: Arc<crate::outbox::EgressPolicy>,
@@ -38,6 +40,8 @@ pub struct AppState {
     pub body_budget: Arc<tokio::sync::Semaphore>,
     pub journal_tx: tokio::sync::mpsc::Sender<fastmock_core::JournalEntry>,
     pub scans: Arc<tokio::sync::Semaphore>,
+    pub tokens: Arc<crate::tokens::TokenService>,
+    pub oidc: Option<Arc<crate::oidc::Oidc>>,
 }
 
 pub struct StubSecrets {
@@ -56,6 +60,11 @@ impl SecretProvider for StubSecrets {
 }
 
 impl AppState {
+    /// Neither an access file nor OIDC is configured: denials keep the bodies of earlier versions.
+    pub fn legacy_setup(&self) -> bool {
+        self.cfg.access_file.is_none() && self.oidc.is_none()
+    }
+
     pub fn source_for(&self, path: &str) -> String {
         for p in self.plugins.iter() {
             if path == p.mount || path.starts_with(&format!("{}/", p.mount)) {

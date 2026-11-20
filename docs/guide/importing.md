@@ -10,6 +10,7 @@ AsyncAPI), tags them, and can preview the result without saving anything.
 - [OpenAPI 3](#openapi-3)
 - [Postman collections](#postman-collections)
 - [HAR captures](#har-captures)
+- [Spaces](#spaces)
 - [Secrets](#secrets)
 - [Limits](#limits)
 - [Metrics and audit](#metrics-and-audit)
@@ -185,6 +186,41 @@ repeats are counted in a warning. The request's path and query become exact matc
 else `body`). Entries without a response (blocked or failed requests) are skipped with a warning, as are
 responses over 10 MiB.
 
+## Spaces
+
+With an [access file](../operations/access-control.md#spaces) that defines spaces, the OpenAPI, WireMock,
+MockServer, Postman and HAR importers (and `POST /__admin/stubs/import`) take a `space` query parameter: every
+imported stub goes to that space, and `replace` removes only that space's stubs with the tag. A principal bound to
+exactly one space may leave it out. AsyncAPI, GraphQL, WSDL, SoapUI and Microcks imports are global and need
+`imports:run` globally. They take neither `space` nor `host`: `POST /__admin/import` that detects one of these
+formats answers `400` when either is given, for example
+`graphql documents import into the global area only; remove space and host`.
+
+The imported stubs must stay inside the space's
+[ownership](../operations/access-control.md#ownership-of-the-data-plane): their paths under its `pathPrefixes` and,
+when the space owns `hosts`, a `request.host` matcher with one of them (both rules apply when the space has both).
+The importers set `request.host` for you from the `host` query parameter. It applies to every imported stub that
+has no `request.host` matcher of its own; stubs that already have one keep it.
+
+| Target | `host` query parameter |
+|---|---|
+| global area, or a space without hosts | optional; when given, it is set on the stubs |
+| a space with one host | optional; defaults to that host |
+| a space with several hosts | required; one of the space's hosts |
+
+A missing or foreign `host` answers `400`:
+
+- `space payments owns several hosts (a.example.com, b.example.com): set the host parameter to the one the imported stubs answer`
+- `host c.example.com is not a host of space payments; use one of a.example.com, b.example.com`
+
+```sh
+curl -s -X POST "http://localhost:9090/__admin/import/openapi?space=payments&host=psp.example.com" \
+  -H "Authorization: Bearer $FASTMOCK_TOKEN" -H 'Content-Type: application/json' \
+  -d "$(jq -n --rawfile spec psp.yaml '{spec: $spec, tag: "psp", pathPrefix: "/payments"}')"
+```
+
+Imports into a space are not recorded in the [service catalog](service-catalog.md), which is global.
+
 ## Secrets
 
 Postman collections and HAR files often contain real credentials. Before the stubs are stored or returned:
@@ -218,7 +254,8 @@ matchers by these importers.
 | `fastmock_import_detections_total` | `format` | formats detected by `POST /import` |
 
 Every saved import is audited as `import.<format>` with the tag and the number of imported and removed stubs, and
-the imported API is recorded in the service catalog (`GET /__admin/services`).
+the imported API is recorded in the service catalog (`GET /__admin/services`), except for imports into a
+space.
 
 See also: [Admin API](admin-api.md), [Recording](recording.md), [WireMock and MockServer](import-wiremock-mockserver.md),
 [Microcks artifacts](microcks-artifacts.md), [AsyncAPI](asyncapi.md).

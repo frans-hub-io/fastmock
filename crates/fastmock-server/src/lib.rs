@@ -1,3 +1,4 @@
+pub mod access;
 pub mod admin;
 pub mod admin_core;
 pub mod asyncmock;
@@ -11,15 +12,18 @@ pub mod files;
 pub mod grpc;
 pub mod imports;
 pub mod journal_api;
+pub mod oidc;
 pub mod openapi_doc;
 pub mod outbox;
 pub mod proxy;
 pub mod redact;
 pub mod services;
 pub mod snapshot;
+pub mod spaces;
 pub mod state;
 pub mod telemetry;
 pub mod tls;
+pub mod tokens;
 pub mod ui;
 pub mod websocket;
 
@@ -132,12 +136,37 @@ pub async fn build(
     });
     let engine = Arc::new(Engine::new(stores.clone(), templates.clone(), stub_secrets));
     engine.reload().await?;
-    let auth = Arc::new(auth::Authenticator::new(
+    let access = match &cfg.access_file {
+        Some(path) => access::AccessConfig::load(path)?,
+        None => access::AccessConfig::default(),
+    };
+    engine.set_ownership(access.ownership());
+    let problems = spaces::ownership_problems(&access, engine.snapshot().iter().map(|c| &c.stub));
+    for p in problems.iter().take(50) {
+        tracing::warn!(stub_id = %p.stub_id, space = %p.space, reason = %p.reason, "stored stub breaks the rules of its space; fix or delete it");
+    }
+    if problems.len() > 50 {
+        tracing::warn!(
+            count = problems.len(),
+            "more stored stubs break the rules of their space; GET /__admin/info lists them"
+        );
+    }
+    let auth = Arc::new(auth::Authenticator::with_access(
         &cfg.admin_tokens,
         cfg.admin_tokens_file.as_deref(),
         cfg.auth_disabled,
         cfg.admin_allowed_origins.clone(),
+        Arc::new(access),
+        cfg.oidc.is_some(),
     )?);
+    let oidc = match &cfg.oidc {
+        Some(s) => {
+            let o = oidc::Oidc::new(s.clone())?;
+            o.start().await?;
+            Some(o)
+        }
+        None => None,
+    };
     let redactor = Arc::new(redact::Redactor::new(
         &cfg.redact_headers,
         &cfg.redact_json_keys,
@@ -187,6 +216,10 @@ pub async fn build(
             admin_routes.push((p.name().to_string(), a));
         }
     }
+    let token_store: Arc<dyn fastmock_core::TokenStore> = match &pg {
+        Some(pg) => Arc::new(pg.clone()),
+        None => Arc::new(fastmock_core::memory::MemoryTokens::default()),
+    };
     let (journal_tx, journal_rx) = tokio::sync::mpsc::channel(cfg.journal_queue);
     tokio::spawn(journal_writer(stores.journal.clone(), journal_rx));
     let app = AppState {
@@ -198,6 +231,7 @@ pub async fn build(
         plugins: Arc::new(infos),
         pg,
         started: Instant::now(),
+        instance_id: uuid::Uuid::new_v4().simple().to_string().into(),
         ready: Arc::new(AtomicBool::new(false)),
         http,
         policy: policy.clone(),
@@ -209,6 +243,8 @@ pub async fn build(
         )),
         journal_tx,
         scans: Arc::new(tokio::sync::Semaphore::new(cfg.journal_scan_concurrency)),
+        tokens: Arc::new(tokens::TokenService::new(token_store, cfg.token_cache_ttl)),
+        oidc,
     };
     if let Err(e) = app.grpc.reload(&app).await {
         tracing::warn!(error = %e, "loading gRPC descriptors failed");
@@ -276,6 +312,7 @@ pub async fn maintenance(app: AppState, mut shutdown: watch::Receiver<bool>) {
             if let Err(e) = app.stores.audit.purge_older_than(cutoff).await {
                 tracing::error!(error = %e, "audit retention failed");
             }
+            tokens::maintain(&app).await;
         }
     }
 }

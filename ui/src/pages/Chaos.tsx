@@ -23,7 +23,8 @@ function describe(r: ChaosRule): string {
 }
 
 export default function Chaos() {
-  const canEdit = useCan('editor');
+  const can = useCan();
+  const canEdit = can('chaos:write');
   const schema = useComponentSchema('ChaosRule');
   const q = useQuery({ queryKey: ['chaos'], queryFn: () => unwrap(client.GET('/__admin/chaos')) });
   const [rules, setRules] = useState<ChaosRule[]>([]);

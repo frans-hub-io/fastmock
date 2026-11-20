@@ -23,7 +23,8 @@ import { Link, useNavigate, useSearchParams } from 'react-router';
 import { client, unwrap } from '../api/client';
 import { confirmAction, useApiMutation } from '../api/mutations';
 import type { JournalEntry } from '../api/types';
-import { useCan } from '../auth/useAuth';
+import { useCan, useSpace, useSpaceQuery } from '../auth/useAuth';
+import { SpaceBadge } from '../components/spaces';
 import { BodyView, Copy, KeyValueTable, MethodBadge, PageHeader, StatusBadge, Time } from '../components/common';
 import { EmptyState, ErrorState, LoadingState } from '../components/States';
 import { toCurl } from '../lib/curl';
@@ -35,7 +36,8 @@ const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 
 export function EntryDetail({ entry }: { entry: JournalEntry }) {
   const navigate = useNavigate();
-  const canEdit = useCan('editor');
+  const canEdit = useCan()('stubs:write');
+  const spaces = useSpace();
   const cfg = useUiConfig();
   const base = storedDataPlaneBase() ?? defaultDataPlaneBase(cfg.data);
   const curl = toCurl(base, { method: entry.method, path: entry.path, query: entry.query, headers: entry.headers, body: entry.body });
@@ -99,6 +101,14 @@ export function EntryDetail({ entry }: { entry: JournalEntry }) {
             <Table.Td c="dimmed">Correlation</Table.Td>
             <Table.Td className="mono">{entry.correlation ?? '—'}</Table.Td>
           </Table.Tr>
+          {spaces.enabled && (
+            <Table.Tr>
+              <Table.Td c="dimmed">Space</Table.Td>
+              <Table.Td>
+                <SpaceBadge space={entry.space} />
+              </Table.Td>
+            </Table.Tr>
+          )}
         </Table.Tbody>
       </Table>
       <Group gap="xs">
@@ -106,7 +116,7 @@ export function EntryDetail({ entry }: { entry: JournalEntry }) {
           <Button
             size="xs"
             leftSection={<IconPlus size={14} />}
-            onClick={() => void navigate('/stubs/new', { state: { stub: stubFromJournal(entry) } })}
+            onClick={() => void navigate('/stubs/new', { state: { stub: { ...stubFromJournal(entry), ...(entry.space ? { space: entry.space } : {}) } } })}
             data-testid="stub-from-request"
           >
             Create stub from this request
@@ -161,7 +171,9 @@ export function EntryDetail({ entry }: { entry: JournalEntry }) {
 }
 
 export default function Journal() {
-  const canEdit = useCan('editor');
+  const canEdit = useCan()('journal:delete');
+  const spaces = useSpace();
+  const spaceQ = useSpaceQuery();
   const [params, setParams] = useSearchParams();
   const [live, setLive] = useState(true);
   const get = (k: string) => params.get(k) ?? '';
@@ -195,6 +207,7 @@ export default function Journal() {
     source: dSource || undefined,
     since: since ? new Date(since).toISOString() : undefined,
     limit,
+    ...spaceQ,
   };
   const list = useQuery({
     queryKey: ['requests', 'list', query],
@@ -212,7 +225,7 @@ export default function Journal() {
   const selected = selectedFromList ?? single.data;
 
   const clear = useApiMutation<void, { deleted: number }>({
-    fn: () => unwrap(client.DELETE('/__admin/requests')),
+    fn: () => unwrap(client.DELETE('/__admin/requests', { params: { query: spaceQ } })),
     invalidate: [['requests']],
     success: (d) => `Cleared ${d.deleted} journal entries`,
   });
@@ -244,7 +257,7 @@ export default function Journal() {
                 leftSection={<IconTrash size={16} />}
                 onClick={() =>
                   confirmAction({
-                    title: 'Clear the request journal?',
+                    title: spaces.current ? `Clear the journal of space ${spaces.current}?` : 'Clear the request journal?',
                     message: 'All journal entries are deleted for every replica. Verification against them will no longer be possible.',
                     confirm: 'Clear journal',
                     onConfirm: () => clear.mutate(),
@@ -339,6 +352,7 @@ export default function Journal() {
                   <Table.Th>Match</Table.Th>
                   <Table.Th>Time</Table.Th>
                   <Table.Th>Source</Table.Th>
+                  {spaces.enabled && <Table.Th>Space</Table.Th>}
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -377,6 +391,11 @@ export default function Journal() {
                     </Table.Td>
                     <Table.Td>{r.durationMs} ms</Table.Td>
                     <Table.Td>{r.source}</Table.Td>
+                    {spaces.enabled && (
+                      <Table.Td>
+                        <SpaceBadge space={r.space} />
+                      </Table.Td>
+                    )}
                   </Table.Tr>
                 ))}
               </Table.Tbody>

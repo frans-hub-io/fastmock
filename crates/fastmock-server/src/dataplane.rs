@@ -3,12 +3,12 @@ use std::time::{Duration, Instant};
 
 use axum::body::{Body, to_bytes};
 use axum::extract::{Request, State};
-use axum::http::{HeaderName, HeaderValue, StatusCode};
+use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use chrono::Utc;
-use fastmock_core::plugin::TRACEPARENT;
+use fastmock_core::plugin::{SPACE, TRACEPARENT};
 use fastmock_core::{CapturedRequest, Correlation, Fault, JournalEntry};
 use futures::{StreamExt, stream};
 use serde_json::json;
@@ -22,6 +22,7 @@ use crate::telemetry;
 pub struct StubHit {
     pub id: Uuid,
     pub name: Option<String>,
+    pub space: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -51,6 +52,9 @@ pub async fn data_plane_middleware(
     let start = Instant::now();
     let (mut parts, body) = req.into_parts();
     parts.headers.remove(crate::tls::CLIENT_CERT_HEADER);
+    if app.oidc.is_some() {
+        crate::oidc::strip_admin_cookies(&mut parts.headers);
+    }
     if let Some(c) = parts.extensions.get::<crate::tls::ClientCert>()
         && let Ok(v) = HeaderValue::from_str(&c.0)
     {
@@ -149,6 +153,18 @@ pub async fn data_plane_middleware(
     let chaos = crate::extras::chaos(&app, &source, parts.method.as_str(), parts.uri.path()).await;
     let req = Request::from_parts(parts, Body::from(bytes.clone()));
     let tp = Some(ids.traceparent());
+    let (host, port) = match req
+        .headers()
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+    {
+        Some(h) => {
+            let (h, p) = fastmock_core::request::split_host_port(h);
+            (Some(h), p)
+        }
+        None => (None, None),
+    };
+    let space = app.engine.owner(req.uri().path(), host.as_deref(), port);
     let mut chaos_rule = None;
     let mut resp = match chaos {
         crate::extras::ChaosOutcome::Respond(r, id) => {
@@ -158,13 +174,19 @@ pub async fn data_plane_middleware(
         crate::extras::ChaosOutcome::Delay(d, id) => {
             chaos_rule = Some(id);
             tokio::time::sleep(d).await;
-            TRACEPARENT
-                .scope(tp, next.run(req).instrument(span.clone()))
+            SPACE
+                .scope(
+                    space,
+                    TRACEPARENT.scope(tp, next.run(req).instrument(span.clone())),
+                )
                 .await
         }
         crate::extras::ChaosOutcome::None => {
-            TRACEPARENT
-                .scope(tp, next.run(req).instrument(span.clone()))
+            SPACE
+                .scope(
+                    space,
+                    TRACEPARENT.scope(tp, next.run(req).instrument(span.clone())),
+                )
                 .await
         }
     };
@@ -267,7 +289,8 @@ pub async fn data_plane_middleware(
             },
             status,
             response_body: r.body(&response_body, resp_ct, app.cfg.journal_max_body),
-            stub_id: stub.map(|s| s.id),
+            stub_id: stub.as_ref().map(|s| s.id),
+            space: stub.and_then(|s| s.space),
             correlation,
             matched,
             duration_ms: elapsed.as_millis() as u64,
@@ -544,6 +567,7 @@ pub async fn stub_handler(State(app): State<AppState>, req: Request) -> Response
             resp.extensions_mut().insert(StubHit {
                 id: r.stub_id,
                 name: r.stub_name.clone(),
+                space: r.space.clone(),
             });
             if let Some(c) = r.correlation {
                 resp.extensions_mut().insert(Correlation(c));
@@ -560,6 +584,7 @@ pub async fn stub_handler(State(app): State<AppState>, req: Request) -> Response
             resp.extensions_mut().insert(StubHit {
                 id: r.stub_id,
                 name: r.stub_name.clone(),
+                space: r.space.clone(),
             });
             resp
         }
@@ -586,6 +611,7 @@ pub async fn stub_handler(State(app): State<AppState>, req: Request) -> Response
             resp.extensions_mut().insert(StubHit {
                 id: r.stub_id,
                 name: r.stub_name.clone(),
+                space: r.space.clone(),
             });
             resp
         }
@@ -604,6 +630,7 @@ pub async fn stub_handler(State(app): State<AppState>, req: Request) -> Response
             let hit = StubHit {
                 id: r.stub_id,
                 name: r.stub_name.clone(),
+                space: r.space.clone(),
             };
             let mut resp = match r.fault {
                 Some(Fault::ConnectionReset) => reset_response(),
@@ -756,6 +783,7 @@ pub async fn stub_handler(State(app): State<AppState>, req: Request) -> Response
                                 hit = Some(StubHit {
                                     id: stub.id,
                                     name: stub.name.clone(),
+                                    space: None,
                                 });
                             }
                             Err(e) => {
@@ -777,8 +805,12 @@ pub async fn stub_handler(State(app): State<AppState>, req: Request) -> Response
             let mut body =
                 json!({"error": "no stub matched", "method": cr.method, "path": cr.path});
             if app.cfg.unmatched_details {
-                body["nearMisses"] =
-                    serde_json::to_value(app.engine.near_misses(&cr, 3)).unwrap_or_default();
+                body["nearMisses"] = serde_json::to_value(app.engine.near_misses(
+                    &cr,
+                    3,
+                    &fastmock_core::SpaceFilter::Any,
+                ))
+                .unwrap_or_default();
             }
             let mut resp = (StatusCode::NOT_FOUND, axum::Json(body)).into_response();
             resp.extensions_mut().insert(Unmatched);
@@ -870,6 +902,7 @@ async fn grpc_handler(
             out.extensions_mut().insert(StubHit {
                 id: r.stub_id,
                 name: r.stub_name.clone(),
+                space: r.space.clone(),
             });
             if let Some(c) = r.correlation {
                 out.extensions_mut().insert(Correlation(c));

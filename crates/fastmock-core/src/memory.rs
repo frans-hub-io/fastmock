@@ -10,7 +10,8 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::model::{
-    AuditEvent, CallbackFilter, CallbackJob, CallbackStatus, JournalEntry, JournalFilter, Stub,
+    AuditEvent, CallbackFilter, CallbackJob, CallbackStatus, JournalEntry, JournalFilter,
+    SpaceFilter, Stub,
 };
 use crate::storage::*;
 
@@ -65,10 +66,10 @@ impl StubStore for MemoryStubs {
         Ok(removed)
     }
 
-    async fn delete_by_tag(&self, tag: &str) -> StoreResult<u64> {
+    async fn delete_by_tag(&self, tag: &str, spaces: &SpaceFilter) -> StoreResult<u64> {
         let mut stubs = self.stubs.lock().await;
         let before = stubs.len();
-        stubs.retain(|x| !x.tags.iter().any(|t| t == tag));
+        stubs.retain(|x| !(x.tags.iter().any(|t| t == tag) && spaces.matches(x.space.as_deref())));
         let n = (before - stubs.len()) as u64;
         if n > 0 {
             self.revision.fetch_add(1, Ordering::SeqCst);
@@ -76,11 +77,17 @@ impl StubStore for MemoryStubs {
         Ok(n)
     }
 
-    async fn replace_tag(&self, tag: Option<&str>, new: &[Stub]) -> StoreResult<u64> {
+    async fn replace_tag(
+        &self,
+        tag: Option<&str>,
+        spaces: &SpaceFilter,
+        new: &[Stub],
+    ) -> StoreResult<u64> {
         let mut stubs = self.stubs.lock().await;
         let before = stubs.len();
         if let Some(t) = tag {
-            stubs.retain(|x| !x.tags.iter().any(|y| y == t));
+            stubs
+                .retain(|x| !(x.tags.iter().any(|y| y == t) && spaces.matches(x.space.as_deref())));
         }
         let removed = (before - stubs.len()) as u64;
         let now = Utc::now();
@@ -94,12 +101,12 @@ impl StubStore for MemoryStubs {
         Ok(removed)
     }
 
-    async fn clear(&self) -> StoreResult<u64> {
+    async fn clear(&self, spaces: &SpaceFilter) -> StoreResult<u64> {
         let mut stubs = self.stubs.lock().await;
-        let n = stubs.len() as u64;
-        stubs.clear();
+        let before = stubs.len();
+        stubs.retain(|x| !spaces.matches(x.space.as_deref()));
         self.revision.fetch_add(1, Ordering::SeqCst);
-        Ok(n)
+        Ok((before - stubs.len()) as u64)
     }
 
     async fn revision(&self) -> StoreResult<i64> {
@@ -159,11 +166,11 @@ impl JournalStore for MemoryJournal {
             .count() as i64)
     }
 
-    async fn clear(&self) -> StoreResult<u64> {
+    async fn clear(&self, spaces: &SpaceFilter) -> StoreResult<u64> {
         let mut entries = self.entries.lock().await;
-        let n = entries.len() as u64;
-        entries.clear();
-        Ok(n)
+        let before = entries.len();
+        entries.retain(|e| !spaces.matches(e.space.as_deref()));
+        Ok((before - entries.len()) as u64)
     }
 
     async fn purge_older_than(&self, at: DateTime<Utc>) -> StoreResult<u64> {
@@ -333,11 +340,11 @@ impl OutboxStore for MemoryOutbox {
             .count() as i64)
     }
 
-    async fn clear(&self) -> StoreResult<u64> {
+    async fn clear(&self, spaces: &SpaceFilter) -> StoreResult<u64> {
         let mut jobs = self.jobs.lock().await;
-        let n = jobs.len() as u64;
-        jobs.clear();
-        Ok(n)
+        let before = jobs.len();
+        jobs.retain(|(j, _)| !spaces.matches(j.space.as_deref()));
+        Ok((before - jobs.len()) as u64)
     }
 
     async fn purge_finished_older_than(&self, at: DateTime<Utc>) -> StoreResult<u64> {
@@ -352,11 +359,21 @@ impl OutboxStore for MemoryOutbox {
 pub struct MemoryHot {
     data: Mutex<HashMap<String, (String, Option<Instant>)>>,
     zsets: Mutex<HashMap<String, Vec<(f64, String)>>>,
+    writes: std::sync::atomic::AtomicU64,
 }
+
+/// Expired entries are dropped every this many writes, so keys with a TTL do not pile up.
+const SWEEP_EVERY: u64 = 1024;
 
 impl MemoryHot {
     fn live(entry: &(String, Option<Instant>)) -> bool {
         entry.1.is_none_or(|t| t > Instant::now())
+    }
+
+    fn sweep_due(&self) -> bool {
+        self.writes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .is_multiple_of(SWEEP_EVERY)
     }
 }
 
@@ -368,7 +385,11 @@ impl HotStore for MemoryHot {
     }
 
     async fn set(&self, key: &str, value: &str, ttl: Option<Duration>) -> StoreResult<()> {
-        self.data.lock().await.insert(
+        let mut data = self.data.lock().await;
+        if self.sweep_due() {
+            data.retain(|_, e| Self::live(e));
+        }
+        data.insert(
             key.to_string(),
             (value.to_string(), ttl.map(|t| Instant::now() + t)),
         );
@@ -576,6 +597,109 @@ impl AuditStore for MemoryAudit {
     }
 }
 
+/// Managed tokens of memory mode; they are lost on restart.
+#[derive(Default)]
+pub struct MemoryTokens {
+    tokens: Mutex<Vec<ApiToken>>,
+}
+
+#[async_trait]
+impl TokenStore for MemoryTokens {
+    async fn create(&self, token: &ApiToken, now: DateTime<Utc>) -> StoreResult<bool> {
+        let mut v = self.tokens.lock().await;
+        for t in v.iter_mut() {
+            if t.name == token.name && t.revoked_at.is_none() && t.expires_at <= now {
+                t.revoked_at = Some(t.expires_at);
+            }
+        }
+        if v.iter()
+            .any(|t| t.name == token.name && t.revoked_at.is_none())
+        {
+            return Ok(false);
+        }
+        if v.iter()
+            .any(|t| t.id == token.id || t.sha256 == token.sha256)
+        {
+            anyhow::bail!("duplicate token id or hash");
+        }
+        v.push(token.clone());
+        Ok(true)
+    }
+
+    async fn get(&self, id: Uuid) -> StoreResult<Option<ApiToken>> {
+        Ok(self
+            .tokens
+            .lock()
+            .await
+            .iter()
+            .find(|t| t.id == id)
+            .cloned())
+    }
+
+    async fn by_hash(&self, sha256: &str) -> StoreResult<Option<ApiToken>> {
+        Ok(self
+            .tokens
+            .lock()
+            .await
+            .iter()
+            .find(|t| t.sha256 == sha256)
+            .cloned())
+    }
+
+    async fn list(&self) -> StoreResult<Vec<ApiToken>> {
+        let mut v = self.tokens.lock().await.clone();
+        v.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
+        Ok(v)
+    }
+
+    async fn revoke(&self, id: Uuid, at: DateTime<Utc>) -> StoreResult<bool> {
+        let mut v = self.tokens.lock().await;
+        match v
+            .iter_mut()
+            .find(|t| t.id == id && t.revoked_at.is_none() && t.expires_at > at)
+        {
+            Some(t) => {
+                t.revoked_at = Some(at);
+                t.revoked = true;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    async fn has_any(&self) -> StoreResult<bool> {
+        Ok(!self.tokens.lock().await.is_empty())
+    }
+
+    async fn touch(&self, id: Uuid, at: DateTime<Utc>) -> StoreResult<()> {
+        let mut v = self.tokens.lock().await;
+        if let Some(t) = v.iter_mut().find(|t| t.id == id)
+            && t.last_used_at
+                .is_none_or(|l| l <= at - chrono::Duration::minutes(1))
+        {
+            t.last_used_at = Some(at);
+        }
+        Ok(())
+    }
+
+    async fn count_active(&self, now: DateTime<Utc>) -> StoreResult<i64> {
+        Ok(self
+            .tokens
+            .lock()
+            .await
+            .iter()
+            .filter(|t| t.status(now) == ApiTokenStatus::Active)
+            .count() as i64)
+    }
+
+    async fn purge_inactive_before(&self, at: DateTime<Utc>) -> StoreResult<u64> {
+        let mut v = self.tokens.lock().await;
+        let before = v.len();
+        v.retain(|t| t.revoked_at.is_none_or(|r| r >= at) && t.expires_at >= at);
+        Ok((before - v.len()) as u64)
+    }
+}
+
 pub fn memory_stores(journal_capacity: usize) -> Stores {
     Stores {
         stubs: Arc::new(MemoryStubs::default()),
@@ -584,5 +708,30 @@ pub fn memory_stores(journal_capacity: usize) -> Stores {
         hot: Arc::new(MemoryHot::default()),
         data: Arc::new(MemoryData::default()),
         audit: Arc::new(MemoryAudit::default()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn expired_hot_entries_are_swept() {
+        let hot = MemoryHot::default();
+        for i in 0..SWEEP_EVERY {
+            hot.set(&format!("k{i}"), "v", Some(Duration::from_millis(1)))
+                .await
+                .unwrap();
+        }
+        hot.set("keep", "v", None).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        for i in 0..SWEEP_EVERY {
+            hot.set(&format!("n{i}"), "v", Some(Duration::from_secs(60)))
+                .await
+                .unwrap();
+        }
+        let n = hot.data.lock().await.len() as u64;
+        assert!(n <= SWEEP_EVERY + 1, "{n} entries");
+        assert_eq!(hot.get("keep").await.unwrap().as_deref(), Some("v"));
     }
 }

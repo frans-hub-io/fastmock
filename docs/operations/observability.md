@@ -88,7 +88,7 @@ avoid generating thousands of uniquely named stubs per run.
 | `fastmock_journal_dropped_total` | counter | | Journal entries dropped because the write queue was full. |
 | `fastmock_journal_write_errors_total` | counter | | Journal entries that could not be written. |
 | `fastmock_journal_batch_size` | summary | | Entries per journal write. |
-| `fastmock_store_errors_total` | counter | `store` (`stubs`, `outbox`, `audit`, `chaos`, `settings`, `services`, `asyncmocks`, `asyncmock_lease`, `contract_runs`) | Storage operations that failed in background work. |
+| `fastmock_store_errors_total` | counter | `store` (`stubs`, `outbox`, `audit`, `chaos`, `settings`, `services`, `asyncmocks`, `asyncmock_lease`, `contract_runs`, `tokens`, `sessions`) | Storage operations that failed in background work (`tokens`: managed token lookups, last-use updates and counts; `sessions`: reading, writing or deleting OIDC sessions and pending sign-ins in the hot store). |
 | `fastmock_imports_total` | counter | `format`, `dry_run` | Stub imports (WireMock, MockServer, OpenAPI, Postman, HAR and others). |
 | `fastmock_import_rejections_total` | counter | `format` | Imports rejected with `400` because the document produced no valid stub; nothing was changed. |
 | `fastmock_import_detections_total` | counter | `format` | Formats detected by `POST /__admin/import`. |
@@ -105,7 +105,10 @@ avoid generating thousands of uniquely named stubs per run.
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `fastmock_admin_changes_total` | counter | `action` | Audited changes (`stub.create`, `stub.import`, `scenario.set`, `reset`, ...). |
-| `fastmock_admin_auth_failures_total` | counter | `reason` (`token`, `role`, `origin`) | Rejected admin calls. |
+| `fastmock_admin_auth_failures_total` | counter | `reason` (`token`, `expired`, `role`, `permission`, `origin`, `session`, `jwt`, `csrf`) | Rejected admin calls; `token` covers missing, unknown and revoked tokens, `expired` managed tokens past their expiry, `role` principals holding only global built-in roles that lack the permission (including non-admins on `/audit`, `/reset` and deleting all stubs), `permission` other principals that lack it and OIDC users without a binding, `origin` refused browser origins, `session` expired or unknown session cookies, `jwt` bearer JWTs and ID tokens that fail validation, `csrf` cookie-authenticated changes without `X-FastMock-Request`. |
+| `fastmock_api_tokens_active` | gauge | | Active (not revoked, not expired) [managed tokens](access-control.md#managed-tokens), refreshed every minute and after each create or revoke. A cluster-wide count that every replica reports: aggregate it with `max`, not `sum`. |
+| `fastmock_oidc_logins_total` | counter | `result` (`success`, `no_binding`, `invalid_state`, `idp_error`, `token_error`, `unavailable`, `rate_limited`) | [OIDC sign-ins](access-control.md#oidc-sign-in-and-bearer-jwts) by outcome. |
+| `fastmock_oidc_ready` | gauge | | 1 once the OIDC provider has been discovered, 0 while sign-in answers 503. |
 | `fastmock_admin_errors_total` | counter | | Admin calls that failed with 500. |
 | `fastmock_admin_verifications_total` | counter | `kind` (`count`, `sequence`), `result` (`pass`, `fail`) | Verification requests. |
 | `fastmock_contract_tests_total` | counter | `result` (`passed`, `failed`, `error`) | Contract test runs. |
@@ -153,6 +156,10 @@ max(fastmock_stubs_loaded) - min(fastmock_stubs_loaded)
 
 # who changes what
 sum by (action) (increase(fastmock_admin_changes_total[1h]))
+# failed sign-ins by reason
+sum by (result) (increase(fastmock_oidc_logins_total{result!="success"}[1h]))
+# active managed tokens (every replica reports the same cluster-wide count)
+max(fastmock_api_tokens_active)
 ```
 
 ## Alerts

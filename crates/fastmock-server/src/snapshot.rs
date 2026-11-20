@@ -275,7 +275,10 @@ pub async fn snapshot(
             .map_err(|e| bad(format!("generated stub #{i} is invalid: {e}")))?;
     }
     if b.persist && !stubs.is_empty() {
-        app.stores.stubs.replace_tag(None, &stubs).await?;
+        app.stores
+            .stubs
+            .replace_tag(None, &fastmock_core::SpaceFilter::Global, &stubs)
+            .await?;
         refresh(&app).await?;
     }
     metrics::counter!("fastmock_snapshot_stubs_total").increment(stubs.len() as u64);

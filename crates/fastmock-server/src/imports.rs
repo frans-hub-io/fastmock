@@ -8,10 +8,13 @@ use fastmock_core::{StringMatcher, Stub};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::access::Permission;
+use crate::admin::require;
 use crate::admin::{
     ApiError, ApiResult, ErrorBody, ImportResult, ImportTarget, bad, finish_import, valid_tag, yes,
 };
 use crate::auth::Principal;
+use crate::spaces::{self, ImportQuery};
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
@@ -91,10 +94,9 @@ async fn run_postman(
     app: &AppState,
     p: &Principal,
     doc: &Value,
-    tag: &str,
-    replace: bool,
-    dry_run: bool,
+    t: ImportTarget<'_>,
 ) -> ApiResult<Json<ImportResult>> {
+    let (tag, dry_run, space) = (t.tag, t.dry_run, t.space);
     valid_tag(tag)?;
     let mut c = fastmock_core::postman::convert(
         doc,
@@ -107,20 +109,8 @@ async fn run_postman(
             "{n} stubs had secrets (sensitive query parameters, body fields or headers) removed from matchers"
         ));
     }
-    let out = finish_import(
-        app,
-        p,
-        ImportTarget {
-            format: "postman",
-            tag,
-            replace,
-            dry_run,
-        },
-        c.stubs,
-        c.warnings,
-    )
-    .await?;
-    if !dry_run {
+    let out = finish_import(app, p, t, c.stubs, c.warnings).await?;
+    if !dry_run && space.is_none() {
         crate::services::record_service(
             app,
             &p.name,
@@ -135,6 +125,7 @@ async fn run_postman(
     post, path = "/__admin/import/postman", tag = "imports", operation_id = "importPostman",
     summary = "Generate stubs from a Postman collection",
     description = "Every saved example response becomes a stub: method, path (`:id` and unresolved `{{var}}` segments become path parameters), enabled query parameters and, when a request has several examples, its raw body. `{{var}}` is resolved from collection and folder variables; folders become tags. Requests without saved examples are skipped with a warning. Response bodies are not templated.",
+    params(ImportQuery),
     request_body(content = PostmanImport, example = json!({"collection": {"info": {"name": "Shop", "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"}, "variable": [{"key": "baseUrl", "value": "https://api.example.com"}], "item": [{"name": "Get user", "request": {"method": "GET", "url": "{{baseUrl}}/users/:id"}, "response": [{"name": "ok", "code": 200, "header": [{"key": "Content-Type", "value": "application/json"}], "body": "{\"id\": 1}"}]}]}, "tag": "shop"})),
     responses(
         (status = 200, description = "Import result", body = ImportResult),
@@ -148,10 +139,26 @@ async fn run_postman(
 pub async fn import_postman(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
+    Query(q): Query<ImportQuery>,
     Json(b): Json<PostmanImport>,
 ) -> ApiResult<Json<ImportResult>> {
+    let space = spaces::target(&app, &p, Permission::ImportsRun, q.space.as_deref())?;
+    let host = spaces::import_host(&app, space.as_deref(), q.host.as_deref())?;
     let doc = document(b.collection, "collection")?;
-    run_postman(&app, &p, &doc, &b.tag, b.replace, b.dry_run).await
+    run_postman(
+        &app,
+        &p,
+        &doc,
+        ImportTarget {
+            format: "postman",
+            tag: &b.tag,
+            replace: b.replace,
+            dry_run: b.dry_run,
+            space: space.as_deref(),
+            host: host.as_deref(),
+        },
+    )
+    .await
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -212,9 +219,9 @@ async fn run_har(
             "{n} stubs had secrets (sensitive query parameters, body fields or headers) removed from matchers"
         ));
     }
-    let (tag, dry_run) = (t.tag.to_string(), t.dry_run);
+    let (tag, dry_run, space) = (t.tag.to_string(), t.dry_run, t.space);
     let out = finish_import(app, p, t, c.stubs, c.warnings).await?;
-    if !dry_run {
+    if !dry_run && space.is_none() {
         crate::services::record_service(
             app,
             &p.name,
@@ -229,6 +236,7 @@ async fn run_har(
     post, path = "/__admin/import/har", tag = "imports", operation_id = "importHar",
     summary = "Generate stubs from a HAR 1.2 capture",
     description = "Each distinct request (method, path, query, body) becomes a stub replaying the first recorded response. Failed entries are skipped; sensitive headers, query parameters and body fields never reach the stubs.",
+    params(ImportQuery),
     request_body(content = HarImport, example = json!({"har": {"log": {"version": "1.2", "entries": [{"request": {"method": "GET", "url": "https://api.example.com/users/7"}, "response": {"status": 200, "headers": [], "content": {"mimeType": "application/json", "text": "{\"id\":7}"}}}]}}, "tag": "browser", "mimeTypes": ["application/json"]})),
     responses(
         (status = 200, description = "Import result", body = ImportResult),
@@ -242,8 +250,11 @@ async fn run_har(
 pub async fn import_har(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
+    Query(q): Query<ImportQuery>,
     Json(b): Json<HarImport>,
 ) -> ApiResult<Json<ImportResult>> {
+    let space = spaces::target(&app, &p, Permission::ImportsRun, q.space.as_deref())?;
+    let host = spaces::import_host(&app, space.as_deref(), q.host.as_deref())?;
     let doc = document(b.har, "har")?;
     run_har(
         &app,
@@ -254,6 +265,8 @@ pub async fn import_har(
             tag: &b.tag,
             replace: b.replace,
             dry_run: b.dry_run,
+            space: space.as_deref(),
+            host: host.as_deref(),
         },
         HarFilters {
             mime_types: b.mime_types,
@@ -432,6 +445,12 @@ pub struct AutoImportQuery {
     dry_run: Option<bool>,
     /// Force a format instead of detecting it.
     format: Option<String>,
+    /// Space the stubs go to (OpenAPI, WireMock, MockServer, Postman and HAR only).
+    space: Option<String>,
+    /// `request.host` for every imported stub that has none (OpenAPI, WireMock, MockServer, Postman and HAR
+    /// only). For a space that owns hosts it must be one of them; it defaults to the space's only host and
+    /// is required when the space owns several.
+    host: Option<String>,
 }
 
 fn unsupported(format: Format, hint: &str) -> ApiError {
@@ -505,6 +524,24 @@ pub async fn import_auto(
     if let Some(t) = &q.tag {
         valid_tag(t)?;
     }
+    let global_only = matches!(
+        format,
+        Format::GraphQl | Format::Wsdl | Format::SoapUi | Format::Microcks | Format::AsyncApi
+    );
+    let (space, host) = if global_only {
+        if q.space.is_some() || q.host.is_some() {
+            return Err(bad(format!(
+                "{} documents import into the global area only; remove space and host",
+                format.name()
+            )));
+        }
+        require(&p, Permission::ImportsRun, None)?;
+        (None, None)
+    } else {
+        let space = spaces::target(&app, &p, Permission::ImportsRun, q.space.as_deref())?;
+        let host = spaces::import_host(&app, space.as_deref(), q.host.as_deref())?;
+        (space, host)
+    };
     if matches!(
         format,
         Format::GraphQl | Format::Wsdl | Format::SoapUi | Format::Microcks
@@ -529,6 +566,8 @@ pub async fn import_auto(
         tag: &tag,
         replace,
         dry_run,
+        space: space.as_deref(),
+        host: host.as_deref(),
     };
     let doc = match &parsed {
         Parsed::Doc(v) => Some(v),
@@ -536,8 +575,9 @@ pub async fn import_auto(
     };
     let need_doc =
         || doc.ok_or_else(|| bad(format!("a {} document must be JSON or YAML", format.name())));
+    let record = space.is_none();
     let generic = |app: AppState, p: Principal, tag: String, format: &'static str| async move {
-        if !dry_run {
+        if !dry_run && record {
             crate::services::record_service(
                 &app,
                 &p.name,
@@ -556,7 +596,7 @@ pub async fn import_auto(
             };
             let r = fastmock_core::openapi::import(doc, &opts).map_err(|e| bad(e.to_string()))?;
             let out = finish_import(&app, &p, target, r.stubs, r.warnings).await?;
-            if !dry_run {
+            if !dry_run && record {
                 crate::services::record_service(
                     &app,
                     &p.name,
@@ -594,7 +634,7 @@ pub async fn import_auto(
             generic(app.clone(), p.clone(), tag.clone(), format.name()).await;
             out
         }
-        Format::Postman => run_postman(&app, &p, need_doc()?, &tag, replace, dry_run).await?,
+        Format::Postman => run_postman(&app, &p, need_doc()?, target).await?,
         Format::Har => run_har(&app, &p, need_doc()?, target, HarFilters::default()).await?,
         Format::AsyncApi => {
             let doc = need_doc()?.clone();

@@ -10,6 +10,53 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/__admin/access": {
+      "get": {
+        "tags": [
+          "access"
+        ],
+        "summary": "The access configuration (read-only)",
+        "description": "Spaces, roles (with expanded permissions) and bindings of the access file (`FASTMOCK_ACCESS_FILE`), plus the global role of every static token written `name:role:hash` in `FASTMOCK_ADMIN_TOKENS` or `FASTMOCK_ADMIN_TOKENS_FILE` (`source: adminTokens`). Needs `access:read`, a global permission of the built-in admin role. Changes need a new access file or token list and a restart. Token values and hashes, file paths and OIDC settings are never included.",
+        "operationId": "getAccess",
+        "responses": {
+          "200": {
+            "description": "The access configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires access:read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/__admin/async-mocks": {
       "get": {
         "tags": [
@@ -40,6 +87,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -88,6 +145,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -433,6 +500,222 @@
         ]
       }
     },
+    "/__admin/auth/callback": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "SSO sign-in callback",
+        "description": "The identity provider redirects here. FastMock checks `state` (single use) and the login cookie, exchanges the code with the PKCE verifier, validates the ID token (signature, `iss`, `aud`, `azp`, `exp`, `iat`, `nonce`), reads the username and groups (falling back to userinfo for groups), and creates a session when the user has at least one binding. Success redirects to the `return` path with the session cookie; failure redirects to `/ui/?loginError=<code>` where code is `invalid_state`, `idp_error`, `failed`, `no_access` or `unavailable`.",
+        "operationId": "loginCallback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to the UI"
+          },
+          "404": {
+            "description": "SSO is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/__admin/auth/config": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Sign-in methods for the login page",
+        "description": "No authentication. Tells the UI whether SSO sign-in is configured.",
+        "operationId": "getAuthConfig",
+        "responses": {
+          "200": {
+            "description": "Sign-in methods",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthConfig"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/__admin/auth/login": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Start SSO sign-in",
+        "description": "No authentication. Redirects the browser to the identity provider (authorization code flow with `state`, `nonce` and PKCE S256) and sets a short-lived login cookie that ties the callback to this browser. The pending login is kept for 10 minutes in the shared hot store.",
+        "operationId": "login",
+        "parameters": [
+          {
+            "name": "return",
+            "in": "query",
+            "description": "Where the browser goes after sign-in: a relative path under `/ui/` (default `/ui/`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to the identity provider"
+          },
+          "400": {
+            "description": "`return` is not a relative path under /ui/",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SSO is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many sign-in attempts on this replica",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The identity provider has not been discovered yet, or the session store is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/__admin/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "End the SSO session",
+        "description": "Deletes the session of the cookie and clears the cookie. Needs the `X-FastMock-Request: 1` header. When the provider has an `end_session_endpoint`, `logoutUrl` tells the UI where to send the browser to end the provider session too; it carries `client_id`, `post_logout_redirect_uri` and, when the session holds one, the sign-in's ID token as `id_token_hint`.",
+        "operationId": "logout",
+        "parameters": [
+          {
+            "name": "X-FastMock-Request",
+            "in": "header",
+            "description": "Must be `1`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Logged out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogoutResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing X-FastMock-Request header or origin not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SSO is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Session store unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/__admin/callbacks": {
       "get": {
         "tags": [
@@ -477,6 +760,15 @@
               "maximum": 10000,
               "minimum": 1
             }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Only jobs of this space.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -509,6 +801,26 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -522,7 +834,19 @@
           "callbacks"
         ],
         "summary": "Delete all callback jobs, including pending ones",
+        "description": "Deletes the jobs of `space`, or of everything the caller may delete.",
         "operationId": "clearCallbacks",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Number of deleted jobs",
@@ -546,6 +870,16 @@
           },
           "403": {
             "description": "Requires the editor role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -582,6 +916,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -727,6 +1071,15 @@
               "type": "integer",
               "minimum": 0
             }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Only runs of this space.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -749,6 +1102,26 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -762,7 +1135,19 @@
           "contract-tests"
         ],
         "summary": "Start a contract test run",
+        "description": "The run belongs to the target space (`space` parameter). `secretHeaders` need `contracts:secrets` there; `specRef` reads the global service catalog and needs global `stubs:read`.",
         "operationId": "startContractTest",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -805,7 +1190,7 @@
             }
           },
           "403": {
-            "description": "The token lacks the editor role, or the admin role when secretHeaders is set",
+            "description": "The token lacks the editor role, or the global permission contracts:secrets (admin role bound globally) when secretHeaders is set",
             "content": {
               "application/json": {
                 "schema": {
@@ -874,6 +1259,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -974,6 +1369,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Only stubs of this space.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -989,6 +1393,26 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -1012,6 +1436,17 @@
         ],
         "summary": "List stored body files",
         "operationId": "listFiles",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Files, sorted by name",
@@ -1025,6 +1460,26 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -1055,6 +1510,15 @@
             "in": "path",
             "description": "File name, may contain `/`",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -1096,6 +1560,16 @@
               }
             }
           },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "No such file",
             "content": {
@@ -1126,6 +1600,15 @@
             "in": "path",
             "description": "File name: [A-Za-z0-9._-/], at most 512 bytes, no `..`",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -1197,6 +1680,16 @@
               }
             }
           },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "409": {
             "description": "Too many files",
             "content": {
@@ -1229,6 +1722,15 @@
             "in": "path",
             "description": "File name",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -1306,6 +1808,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -1520,6 +2032,24 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space the stubs go to (OpenAPI, WireMock, MockServer, Postman and HAR only).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "host",
+            "in": "query",
+            "description": "`request.host` for every imported stub that has none (OpenAPI, WireMock, MockServer, Postman and HAR\nonly). For a space that owns hosts it must be one of them; it defaults to the space's only host and\nis required when the space owns several.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -1591,6 +2121,16 @@
           },
           "403": {
             "description": "Requires the editor role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -1782,6 +2322,26 @@
         "summary": "Generate stubs from a HAR 1.2 capture",
         "description": "Each distinct request (method, path, query, body) becomes a stub replaying the first recorded response. Failed entries are skipped; sensitive headers, query parameters and body fields never reach the stubs.",
         "operationId": "importHar",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space the stubs go to. Without it, the global area, or the caller's only space when it is bound to\nspaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "host",
+            "in": "query",
+            "description": "`request.host` for every imported stub that has none. For a space that owns hosts it must be one of\nthem; it defaults to the space's only host and is required when the space owns several.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -1852,6 +2412,16 @@
           },
           "403": {
             "description": "Requires the editor role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -1993,6 +2563,24 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space the stubs go to.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "host",
+            "in": "query",
+            "description": "`request.host` for every imported stub that has none. For a space that owns hosts it must be one\nof them; it defaults to the space's only host and is required when the space owns several.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -2064,6 +2652,16 @@
               }
             }
           },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "413": {
             "description": "Body too large",
             "content": {
@@ -2088,7 +2686,28 @@
           "imports"
         ],
         "summary": "Generate stubs from an OpenAPI 3 document",
+        "description": "The stubs go to the target space (`space` parameter); only imports into the global area are recorded in the service catalog.",
         "operationId": "importOpenApi",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space the stubs go to. Without it, the global area, or the caller's only space when it is bound to\nspaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "host",
+            "in": "query",
+            "description": "`request.host` for every imported stub that has none. For a space that owns hosts it must be one of\nthem; it defaults to the space's only host and is required when the space owns several.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2144,6 +2763,16 @@
               }
             }
           },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "413": {
             "description": "Body too large",
             "content": {
@@ -2170,6 +2799,26 @@
         "summary": "Generate stubs from a Postman collection",
         "description": "Every saved example response becomes a stub: method, path (`:id` and unresolved `{{var}}` segments become path parameters), enabled query parameters and, when a request has several examples, its raw body. `{{var}}` is resolved from collection and folder variables; folders become tags. Requests without saved examples are skipped with a warning. Response bodies are not templated.",
         "operationId": "importPostman",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space the stubs go to. Without it, the global area, or the caller's only space when it is bound to\nspaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "host",
+            "in": "query",
+            "description": "`request.host` for every imported stub that has none. For a space that owns hosts it must be one of\nthem; it defaults to the space's only host and is required when the space owns several.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2250,6 +2899,16 @@
           },
           "403": {
             "description": "Requires the editor role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -2352,8 +3011,28 @@
           "imports"
         ],
         "summary": "Convert WireMock mappings into stubs",
-        "description": "Unsupported parts come back as warnings.",
+        "description": "Unsupported parts come back as warnings. The stubs go to the target space (`space` parameter).",
         "operationId": "importWireMock",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space the stubs go to. Without it, the global area, or the caller's only space when it is bound to\nspaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "host",
+            "in": "query",
+            "description": "`request.host` for every imported stub that has none. For a space that owns hosts it must be one of\nthem; it defaults to the space's only host and is required when the space owns several.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2414,6 +3093,16 @@
           },
           "403": {
             "description": "Requires the editor role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -2538,6 +3227,16 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2560,6 +3259,15 @@
             "in": "path",
             "description": "Key, 1..512 bytes",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -2588,6 +3296,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -2625,6 +3343,15 @@
             "in": "path",
             "description": "Key, 1..512 bytes",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -2673,6 +3400,16 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2693,6 +3430,15 @@
             "in": "path",
             "description": "Key, 1..512 bytes",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -2770,6 +3516,16 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2799,6 +3555,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -3105,6 +3871,15 @@
               "format": "int64",
               "minimum": 0
             }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Only entries of this space (matched by its stubs).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3137,6 +3912,26 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3150,7 +3945,19 @@
           "requests"
         ],
         "summary": "Clear the request journal",
+        "description": "Deletes the entries of `space`, or of everything the caller may delete.",
         "operationId": "clearRequests",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Number of deleted entries",
@@ -3174,6 +3981,16 @@
           },
           "403": {
             "description": "Requires the editor role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -3285,6 +4102,15 @@
               "format": "int64",
               "minimum": 0
             }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Only entries of this space (matched by its stubs).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3300,6 +4126,26 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -3331,6 +4177,17 @@
         ],
         "summary": "Count journal entries (filter in the body)",
         "operationId": "countRequestsByFilter",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3364,6 +4221,26 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -3429,6 +4306,15 @@
               "maximum": 10000,
               "minimum": 1
             }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Only entries of this space.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -3484,6 +4370,26 @@
               }
             }
           },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The scan exceeds FASTMOCK_JOURNAL_SCAN_MAX_WORK",
             "content": {
@@ -3518,8 +4424,19 @@
           "requests"
         ],
         "summary": "Explain why a request does not match",
-        "description": "Returns the five closest stubs with the matchers that failed.",
+        "description": "Returns the five closest stubs (of `space`, or of the spaces the caller may read) with the matchers that failed.",
         "operationId": "nearMisses",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3560,6 +4477,26 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -3634,6 +4571,15 @@
               "maximum": 10000,
               "minimum": 1
             }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Only entries of this space.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -3682,6 +4628,16 @@
           },
           "403": {
             "description": "Requires the editor role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -3796,6 +4752,16 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3847,6 +4813,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -3927,6 +4903,17 @@
         ],
         "summary": "Current scenario states",
         "operationId": "listScenarios",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Scenarios",
@@ -3947,6 +4934,26 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3960,7 +4967,19 @@
           "scenarios"
         ],
         "summary": "Reset every scenario to Started",
+        "description": "Resets the scenarios of `space`, or of everything the caller may change.",
         "operationId": "resetScenarios",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Number of reset scenarios",
@@ -3991,6 +5010,16 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4013,6 +5042,15 @@
             "in": "path",
             "description": "Scenario name",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -4054,6 +5092,16 @@
           },
           "403": {
             "description": "Requires the editor role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -4126,6 +5174,16 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4166,6 +5224,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -4296,6 +5364,16 @@
               }
             }
           },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown service or no stored document",
             "content": {
@@ -4335,6 +5413,16 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
             "content": {
               "application/json": {
                 "schema": {
@@ -4426,6 +5514,53 @@
         ]
       }
     },
+    "/__admin/spaces": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Spaces the caller can see",
+        "description": "Spaces come from the access file (`FASTMOCK_ACCESS_FILE`). A principal holding a permission globally sees every space; a principal bound to spaces sees only those.",
+        "operationId": "listSpaces",
+        "responses": {
+          "200": {
+            "description": "Spaces with the caller's permissions in each",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpaceList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/__admin/stubs": {
       "get": {
         "tags": [
@@ -4438,6 +5573,15 @@
           {
             "name": "tag",
             "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Only stubs of this space.",
             "required": false,
             "schema": {
               "type": "string"
@@ -4509,6 +5653,26 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4522,7 +5686,19 @@
           "stubs"
         ],
         "summary": "Create a stub",
+        "description": "The stub goes to the space in its `space` field or the `space` parameter; without either, to the global area (or the caller's only space). Stubs in a space with ownership rules must stay inside them.",
         "operationId": "createStub",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4587,6 +5763,16 @@
               }
             }
           },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "409": {
             "description": "A stub with this id exists",
             "content": {
@@ -4619,12 +5805,21 @@
           "stubs"
         ],
         "summary": "Delete stubs by tag, or all stubs",
-        "description": "Without `tag` every stub is deleted, which needs the admin role.",
+        "description": "Without `tag` every stub (of `space`, when given) is deleted, which needs `stubs:purge` (admin role). With `tag`, the tagged stubs of every space the caller may change, or of `space`, are deleted.",
         "operationId": "deleteStubs",
         "parameters": [
           {
             "name": "tag",
             "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Only stubs of this space.",
             "required": false,
             "schema": {
               "type": "string"
@@ -4661,6 +5856,16 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4678,6 +5883,17 @@
         "summary": "List the shared stub counters",
         "description": "Counters behind `times` and response sequences, shared by all replicas.",
         "operationId": "listStubCounters",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Counters",
@@ -4698,6 +5914,26 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4711,7 +5947,19 @@
           "stubs"
         ],
         "summary": "Reset `times` and response sequence counters",
+        "description": "Resets the counters of the stubs of `space`, or of every stub the caller may change.",
         "operationId": "resetStubCounters",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Number of counters removed",
@@ -4745,6 +5993,16 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4761,6 +6019,17 @@
         ],
         "summary": "Find stubs by metadata (WireMock compatible)",
         "operationId": "findStubsByMetadata",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4805,6 +6074,26 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4820,8 +6109,28 @@
           "stubs"
         ],
         "summary": "Bulk import FastMock stubs",
-        "description": "With `replaceTag`, stubs carrying that tag are deleted first and the tag is added to every imported stub, in one transaction. At most 10000 stubs.",
+        "description": "With `replaceTag`, stubs carrying that tag (in the target space) are deleted first and the tag is added to every imported stub, in one transaction. At most 10000 stubs. Every stub goes to the target space (`space` parameter; without it the global area or the caller's only space).",
         "operationId": "importStubs",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space the stubs go to. Without it, the global area, or the caller's only space when it is bound to\nspaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "host",
+            "in": "query",
+            "description": "`request.host` for every imported stub that has none. For a space that owns hosts it must be one of\nthem; it defaults to the space's only host and is required when the space owns several.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4873,6 +6182,16 @@
               }
             }
           },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "413": {
             "description": "Body too large",
             "content": {
@@ -4898,6 +6217,17 @@
         ],
         "summary": "Delete stubs by metadata (WireMock compatible)",
         "operationId": "removeStubsByMetadata",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4952,6 +6282,16 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4979,6 +6319,15 @@
               "type": "string",
               "format": "date-time"
             }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Only stubs of this space.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -4994,6 +6343,26 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -5057,6 +6426,16 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5106,6 +6485,16 @@
               }
             }
           },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "No such stub",
             "content": {
@@ -5128,7 +6517,7 @@
           "stubs"
         ],
         "summary": "Create or replace a stub",
-        "description": "The id in the path wins over an id in the body. The audit log records the changed fields.",
+        "description": "The id in the path wins over an id in the body. The audit log records the changed fields. An existing stub keeps its space; a new one goes to the space given like for `POST /stubs`.",
         "operationId": "putStub",
         "parameters": [
           {
@@ -5139,6 +6528,15 @@
             "schema": {
               "type": "string",
               "format": "uuid"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -5185,6 +6583,16 @@
           },
           "403": {
             "description": "Requires the editor role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -5363,6 +6771,428 @@
         ]
       }
     },
+    "/__admin/tokens": {
+      "get": {
+        "tags": [
+          "tokens"
+        ],
+        "summary": "List managed tokens",
+        "description": "Metadata only, newest first, including revoked and expired tokens (kept for 90 days). Lists the tokens for which the caller holds `tokens:read` in every scope; global tokens need it globally, `*` tokens globally or through a `*` grant.",
+        "operationId": "listTokens",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Only tokens granted in this space; tokens with `spaces: [\"*\"]` belong to every space.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "`active`, `expired` or `revoked`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tokens",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires tokens:read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "tokens"
+        ],
+        "summary": "Create a managed token",
+        "description": "Returns the token value once. The caller needs `tokens:write` and every permission of the role in each requested scope (globally for `global: true`), so a token never holds more than its creator; a caller bound only to spaces cannot create global tokens. `spaces: [\"*\"]` grants the role in every space, including spaces added to the access file later: it needs `tokens:write` and every permission of the role globally or through the caller's own `*` grant (being bound to every current space one by one is not enough). Expiry is mandatory; a token created by a managed token expires no later than that token and is revoked with it.",
+        "operationId": "createToken",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateToken"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created; `token` is shown only here",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedToken"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid name, role, scope or lifetime",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller cannot grant this role in these scopes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An active token or a static token has this name, or authentication is disabled (`FASTMOCK_AUTH_DISABLED=true`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/__admin/tokens/options": {
+      "get": {
+        "tags": [
+          "tokens"
+        ],
+        "summary": "Choices for creating a token",
+        "description": "The roles the caller may grant and where, and the lifetime limits. Needs `tokens:write` somewhere. A role is grantable in a scope when the caller holds `tokens:write` and every permission of the role there.",
+        "operationId": "getTokenOptions",
+        "responses": {
+          "200": {
+            "description": "Options",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenOptions"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires tokens:write",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/__admin/tokens/self": {
+      "get": {
+        "tags": [
+          "tokens"
+        ],
+        "summary": "The caller's own managed token",
+        "description": "Any managed token may read its own metadata. Other principals get 404.",
+        "operationId": "getOwnToken",
+        "responses": {
+          "200": {
+            "description": "Token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenInfo"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The caller is not a managed token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/__admin/tokens/{id}": {
+      "get": {
+        "tags": [
+          "tokens"
+        ],
+        "summary": "One managed token",
+        "description": "Needs `tokens:read` in every scope of the token; tokens outside the caller's scopes answer 404.",
+        "operationId": "getToken",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Token id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenInfo"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires tokens:read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "tokens"
+        ],
+        "summary": "Revoke a managed token",
+        "description": "Needs `tokens:write` in every scope of the token (for a `*` token, globally or through a `*` grant); a managed token may always revoke itself. Every replica rejects the token within 10 seconds. Tokens created by this token, directly or not, are revoked with it. Revoking a token that is no longer active (revoked or expired) changes nothing and records no audit event.",
+        "operationId": "revokeToken",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Token id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The token after revocation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenInfo"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires tokens:write in every scope of the token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Authentication is disabled (`FASTMOCK_AUTH_DISABLED=true`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/__admin/verify": {
       "post": {
         "tags": [
@@ -5371,6 +7201,17 @@
         "summary": "Verify how often a request was received",
         "description": "Counts journal entries matching `request` (a stub request pattern). Without `count`/`exactly`/`atLeast`/`atMost` the expectation is `atLeast: 1`. Answers 200 when the expectation holds and 422 with the actual count and the closest non-matching requests when it does not.",
         "operationId": "verify",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -5419,6 +7260,26 @@
               }
             }
           },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Expectation not met (`VerifyResult`), or the scan exceeds FASTMOCK_JOURNAL_SCAN_MAX_WORK (`ErrorBody`)",
             "content": {
@@ -5455,6 +7316,17 @@
         "summary": "Verify that requests arrived in a given order",
         "description": "MockServer-style sequence verification over the newest 10000 journal entries passing `source` and `since`. Answers 200 when every pattern was matched by a later request than the previous one, otherwise 422.",
         "operationId": "verifySequence",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -5504,6 +7376,26 @@
           },
           "401": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown space, or a space the caller cannot see",
             "content": {
               "application/json": {
                 "schema": {
@@ -5567,6 +7459,16 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5604,6 +7506,161 @@
   },
   "components": {
     "schemas": {
+      "AccessBinding": {
+        "type": "object",
+        "description": "A binding: of the access file, or the global role of a static token.",
+        "required": [
+          "subject",
+          "role",
+          "global",
+          "spaces",
+          "source"
+        ],
+        "properties": {
+          "subject": {
+            "type": "string",
+            "description": "`token:<name>`, `user:<name>` or `group:<name>`.",
+            "example": "group:payments-dev"
+          },
+          "role": {
+            "type": "string",
+            "example": "editor"
+          },
+          "global": {
+            "type": "boolean",
+            "description": "The role is granted everywhere."
+          },
+          "spaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Spaces the role is granted in: `[\"*\"]` for every space; empty for a global binding.",
+            "example": [
+              "payments"
+            ]
+          },
+          "source": {
+            "$ref": "#/components/schemas/AccessBindingSource",
+            "description": "`accessFile` for a binding of the access file; `adminTokens` for the global role of a\nstatic token written `name:role:hash` (subject `token:<name>`)."
+          }
+        }
+      },
+      "AccessBindingSource": {
+        "type": "string",
+        "description": "Where a binding comes from.",
+        "enum": [
+          "accessFile",
+          "adminTokens"
+        ]
+      },
+      "AccessRole": {
+        "type": "object",
+        "description": "A built-in role or a custom role of the access file.",
+        "required": [
+          "name",
+          "builtin",
+          "permissions"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "stub-author"
+          },
+          "builtin": {
+            "type": "boolean",
+            "description": "`viewer`, `editor` or `admin`; false for custom roles of the access file."
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The role's permissions, with wildcards expanded.",
+            "example": [
+              "stubs:read",
+              "stubs:write"
+            ]
+          }
+        }
+      },
+      "AccessSpace": {
+        "type": "object",
+        "description": "A space of the access file.",
+        "required": [
+          "name",
+          "pathPrefixes",
+          "hosts"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "payments"
+          },
+          "pathPrefixes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Data-plane path prefixes the space's stubs must stay under (empty: no restriction).",
+            "example": [
+              "/payments/"
+            ]
+          },
+          "hosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Hosts the space's stubs must match (empty: no restriction).",
+            "example": [
+              "psp.example.com"
+            ]
+          }
+        }
+      },
+      "AccessView": {
+        "type": "object",
+        "description": "The access configuration, read-only: spaces and roles of the access file, its bindings and\nthe global roles of static tokens.",
+        "required": [
+          "configured",
+          "oidc",
+          "spaces",
+          "roles",
+          "bindings"
+        ],
+        "properties": {
+          "configured": {
+            "type": "boolean",
+            "description": "An access file (`FASTMOCK_ACCESS_FILE`) is loaded."
+          },
+          "oidc": {
+            "type": "boolean",
+            "description": "OIDC sign-in or OIDC bearer tokens are enabled."
+          },
+          "spaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccessSpace"
+            },
+            "description": "Spaces, sorted by name."
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccessRole"
+            },
+            "description": "Built-in roles first (viewer, editor, admin), then the custom roles sorted by name."
+          },
+          "bindings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccessBinding"
+            },
+            "description": "Bindings of the access file in file order, then the roles of static tokens written\n`name:role:hash` in entry order. Static tokens written `name::hash` have only their\naccess-file bindings."
+          }
+        }
+      },
       "ApiKind": {
         "type": "string",
         "enum": [
@@ -5779,7 +7836,22 @@
             "type": "string"
           },
           "role": {
-            "type": "string"
+            "type": "string",
+            "description": "Role names of the principal's bindings, comma-separated."
+          },
+          "principalKind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`token`, `apiToken`, `user` or `anonymous`; absent on events recorded before it was kept."
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Space the change applied to; absent for global changes."
           },
           "action": {
             "type": "string"
@@ -5798,6 +7870,23 @@
             "items": {
               "$ref": "#/components/schemas/AuditEvent"
             }
+          }
+        }
+      },
+      "AuthConfig": {
+        "type": "object",
+        "required": [
+          "oidc",
+          "tokenLogin"
+        ],
+        "properties": {
+          "oidc": {
+            "type": "boolean",
+            "description": "SSO sign-in is configured (`FASTMOCK_OIDC_ISSUER`)."
+          },
+          "tokenLogin": {
+            "type": "boolean",
+            "description": "Sign-in with an admin token is always available."
           }
         }
       },
@@ -6120,6 +8209,13 @@
               "string",
               "null"
             ]
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Space of the stub that scheduled the callback."
           }
         }
       },
@@ -6368,6 +8464,13 @@
           "detailsHidden": {
             "type": "boolean",
             "description": "True when request/response excerpts, message excerpts and error texts were removed because\nthe caller is a viewer."
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Space the run was started in; absent in the global area."
           }
         }
       },
@@ -6496,6 +8599,83 @@
           }
         }
       },
+      "CreateToken": {
+        "type": "object",
+        "required": [
+          "name",
+          "role"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "`[A-Za-z0-9._@-]`, at most 128 characters; unique among active tokens and distinct from the static token names.",
+            "example": "ci-billing"
+          },
+          "role": {
+            "type": "string",
+            "description": "Built-in role (`viewer`, `editor`, `admin`) or a custom role of the access file.",
+            "example": "editor"
+          },
+          "spaces": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Spaces the role is granted in, or `[\"*\"]` (the only entry) for every space of the access file, including spaces added later. Set either `spaces` or `global: true`.",
+            "example": [
+              "billing"
+            ]
+          },
+          "global": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Grant the role everywhere."
+          },
+          "expiresInDays": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Lifetime in days: 1 to `FASTMOCK_TOKENS_MAX_DAYS` (default 365); when omitted, 90 or `FASTMOCK_TOKENS_MAX_DAYS` when that is lower.",
+            "example": 30,
+            "minimum": 1
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "CI pipeline of the billing team"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreatedToken": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TokenInfo"
+          },
+          {
+            "type": "object",
+            "required": [
+              "token"
+            ],
+            "properties": {
+              "token": {
+                "type": "string",
+                "description": "The token value (`fm_` and 64 hex digits). Returned only in this response: store it now.",
+                "example": "fm_3f9c0d5e8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0"
+              }
+            }
+          }
+        ]
+      },
       "DateTruncation": {
         "type": "string",
         "enum": [
@@ -6617,6 +8797,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "required": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "On 403: the built-in role (for principals holding only global built-in roles) or the permission the request needs."
           }
         }
       },
@@ -6670,6 +8857,13 @@
               "string",
               "null"
             ]
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Space of the file; absent in the global area. `name` is relative to the space."
           }
         }
       },
@@ -6738,6 +8932,56 @@
           }
         },
         "additionalProperties": false
+      },
+      "GrantableRole": {
+        "type": "object",
+        "description": "A role and the scopes in which the caller may grant it.",
+        "required": [
+          "name",
+          "builtin",
+          "permissions",
+          "global",
+          "spaces",
+          "allSpaces"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "editor"
+          },
+          "builtin": {
+            "type": "boolean",
+            "description": "`viewer`, `editor` or `admin`; false for custom roles of the access file."
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "stubs:read",
+              "stubs:write"
+            ]
+          },
+          "global": {
+            "type": "boolean",
+            "description": "The caller may create global tokens with this role."
+          },
+          "spaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Spaces in which the caller may create tokens with this role.",
+            "example": [
+              "payments"
+            ]
+          },
+          "allSpaces": {
+            "type": "boolean",
+            "description": "The caller may create tokens with this role and `spaces: [\"*\"]` (every space, including spaces added later): it holds `tokens:write` and every permission of the role globally or through its own `*` grant, and the access file defines at least one space."
+          }
+        }
       },
       "GraphQlImport": {
         "type": "object",
@@ -7104,7 +9348,8 @@
           "stubsLoaded",
           "plugins",
           "principal",
-          "authDisabled"
+          "authDisabled",
+          "instanceId"
         ],
         "properties": {
           "name": {
@@ -7124,6 +9369,7 @@
           },
           "stubsLoaded": {
             "type": "integer",
+            "description": "Loaded stubs the caller may read.",
             "minimum": 0
           },
           "plugins": {
@@ -7137,6 +9383,18 @@
           },
           "authDisabled": {
             "type": "boolean"
+          },
+          "instanceId": {
+            "type": "string",
+            "description": "Random id of the answering server process, new on every start. A change tells clients such as the\noperator that an in-memory server lost its stubs.",
+            "example": "6f1c0d3a9b8e4f27a1c5d2e3f4a5b6c7"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Stored stubs the caller can read that break the rules of their space (outside its path prefixes or\nhosts, or in a space the access file no longer defines), typically after the access file changed.\nThey stay stored; fix or delete them."
           }
         }
       },
@@ -7222,6 +9480,13 @@
               "string",
               "null"
             ]
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Space of the stub that matched; absent for unmatched requests and global stubs."
           }
         }
       },
@@ -7386,6 +9651,25 @@
           }
         },
         "additionalProperties": false
+      },
+      "LogoutResponse": {
+        "type": "object",
+        "required": [
+          "loggedOut"
+        ],
+        "properties": {
+          "loggedOut": {
+            "type": "boolean",
+            "description": "A session was found and deleted."
+          },
+          "logoutUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The provider's end-session URL; the UI navigates there to end the IdP session too."
+          }
+        }
       },
       "MessageDef": {
         "type": "object",
@@ -7818,6 +10102,56 @@
           "IDS"
         ]
       },
+      "PermissionsView": {
+        "type": "object",
+        "required": [
+          "global",
+          "spaces",
+          "allSpaces"
+        ],
+        "properties": {
+          "global": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Permissions granted everywhere.",
+            "example": [
+              "stubs:read",
+              "info:read"
+            ]
+          },
+          "spaces": {
+            "type": "object",
+            "description": "Permissions granted only in single spaces, by space; the effective permissions in a space are these plus the global ones. Permissions granted through `spaces: [\"*\"]` appear under every configured space.",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "example": {
+              "payments": [
+                "stubs:write",
+                "journal:read"
+              ]
+            }
+          },
+          "allSpaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Permissions granted in every space through `spaces: [\"*\"]`, including spaces added to the access file later (empty when none).",
+            "example": [
+              "stubs:read"
+            ]
+          }
+        }
+      },
       "PluginInfo": {
         "type": "object",
         "required": [
@@ -7883,16 +10217,44 @@
         "type": "object",
         "required": [
           "name",
-          "role"
+          "role",
+          "kind",
+          "permissions"
         ],
         "properties": {
           "name": {
             "type": "string"
           },
           "role": {
-            "$ref": "#/components/schemas/Role"
+            "$ref": "#/components/schemas/Role",
+            "description": "The highest built-in role whose permissions the principal holds everywhere (`viewer` when it holds less); kept for older clients, decide with `permissions`."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PrincipalKind"
+          },
+          "permissions": {
+            "$ref": "#/components/schemas/PermissionsView"
+          },
+          "groups": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "OIDC users: the group names from the identity provider (`kind: user` only)."
           }
         }
+      },
+      "PrincipalKind": {
+        "type": "string",
+        "enum": [
+          "token",
+          "apiToken",
+          "user",
+          "anonymous"
+        ]
       },
       "ProxyDef": {
         "type": "object",
@@ -8544,6 +10906,13 @@
           },
           "state": {
             "type": "string"
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Space of the scenario; absent in the global area."
           }
         }
       },
@@ -8918,6 +11287,62 @@
         },
         "additionalProperties": false
       },
+      "SpaceInfo": {
+        "type": "object",
+        "required": [
+          "name",
+          "pathPrefixes",
+          "hosts",
+          "permissions"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "payments"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pathPrefixes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Data-plane path prefixes the space's stubs must stay under (empty: no restriction)."
+          },
+          "hosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Hosts the space's stubs must match (empty: no restriction)."
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The caller's effective permissions in the space."
+          }
+        }
+      },
+      "SpaceList": {
+        "type": "object",
+        "required": [
+          "spaces"
+        ],
+        "properties": {
+          "spaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SpaceInfo"
+            }
+          }
+        }
+      },
       "SseEvent": {
         "type": "object",
         "properties": {
@@ -9217,6 +11642,13 @@
           "enabled": {
             "type": "boolean"
           },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Space the stub belongs to (see access control); absent for the global area. Set on create and never\nchanged afterwards."
+          },
           "updatedAt": {
             "type": [
               "string",
@@ -9297,6 +11729,144 @@
             }
           }
         }
+      },
+      "TokenInfo": {
+        "type": "object",
+        "description": "Metadata of a managed token; the value is never shown again after creation.",
+        "required": [
+          "id",
+          "name",
+          "role",
+          "spaces",
+          "global",
+          "createdBy",
+          "createdAt",
+          "expiresAt",
+          "status"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "example": "ci-billing"
+          },
+          "role": {
+            "type": "string",
+            "example": "editor"
+          },
+          "spaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Spaces of the token: `[\"*\"]` for every space; empty for a global token."
+          },
+          "global": {
+            "type": "boolean"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdBy": {
+            "type": "string",
+            "description": "Name of the principal that created the token.",
+            "example": "ops"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastUsedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Last use, recorded at most once per minute."
+          },
+          "revokedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TokenStatus"
+          },
+          "parentId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The managed token that created this one; it expires no later than that token and is revoked\nwith it."
+          }
+        }
+      },
+      "TokenList": {
+        "type": "object",
+        "required": [
+          "tokens"
+        ],
+        "properties": {
+          "tokens": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TokenInfo"
+            }
+          }
+        }
+      },
+      "TokenOptions": {
+        "type": "object",
+        "description": "What the caller may choose when creating a token.",
+        "required": [
+          "maxDays",
+          "defaultDays",
+          "roles"
+        ],
+        "properties": {
+          "maxDays": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Longest lifetime in days (`FASTMOCK_TOKENS_MAX_DAYS`).",
+            "example": 365,
+            "minimum": 0
+          },
+          "defaultDays": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Lifetime used when `expiresInDays` is omitted.",
+            "example": 90,
+            "minimum": 0
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GrantableRole"
+            },
+            "description": "Every role, built-in first, with the scopes where the caller may grant it (the escalation rule\napplied to the caller)."
+          }
+        }
+      },
+      "TokenStatus": {
+        "type": "string",
+        "enum": [
+          "active",
+          "expired",
+          "revoked"
+        ]
       },
       "TopicNaming": {
         "type": "string",
@@ -9624,7 +12194,13 @@
       "bearer": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Admin token from FASTMOCK_ADMIN_TOKENS. GET/HEAD and read-only POSTs need viewer, other changes editor; deleting all stubs, reset and the audit log need admin."
+        "description": "Static admin token from FASTMOCK_ADMIN_TOKENS, a managed token from POST /__admin/tokens or, with FASTMOCK_OIDC_API_AUDIENCE, a JWT from the OIDC provider. The UI may instead use the SSO session cookie (see the `session` scheme). Every route needs a permission (`resource:action`); the built-in roles viewer, editor and admin are permission sets, custom roles and space bindings come from FASTMOCK_ACCESS_FILE. Without an access file: GET/HEAD and read-only POSTs need viewer, other changes editor; deleting all stubs, reset, the audit log and managing other tokens (`/__admin/tokens*`, `tokens:read`/`tokens:write`) and reading the access configuration (`/__admin/access`, `access:read`) need admin. Routes without a rule need admin."
+      },
+      "session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-fastmock_session",
+        "description": "SSO session cookie set by GET /__admin/auth/callback; accepted by every /__admin route instead of a bearer token when no Authorization header is sent. Requests other than GET and HEAD need the `X-FastMock-Request: 1` header."
       }
     }
   },
@@ -9678,6 +12254,14 @@
       "description": "Audit log"
     },
     {
+      "name": "access",
+      "description": "Spaces, roles and bindings of the access file (read-only)"
+    },
+    {
+      "name": "auth",
+      "description": "SSO sign-in for the UI (OIDC, backend for frontend)"
+    },
+    {
       "name": "system",
       "description": "Server information"
     },
@@ -9688,6 +12272,10 @@
     {
       "name": "contract-tests",
       "description": "Contract tests of real services against OpenAPI and AsyncAPI documents"
+    },
+    {
+      "name": "tokens",
+      "description": "Managed admin tokens with expiry and revocation"
     },
     {
       "name": "services"

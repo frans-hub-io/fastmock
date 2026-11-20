@@ -5,12 +5,94 @@
   overflow: hidden;
 }
 
+.host :global(.swagger-ui) {
+  font-family: var(--mantine-font-family);
+}
+
 .host :global(.swagger-ui .information-container) {
   padding-top: 0;
 }
 
 .host :global(.swagger-ui .topbar) {
   display: none;
+}
+
+/* Light values of the brand tokens (--fh-color-link, --fh-color-accent, --fh-http-*): the dark scheme inverts the whole host. */
+.host :global(.swagger-ui .info a) {
+  color: #6020a0;
+}
+
+.host :global(.swagger-ui .btn.execute) {
+  background-color: #ffd43b;
+  border-color: #e8b800;
+  color: #24162f;
+}
+
+.host :global(.swagger-ui .opblock .opblock-summary-method) {
+  color: #fff;
+}
+
+.host :global(.swagger-ui .opblock.opblock-get) {
+  background: #dfeee5;
+  border-color: #347750;
+}
+
+.host :global(.swagger-ui .opblock.opblock-get .opblock-summary-method) {
+  background: #347750;
+}
+
+.host :global(.swagger-ui .opblock.opblock-post) {
+  background: #e2eff8;
+  border-color: #34709b;
+}
+
+.host :global(.swagger-ui .opblock.opblock-post .opblock-summary-method) {
+  background: #34709b;
+}
+
+.host :global(.swagger-ui .opblock.opblock-put) {
+  background: #eee5f6;
+  border-color: #765198;
+}
+
+.host :global(.swagger-ui .opblock.opblock-put .opblock-summary-method) {
+  background: #765198;
+}
+
+.host :global(.swagger-ui .opblock.opblock-patch) {
+  background: #f5e7d5;
+  border-color: #9b621e;
+}
+
+.host :global(.swagger-ui .opblock.opblock-patch .opblock-summary-method) {
+  background: #9b621e;
+}
+
+.host :global(.swagger-ui .opblock.opblock-delete) {
+  background: #f8e1dc;
+  border-color: #af4a40;
+}
+
+.host :global(.swagger-ui .opblock.opblock-delete .opblock-summary-method) {
+  background: #af4a40;
+}
+
+.host :global(.swagger-ui .opblock.opblock-head) {
+  background: #ede7e2;
+  border-color: #75645c;
+}
+
+.host :global(.swagger-ui .opblock.opblock-head .opblock-summary-method) {
+  background: #75645c;
+}
+
+.host :global(.swagger-ui .opblock.opblock-options) {
+  background: #ddecec;
+  border-color: #46777e;
+}
+
+.host :global(.swagger-ui .opblock.opblock-options .opblock-summary-method) {
+  background: #46777e;
 }
 
 :global([data-mantine-color-scheme='dark']) .host {

@@ -7,6 +7,7 @@ files, imports, recording, scenarios, chaos rules and gRPC descriptors. The UI u
 - [OpenAPI document and Swagger UI](#openapi-document-and-swagger-ui)
 - [Authentication](#authentication)
 - [Roles per endpoint](#roles-per-endpoint)
+- [Managed tokens](#managed-tokens)
 - [Errors](#errors)
 - [Pagination and filtering](#pagination-and-filtering)
 - [Stubs](#stubs)
@@ -60,24 +61,48 @@ SHA-256 hashes and compares them in constant time. Create a token and its entry 
 
 ```sh
 fastmock hash-token --generate          # prints a new random token and its hash
-fastmock hash-token "$FASTMOCK_TOKEN"   # prints the hash of an existing token
+fastmock hash-token "$FASTMOCK_TOKEN"   # prints only the hex hash of an existing token
 # FASTMOCK_ADMIN_TOKENS=ci:editor:<hash>,dash:viewer:<hash>
 ```
+
+Tokens can also be created, listed and revoked through the API, with an expiry and optionally limited to
+spaces: see [Managed tokens](#managed-tokens).
+
+With OIDC configured, two more credentials are accepted ([Access control: OIDC](../operations/access-control.md#oidc-sign-in-and-bearer-jwts)):
+
+- a JWT from the identity provider as the bearer token, when `FASTMOCK_OIDC_API_AUDIENCE` is set and the token's
+  `aud` contains it;
+- the UI's session cookie (`__Host-fastmock_session`) when there is no `Authorization` header. Requests other than
+  `GET` and `HEAD` then need the header `X-FastMock-Request: 1`.
+
+An `Authorization` header always wins: static tokens are checked first, then managed `fm_` tokens, then JWTs.
 
 Browser requests carrying an `Origin` header are accepted only from `FASTMOCK_ADMIN_ALLOWED_ORIGINS` or the
 admin listener's own origin.
 
 | Response | Meaning |
 |---|---|
-| `401 {"error":"unauthorized","details":[]}` + `WWW-Authenticate: Bearer` | token missing or unknown |
+| `401 {"error":"unauthorized","details":[]}` + `WWW-Authenticate: Bearer` | token missing, unknown or revoked |
+| `401 {"error":"unauthorized","details":["token expired"]}` | managed token past its expiry |
+| `503 {"error":"token store unavailable","details":[]}` | a managed token could not be checked because the database is unreachable (only while managed tokens exist; otherwise an unknown `fm_` value answers `401` without a database lookup) |
+| `401 {"error":"unauthorized","details":["invalid bearer token"]}` + `WWW-Authenticate: Bearer error="invalid_token"` | with `FASTMOCK_OIDC_API_AUDIENCE` set, a bearer value with three dot-separated parts that is not a valid JWT for that audience: bad signature, issuer, audience or lifetime, malformed or larger than 64 KiB, or an ID token (a JWT with `nonce`) |
+| `401 {"error":"unauthorized","details":["session expired or unknown: sign in again"]}` | session cookie expired, logged out or unknown; the cookie is cleared |
+| `403 {"error":"forbidden","details":["missing X-FastMock-Request: 1 header"]}` | a change authenticated by the session cookie without the CSRF header |
+| `403 {"error":"forbidden","details":["user bob has no access: ..."],"required":"..."}` | an OIDC user without any binding |
+| `503 {"error":"session store unavailable","details":[]}` | the hot store holding sessions is unreachable |
 | `403 {"error":"forbidden","details":["requires role editor"],"required":"editor"}` | token valid, role too low |
-| `403 {"error":"origin not allowed","details":[]}` | browser request from another origin |
+| `403 {"error":"forbidden","details":["requires permission files:read"],"required":"files:read"}` | a token with a custom role or space bindings lacks the permission ([Access control](../operations/access-control.md#errors)) |
+| `403 {"error":"forbidden","details":["origin not allowed"]}` | browser request from another origin, with an access file or OIDC configured |
+| `403 {"error":"origin not allowed","details":[]}` | browser request from another origin, with static tokens only |
 
 ## Roles per endpoint
 
-There are three roles, each including the one before: **viewer** reads, **editor** changes test state,
-**admin** can additionally wipe everything and read the audit log. The rule is: `GET`/`HEAD` and read-only `POST`s
-need viewer, every other method needs editor; the routes marked *admin* need admin.
+Every route needs a permission (`stubs:read`, `journal:delete`, ...). The three built-in roles are sets of
+permissions, each including the one before: **viewer** reads, **editor** changes test state, **admin** can
+additionally wipe everything and read the audit log. With the built-in roles the rule is: `GET`/`HEAD` and
+read-only `POST`s need viewer, every other method needs editor; the routes marked *admin* need admin. Custom roles,
+spaces and space bindings come from the access file; the permission of every route and how the `space` parameter
+selects data are listed in [Access control](../operations/access-control.md#permissions).
 
 | Endpoint | Role |
 |---|---|
@@ -94,10 +119,52 @@ need viewer, every other method needs editor; the routes marked *admin* need adm
 | `GET /recordings`; `POST /recordings/start`, `/recordings/stop`, `/recordings/snapshot` | viewer; editor |
 | `GET /callbacks`, `/scenarios`, `/kv/{key}`, `/chaos`, `/grpc/descriptors` | viewer |
 | `DELETE /callbacks`, `DELETE /scenarios`, `PUT /scenarios/{name}`, `PUT/DELETE /kv/{key}`, `PUT/DELETE /chaos`, `PUT/DELETE /grpc/descriptors/{name}` | editor |
-| `GET /info`, `/version`, `/plugins` | viewer |
+| `GET /info`, `/version`, `/plugins`, `/spaces` | viewer (any token) |
+| `GET /settings`, `/stubs/counters`; `PUT /settings`, `DELETE /stubs/counters` | viewer; editor |
 | `GET /contract-tests`, `/contract-tests/{id}` | viewer (verdicts only; details need editor) |
-| `POST /contract-tests`, `DELETE /contract-tests/{id}` | editor; `POST` with `secretHeaders` needs admin |
+| `POST /contract-tests`, `DELETE /contract-tests/{id}` | editor; `POST` with `secretHeaders` needs admin bound globally (`contracts:secrets`) |
 | `POST /reset`, `GET /audit` | admin |
+| `GET /access` | admin (`access:read`; see [Version and info](#version-and-info)) |
+| `GET /tokens`, `/tokens/{id}`; `POST /tokens`, `GET /tokens/options`, `DELETE /tokens/{id}` | admin (`tokens:read`, `tokens:write`; see [Managed tokens](#managed-tokens)) |
+| `GET /tokens/self`; `DELETE /tokens/{id}` of the calling token itself | the managed token itself |
+
+## Sign-in endpoints
+
+These routes serve the UI's SSO sign-in and need no token ([Access control: OIDC](../operations/access-control.md#oidc-sign-in-and-bearer-jwts)).
+Without OIDC configuration they answer `404`, except `/auth/config`.
+
+| Endpoint | Response |
+|---|---|
+| `GET /auth/config` | `{"oidc": true, "tokenLogin": true}`: which sign-in methods the login page offers |
+| `GET /auth/login?return=/ui/...` | `302` to the identity provider; `400` for a `return` outside `/ui/`; `503` until the provider is discovered; `429` when too many logins start on this replica |
+| `GET /auth/callback` | `302` to the `return` path with the session cookie, or to `/ui/?loginError=<code>` (`no_access`, `invalid_state`, `idp_error`, `failed`, `unavailable`) |
+| `POST /auth/logout` | needs `X-FastMock-Request: 1`; deletes the session, clears the cookie, `{"loggedOut": true, "logoutUrl": "..."}` (`logoutUrl` only when the provider supports RP-initiated logout) |
+
+## Managed tokens
+
+```sh
+# create (the value is shown only once)
+curl -s -X POST localhost:9090/__admin/tokens -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"name": "ci-billing-nightly", "role": "editor", "spaces": ["billing"], "expiresInDays": 30}'
+# list, read one, read your own, revoke
+curl -s localhost:9090/__admin/tokens?status=active -H "Authorization: Bearer $ADMIN_TOKEN"
+curl -s localhost:9090/__admin/tokens/$ID -H "Authorization: Bearer $ADMIN_TOKEN"
+curl -s localhost:9090/__admin/tokens/self -H "Authorization: Bearer $CI_TOKEN"
+curl -s -X DELETE localhost:9090/__admin/tokens/$ID -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+| Endpoint | Body or parameters | Response |
+|---|---|---|
+| `POST /tokens` | `{name, role, spaces?, global?, expiresInDays?, description?}`; exactly one of `spaces` and `global: true`; `spaces: ["*"]` for every space, now and later (`*` must be the only entry); `expiresInDays` 1 to `FASTMOCK_TOKENS_MAX_DAYS`, default 90 days or `FASTMOCK_TOKENS_MAX_DAYS` when lower; a token created by a managed token expires no later than its creator | `201` with `token` (the value, once) and the metadata; `409` when the name is taken by an active or a static token |
+| `GET /tokens` | `?space=`, `?status=active\|expired\|revoked` | `{"tokens": [...]}`: metadata of the tokens the caller may manage, newest first; `?space=` also matches tokens in all spaces |
+| `GET /tokens/{id}`, `GET /tokens/self` | | metadata: `id`, `name`, `role`, `spaces` (`["*"]` for a token in all spaces), `global`, `description`, `createdBy`, `createdAt`, `expiresAt`, `lastUsedAt`, `revokedAt`, `status`, and `parentId` for a token created by a managed token |
+| `GET /tokens/options` | | what the caller may choose when creating a token: `maxDays`, `defaultDays` and every role with its `permissions`, `builtin`, and where the caller may grant it (`global`, `spaces`, and `allSpaces` for tokens in all spaces); needs `tokens:write` somewhere |
+| `DELETE /tokens/{id}` | | the metadata with `status: revoked`; every replica rejects the token, and the tokens it created, within 10 seconds |
+
+Who may create, see and revoke which tokens (the escalation rule), expiry, caching and memory-mode behaviour are
+described in [Access control: managed tokens](../operations/access-control.md#managed-tokens). Managed tokens
+cannot be created or revoked while `FASTMOCK_AUTH_DISABLED=true` (`409`).
 
 ## Errors
 
@@ -108,8 +175,13 @@ Every error from the admin API has the same JSON shape:
 ```
 
 `error` is a single human-readable sentence; `details` lists individual problems when there are several (for
-example the mismatches of a failed verification). Some responses add fields: `403` adds `required`, `422` from
-`/verify` adds the actual `count` and `nearMisses`. Errors never contain stack traces, internal paths or database
+example the mismatches of a failed verification). Some responses add fields: `422` from `/verify` adds the actual
+`count` and `nearMisses`, and a `403` for a missing role or permission adds `required`. With static tokens only,
+`required` comes with the role check of the request (`requires role editor`); refusals from the endpoint itself
+keep the plain shape, for example `403 {"error":"secretHeaders require the admin role","details":[]}`. With an
+access file or OIDC configured, every `403` reads `{"error":"forbidden","details":[...],"required":...}`, with
+`required` wherever a role or permission is missing
+([Access control: errors](../operations/access-control.md#errors)). Errors never contain stack traces, internal paths or database
 messages; internal failures answer `500 {"error":"internal error","details":[]}` and are logged with details on the
 server.
 
@@ -117,9 +189,9 @@ server.
 |---|---|
 | 400 | invalid parameter, invalid stub, pattern, tag, file name or document; a request body that is not valid JSON or does not fit the schema (unknown field, wrong type); an import that yields no stub |
 | 401 / 403 | see [Authentication](#authentication) |
-| 404 | the stub, request, file, key or route does not exist |
+| 404 | the stub, request, file, key, space or route does not exist, or the space is not visible to the caller |
 | 405 | method not allowed on this route |
-| 409 | conflict: stub id exists on `POST /stubs`, incompatible gRPC descriptor, too many files |
+| 409 | conflict: stub id exists on `POST /stubs` (or belongs to a stub in another space on import), incompatible gRPC descriptor, too many files, managed tokens created or revoked while `FASTMOCK_AUTH_DISABLED=true` |
 | 413 | body larger than the route allows |
 | 415 | `POST /import` cannot detect or convert the format; missing JSON content type |
 | 422 | a verification that failed (`/verify`, `/verify/sequence`), or a journal scan over its work budget |
@@ -145,6 +217,9 @@ curl -s -H "Authorization: Bearer $FASTMOCK_TOKEN" \
 | `GET /audit` | `action` (exact, or prefix with a trailing `*`), `principal`, `since` | 100 events |
 
 `GET /requests` answers `{"requests": [...], "total": n, "offset": o, "limit": l}`.
+
+Collection endpoints also take `space` to limit them to one [space](../operations/access-control.md#spaces); for a
+token bound to spaces they cover its spaces by default, and `total` and the pages count only those entries.
 
 ## Stubs
 
@@ -244,6 +319,11 @@ rendered on the admin origin.
 
 Every upload and delete is recorded in the audit log (`file.put`, `file.delete`).
 
+With [spaces](../operations/access-control.md#spaces), body files belong to a space. `GET /files` lists like
+other collections, but `/files/{name}` addresses one file and picks the space like a write, also for `GET`: a
+principal bound to several spaces must pass `?space=` (otherwise `400`), for example
+`GET /__admin/files/invoices/42.json?space=billing`.
+
 ## Audit log
 
 Every change through the admin API is recorded with who, what and when. Admins read it with filters:
@@ -270,7 +350,8 @@ the deleted stub in `before`. Sensitive header values and JSON fields named like
 they are written. Other actions: `stub.create`, `stub.delete_many`, `stub.delete_by_metadata`, `stub.import`,
 `import.<format>`, `journal.clear`, `journal.remove`, `file.put`, `file.delete`, `recording.start`,
 `recording.stop`, `recording.snapshot`, `scenario.set`, `scenario.reset`, `kv.set`, `kv.delete`, `chaos.set`,
-`chaos.clear`, `grpc.descriptor.put`, `grpc.descriptor.delete`, `callbacks.clear`, `reset`. Audit entries are also
+`chaos.clear`, `grpc.descriptor.put`, `grpc.descriptor.delete`, `callbacks.clear`, `reset`, `token.create`,
+`token.revoke` (id, name, kind, role, scopes and expiry of the managed token, never its value). Audit entries are also
 logged with the `audit` tracing target.
 
 ## Version and info
@@ -280,8 +361,25 @@ curl -s -H "Authorization: Bearer $FASTMOCK_TOKEN" http://localhost:9090/__admin
 # {"version":"0.1.0","gitSha":"3f2c1ab","features":["grpc","kafka","sse","chaos","recording","verification","files","import-openapi","import-wiremock","import-postman","import-har"]}
 ```
 
-`gitSha` is set when the binary was built with the `FASTMOCK_GIT_SHA` environment variable, otherwise `null`.
-`GET /info` returns the version, storage kind, uptime, number of loaded stubs, plugins and the caller's identity.
+`features` lists `tokens` when the server supports [managed tokens](#managed-tokens). `gitSha` is set when the binary was built with the `FASTMOCK_GIT_SHA` environment variable, otherwise `null`.
+`GET /info` returns the version, storage kind, uptime, number of loaded stubs (`stubsLoaded`, only those the caller can see), plugins and the caller's identity:
+`principal` with `name`, `kind`, `role` and `permissions`: `global`, per-space lists in `spaces`, and `allSpaces`,
+the permissions granted in [all spaces](../operations/access-control.md#all-spaces) (empty when none; they also
+appear under every space). `instanceId` is a random
+id of the answering process, new on every start; `warnings` (present when not empty) lists stored stubs that break
+the rules of their space after the access file changed. `GET /spaces` lists the
+spaces the caller can see with its permissions in each ([Access control](../operations/access-control.md#inspecting-your-permissions)).
+
+`GET /access` (permission `access:read`, admins) returns the loaded access configuration: whether an access file
+is loaded (`configured`), whether OIDC is enabled (`oidc`), the spaces with their path prefixes and hosts, the
+roles with their expanded permissions, and the bindings with subject, role, scope and `source`: `accessFile` for a
+binding of the access file, `adminTokens` for the global role of a static token written `name:role:hash`. It never
+contains token values or hashes. Spaces, roles and bindings are changed only in the access file
+([Access control: viewing the access configuration](../operations/access-control.md#viewing-the-access-configuration)).
+
+```sh
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:9090/__admin/access | jq '.bindings'
+```
 
 ## Limits
 
@@ -299,7 +397,7 @@ curl -s -H "Authorization: Bearer $FASTMOCK_TOKEN" http://localhost:9090/__admin
 | Metric | Labels | Meaning |
 |---|---|---|
 | `fastmock_admin_changes_total` | `action` | audited admin changes |
-| `fastmock_admin_auth_failures_total` | `reason` (`token`, `role`, `origin`) | rejected admin requests |
+| `fastmock_admin_auth_failures_total` | `reason` (`token`, `expired`, `role`, `permission`, `origin`, `session`, `jwt`, `csrf`) | rejected admin requests: `token` for missing, unknown or revoked tokens, `expired` for expired managed tokens, `role` for principals holding only global built-in roles and `permission` for others (including OIDC users without a binding), `origin` for refused browser origins, `session` for expired or unknown session cookies, `jwt` for rejected bearer JWTs, `csrf` for cookie-authenticated changes without `X-FastMock-Request` |
 | `fastmock_admin_errors_total` | | internal errors in admin handlers |
 | `fastmock_files_written_total` | | body file uploads |
 | `fastmock_file_size_bytes` | | histogram of uploaded file sizes |

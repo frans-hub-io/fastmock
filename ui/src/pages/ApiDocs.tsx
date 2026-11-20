@@ -2,7 +2,7 @@ import { Alert, Anchor, Group, Stack, Text } from '@mantine/core';
 import { IconExternalLink } from '@tabler/icons-react';
 import { useEffect, useRef, useState } from 'react';
 import 'swagger-ui-dist/swagger-ui.css';
-import { tokenStore } from '../api/http';
+import { CSRF_HEADER, tokenStore } from '../api/http';
 import { sameOrigin } from '../lib/origin';
 import { PageHeader } from '../components/common';
 import { LoadingState } from '../components/States';
@@ -30,7 +30,9 @@ export default function ApiDocs() {
           defaultModelsExpandDepth: 0,
           requestInterceptor: (req) => {
             const token = tokenStore.get();
-            if (token && sameOrigin(req.url, window.location.href) && !req.headers.Authorization) req.headers.Authorization = `Bearer ${token}`;
+            const own = sameOrigin(req.url, window.location.href);
+            if (token && own && !req.headers.Authorization) req.headers.Authorization = `Bearer ${token}`;
+            if (!token && own && tokenStore.mode() === 'session') req.headers[CSRF_HEADER] = '1';
             return req;
           },
         });

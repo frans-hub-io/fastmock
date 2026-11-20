@@ -40,6 +40,90 @@ fn default_tokens_key() -> String {
     "tokens".into()
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessConfigMapRef {
+    /// ConfigMap in the namespace of the FastMock; it must carry the label `fastmock.franshub.io/allow-mount: "true"`.
+    pub name: String,
+    /// Key holding the access file.
+    #[serde(default = "default_access_key")]
+    pub key: String,
+}
+
+fn default_access_key() -> String {
+    "access.yaml".into()
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessSpec {
+    /// The access file (custom roles, spaces, bindings), mounted read-only and passed as `FASTMOCK_ACCESS_FILE`.
+    pub config_map_ref: AccessConfigMapRef,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OidcSecretRef {
+    /// Secret in the namespace of the FastMock; it must carry the label `fastmock.franshub.io/allow-mount: "true"`.
+    pub name: String,
+    #[serde(default = "default_client_secret_key")]
+    pub key: String,
+}
+
+fn default_client_secret_key() -> String {
+    "client-secret".into()
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CaConfigMapRef {
+    /// ConfigMap in the namespace of the FastMock; it must carry the label `fastmock.franshub.io/allow-mount: "true"`.
+    pub name: String,
+    #[serde(default = "default_ca_key")]
+    pub key: String,
+}
+
+fn default_ca_key() -> String {
+    "ca.crt".into()
+}
+
+/// OIDC sign-in for the UI and OIDC bearer JWTs for the admin API (`FASTMOCK_OIDC_*`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OidcSpec {
+    /// Issuer URL (https); discovery from `/.well-known/openid-configuration`.
+    pub issuer: String,
+    pub client_id: String,
+    /// The client secret, mounted read-only and passed as `FASTMOCK_OIDC_CLIENT_SECRET_FILE`.
+    pub client_secret_ref: OidcSecretRef,
+    /// Public admin URL followed by `/__admin/auth/callback`.
+    pub redirect_url: String,
+    /// Default `openid profile email`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+    /// Default `preferred_username`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username_claim: Option<String>,
+    /// Default `groups`; dotted paths such as `realm_access.roles` work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groups_claim: Option<String>,
+    /// Enables bearer JWTs on the admin API for this audience.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_audience: Option<String>,
+    /// Absolute session lifetime, default `8h`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_ttl: Option<String>,
+    /// Idle timeout, default `1h`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_idle: Option<String>,
+    /// Hosts besides the issuer's that the discovery document may point to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_hosts: Vec<String>,
+    /// PEM bundle of extra CAs for the IdP connections, passed as `FASTMOCK_OIDC_CA_FILE`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_config_map_ref: Option<CaConfigMapRef>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageSpec {
@@ -117,6 +201,12 @@ pub struct FastMockSpec {
     pub resources: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<RouteSpec>,
+    /// Access control for the server: a ConfigMap with its access file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<AccessSpec>,
+    /// SSO sign-in (OIDC) for the UI and bearer JWTs for the admin API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oidc: Option<OidcSpec>,
 }
 
 fn one() -> i32 {
@@ -210,6 +300,10 @@ pub struct MockApiSpec {
     pub openapi: Option<OpenApiSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wiremock: Option<DocumentSource>,
+    /// Space of the FastMock server the stubs go to; it must be defined in the server's access file. With the operator policy `spaceFromNamespace` the space is the MockApi namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(regex(pattern = r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"))]
+    pub space: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -225,6 +319,17 @@ pub struct MockApiStatus {
     pub last_sync_time: String,
     #[serde(default)]
     pub applied_hash: String,
+    /// Space the stubs were applied to; absent for the global area.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
+    /// Instance id of the in-memory server process the stubs were imported into. A server that reports
+    /// another id has restarted and lost them, so they are imported again.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub server_instance: String,
+    /// Instance id of the in-memory server process a restart replaces. While it is set, `Synced` stays
+    /// `False` with reason `ServerRestarting` until the stubs are confirmed on the new instance.
+    #[serde(default)]
+    pub replaced_instance: Option<String>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
 }
@@ -282,6 +387,22 @@ mod tests {
         assert_eq!(next[0].last_transition_time, "t0");
         assert_eq!(next[0].message, "2/2");
         assert_ne!(next[1].last_transition_time, "t0");
+    }
+
+    #[test]
+    fn access_key_defaults_to_access_yaml() {
+        let spec: FastMockSpec = serde_json::from_value(serde_json::json!({
+            "access": {"configMapRef": {"name": "team-access"}}
+        }))
+        .unwrap();
+        let r = spec.access.unwrap().config_map_ref;
+        assert_eq!(
+            (r.name.as_str(), r.key.as_str()),
+            ("team-access", "access.yaml")
+        );
+        let none: FastMockSpec = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(none.access.is_none());
+        assert!(serde_json::to_value(&none).unwrap().get("access").is_none());
     }
 
     #[test]

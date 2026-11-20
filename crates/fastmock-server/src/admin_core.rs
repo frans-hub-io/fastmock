@@ -6,10 +6,12 @@ use fastmock_core::engine::{COUNTER_PREFIX, SETTINGS_KEY, SETTINGS_NAMESPACE};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::access::{BindingScope, Permission};
 use crate::admin::{
-    ApiResult, ErrorBody, ImportResult, ImportTarget, audit_event, bad, finish_import, valid_tag,
+    ApiResult, ErrorBody, ImportResult, ImportTarget, audit_event_in, bad, finish_import, valid_tag,
 };
 use crate::auth::Principal;
+use crate::spaces::{self, SpaceQuery};
 use crate::state::AppState;
 
 const MAX_COUNTERS: usize = 10_000;
@@ -19,6 +21,146 @@ pub fn routes() -> Router<AppState> {
         .route("/settings", get(get_settings).put(put_settings))
         .route("/stubs/counters", get(list_counters).delete(reset_counters))
         .route("/import/mockserver", post(import_mockserver))
+        .route("/access", get(get_access))
+}
+
+/// A space of the access file.
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessSpace {
+    #[schema(example = "payments")]
+    pub name: String,
+    /// Data-plane path prefixes the space's stubs must stay under (empty: no restriction).
+    #[schema(example = json!(["/payments/"]))]
+    pub path_prefixes: Vec<String>,
+    /// Hosts the space's stubs must match (empty: no restriction).
+    #[schema(example = json!(["psp.example.com"]))]
+    pub hosts: Vec<String>,
+}
+
+/// A built-in role or a custom role of the access file.
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessRole {
+    #[schema(example = "stub-author")]
+    pub name: String,
+    /// `viewer`, `editor` or `admin`; false for custom roles of the access file.
+    pub builtin: bool,
+    /// The role's permissions, with wildcards expanded.
+    #[schema(example = json!(["stubs:read", "stubs:write"]))]
+    pub permissions: Vec<String>,
+}
+
+/// Where a binding comes from.
+#[derive(Serialize, utoipa::ToSchema, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum AccessBindingSource {
+    /// A binding of the access file (`FASTMOCK_ACCESS_FILE`).
+    AccessFile,
+    /// The role of a static token written `name:role:hash` in `FASTMOCK_ADMIN_TOKENS` or
+    /// `FASTMOCK_ADMIN_TOKENS_FILE`, granted globally.
+    AdminTokens,
+}
+
+/// A binding: of the access file, or the global role of a static token.
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessBinding {
+    /// `token:<name>`, `user:<name>` or `group:<name>`.
+    #[schema(example = "group:payments-dev")]
+    pub subject: String,
+    #[schema(example = "editor")]
+    pub role: String,
+    /// The role is granted everywhere.
+    pub global: bool,
+    /// Spaces the role is granted in: `["*"]` for every space; empty for a global binding.
+    #[schema(example = json!(["payments"]))]
+    pub spaces: Vec<String>,
+    /// `accessFile` for a binding of the access file; `adminTokens` for the global role of a
+    /// static token written `name:role:hash` (subject `token:<name>`).
+    pub source: AccessBindingSource,
+}
+
+/// The access configuration, read-only: spaces and roles of the access file, its bindings and
+/// the global roles of static tokens.
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessView {
+    /// An access file (`FASTMOCK_ACCESS_FILE`) is loaded.
+    pub configured: bool,
+    /// OIDC sign-in or OIDC bearer tokens are enabled.
+    pub oidc: bool,
+    /// Spaces, sorted by name.
+    pub spaces: Vec<AccessSpace>,
+    /// Built-in roles first (viewer, editor, admin), then the custom roles sorted by name.
+    pub roles: Vec<AccessRole>,
+    /// Bindings of the access file in file order, then the roles of static tokens written
+    /// `name:role:hash` in entry order. Static tokens written `name::hash` have only their
+    /// access-file bindings.
+    pub bindings: Vec<AccessBinding>,
+}
+
+impl AccessView {
+    pub fn of(app: &AppState) -> Self {
+        let access = app.auth.access();
+        AccessView {
+            configured: app.cfg.access_file.is_some(),
+            oidc: app.oidc.is_some(),
+            spaces: access
+                .spaces()
+                .map(|s| AccessSpace {
+                    name: s.name.clone(),
+                    path_prefixes: s.path_prefixes.clone(),
+                    hosts: s.hosts.clone(),
+                })
+                .collect(),
+            roles: access
+                .roles()
+                .into_iter()
+                .map(|(name, perms, builtin)| AccessRole {
+                    name: name.to_string(),
+                    builtin,
+                    permissions: perms.names().into_iter().map(String::from).collect(),
+                })
+                .collect(),
+            bindings: access
+                .bindings()
+                .map(|(subject, b)| AccessBinding {
+                    subject: subject.to_string(),
+                    role: b.role.clone(),
+                    global: b.scope == BindingScope::Global,
+                    spaces: b.scope.space_list(),
+                    source: AccessBindingSource::AccessFile,
+                })
+                .chain(
+                    app.auth
+                        .static_token_roles()
+                        .map(|(name, role)| AccessBinding {
+                            subject: format!("token:{name}"),
+                            role: role.to_string(),
+                            global: true,
+                            spaces: Vec::new(),
+                            source: AccessBindingSource::AdminTokens,
+                        }),
+                )
+                .collect(),
+        }
+    }
+}
+
+#[utoipa::path(
+    get, path = "/__admin/access", tag = "access", operation_id = "getAccess",
+    summary = "The access configuration (read-only)",
+    description = "Spaces, roles (with expanded permissions) and bindings of the access file (`FASTMOCK_ACCESS_FILE`), plus the global role of every static token written `name:role:hash` in `FASTMOCK_ADMIN_TOKENS` or `FASTMOCK_ADMIN_TOKENS_FILE` (`source: adminTokens`). Needs `access:read`, a global permission of the built-in admin role. Changes need a new access file or token list and a restart. Token values and hashes, file paths and OIDC settings are never included.",
+    responses(
+        (status = 200, description = "The access configuration", body = AccessView),
+        (status = 401, description = "Missing or invalid token", body = ErrorBody),
+        (status = 403, description = "Requires access:read", body = ErrorBody),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn get_access(State(app): State<AppState>) -> Json<AccessView> {
+    Json(AccessView::of(&app))
 }
 
 #[utoipa::path(
@@ -71,8 +213,28 @@ pub async fn put_settings(
         .put(SETTINGS_NAMESPACE, SETTINGS_KEY, &stored)
         .await?;
     app.engine.cache_settings(settings.clone());
-    audit_event(&app, &p, "settings.update", stored).await;
+    audit_event_in(&app, &p, None, "settings.update", stored).await;
     Ok(Json(settings))
+}
+
+/// Ids of the stubs a selection covers; `None` when it covers every stub.
+async fn stub_ids(
+    app: &AppState,
+    sel: &fastmock_core::SpaceFilter,
+) -> ApiResult<Option<std::collections::HashSet<String>>> {
+    if *sel == fastmock_core::SpaceFilter::Any {
+        return Ok(None);
+    }
+    Ok(Some(
+        app.stores
+            .stubs
+            .list()
+            .await?
+            .into_iter()
+            .filter(|s| sel.matches(s.space.as_deref()))
+            .map(|s| s.id.to_string())
+            .collect(),
+    ))
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -95,13 +257,20 @@ pub struct StubCounterList {
     get, path = "/__admin/stubs/counters", tag = "stubs", operation_id = "listStubCounters",
     summary = "List the shared stub counters",
     description = "Counters behind `times` and response sequences, shared by all replicas.",
+    params(SpaceQuery),
     responses(
         (status = 200, description = "Counters", body = StubCounterList),
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
     ),
     security(("bearer" = []))
 )]
-pub async fn list_counters(State(app): State<AppState>) -> ApiResult<Json<StubCounterList>> {
+pub async fn list_counters(
+    State(app): State<AppState>,
+    Extension(p): Extension<Principal>,
+    Query(q): Query<SpaceQuery>,
+) -> ApiResult<Json<StubCounterList>> {
+    let sel = spaces::select(&app, &p, Permission::StateRead, q.space.as_deref())?;
+    let ids = stub_ids(&app, &sel).await?;
     let raw = app.stores.hot.scan(COUNTER_PREFIX, MAX_COUNTERS).await?;
     let counters: Vec<StubCounter> = raw
         .into_iter()
@@ -110,6 +279,9 @@ pub async fn list_counters(State(app): State<AppState>) -> ApiResult<Json<StubCo
             let mut it = rest.splitn(3, ':');
             let kind = it.next()?.to_string();
             let stub_id = it.next()?.to_string();
+            if ids.as_ref().is_some_and(|set| !set.contains(&stub_id)) {
+                return None;
+            }
             Some(StubCounter {
                 kind,
                 stub_id,
@@ -126,6 +298,8 @@ pub async fn list_counters(State(app): State<AppState>) -> ApiResult<Json<StubCo
 #[utoipa::path(
     delete, path = "/__admin/stubs/counters", tag = "stubs", operation_id = "resetStubCounters",
     summary = "Reset `times` and response sequence counters",
+    description = "Resets the counters of the stubs of `space`, or of every stub the caller may change.",
+    params(SpaceQuery),
     responses(
         (status = 200, description = "Number of counters removed", body = Object, example = json!({"reset": 3})),
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
@@ -136,9 +310,33 @@ pub async fn list_counters(State(app): State<AppState>) -> ApiResult<Json<StubCo
 pub async fn reset_counters(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
+    Query(q): Query<SpaceQuery>,
 ) -> ApiResult<Json<Value>> {
-    let n = app.engine.reset_counters().await?;
-    audit_event(&app, &p, "stub.counters.reset", json!({"reset": n})).await;
+    let sel = spaces::select(&app, &p, Permission::StateWrite, q.space.as_deref())?;
+    let n = match stub_ids(&app, &sel).await? {
+        None => app.engine.reset_counters().await?,
+        Some(ids) => {
+            let mut n = 0;
+            for id in ids {
+                for kind in ["times", "seq"] {
+                    n += app
+                        .stores
+                        .hot
+                        .delete_prefix(&format!("{COUNTER_PREFIX}{kind}:{id}:"))
+                        .await?;
+                }
+            }
+            n
+        }
+    };
+    audit_event_in(
+        &app,
+        &p,
+        q.space.as_deref(),
+        "stub.counters.reset",
+        json!({"reset": n}),
+    )
+    .await;
     Ok(Json(json!({"reset": n})))
 }
 
@@ -152,6 +350,11 @@ pub struct MockServerImportQuery {
     pub replace: Option<bool>,
     /// Convert and validate only; nothing is stored.
     pub dry_run: Option<bool>,
+    /// Space the stubs go to.
+    pub space: Option<String>,
+    /// `request.host` for every imported stub that has none. For a space that owns hosts it must be one
+    /// of them; it defaults to the space's only host and is required when the space owns several.
+    pub host: Option<String>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -199,6 +402,8 @@ pub async fn import_mockserver(
     Query(q): Query<MockServerImportQuery>,
     Json(body): Json<Value>,
 ) -> ApiResult<Json<ImportResult>> {
+    let space = spaces::target(&app, &p, Permission::ImportsRun, q.space.as_deref())?;
+    let host = spaces::import_host(&app, space.as_deref(), q.host.as_deref())?;
     let (doc, w_tag, w_replace, w_dry) = match body {
         Value::Object(mut o)
             if o.contains_key("expectations") && !o.contains_key("httpRequest") =>
@@ -245,6 +450,8 @@ pub async fn import_mockserver(
             tag: &tag,
             replace,
             dry_run,
+            space: space.as_deref(),
+            host: host.as_deref(),
         },
         stubs,
         warnings,
@@ -255,6 +462,7 @@ pub async fn import_mockserver(
 #[derive(utoipa::OpenApi)]
 #[openapi(
     paths(
+        get_access,
         get_settings,
         put_settings,
         list_counters,
@@ -262,6 +470,11 @@ pub async fn import_mockserver(
         import_mockserver
     ),
     components(schemas(
+        AccessView,
+        AccessSpace,
+        AccessRole,
+        AccessBinding,
+        AccessBindingSource,
         GlobalSettings,
         fastmock_core::Delay,
         fastmock_core::LogNormalDelay,

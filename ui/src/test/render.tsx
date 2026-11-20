@@ -7,17 +7,18 @@ import type { ReactElement } from 'react';
 import { MemoryRouter } from 'react-router';
 import { vi } from 'vitest';
 import { AuthProvider } from '../auth/AuthProvider';
+import { SpaceProvider } from '../auth/SpaceProvider';
 import { theme } from '../theme';
 
 export type Handler = (url: URL, init: { method: string; headers: Headers; body: string | null }) => { status?: number; body?: unknown } | undefined;
 
 export function mockFetch(handler: Handler) {
-  const calls: { method: string; url: string; headers: Headers; body: string | null }[] = [];
+  const calls: { method: string; url: string; headers: Headers; body: string | null; credentials: RequestCredentials }[] = [];
   const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = input instanceof Request ? input : new Request(new URL(String(input), 'http://localhost'), init);
     const url = new URL(req.url, 'http://localhost');
     const body = req.method === 'GET' || req.method === 'HEAD' ? null : await req.text();
-    calls.push({ method: req.method, url: url.pathname + url.search, headers: req.headers, body });
+    calls.push({ method: req.method, url: url.pathname + url.search, headers: req.headers, body, credentials: req.credentials });
     const r = handler(url, { method: req.method, headers: req.headers, body }) ?? { status: 404, body: { error: 'not found' } };
     const status = r.status ?? 200;
     return new Response(status === 204 ? null : JSON.stringify(r.body ?? {}), { status, headers: { 'content-type': 'application/json' } });
@@ -34,7 +35,9 @@ export function renderApp(ui: ReactElement, route = '/') {
         <ModalsProvider>
           <Notifications />
           <MemoryRouter initialEntries={[route]}>
-            <AuthProvider>{ui}</AuthProvider>
+            <AuthProvider>
+              <SpaceProvider>{ui}</SpaceProvider>
+            </AuthProvider>
           </MemoryRouter>
         </ModalsProvider>
       </QueryClientProvider>

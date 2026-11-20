@@ -13,10 +13,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use crate::access::Permission;
 use crate::admin::{
-    ApiError, ApiResult, ErrorBody, RequestList, audit_event, bad, journal_page, not_found,
+    ApiError, ApiResult, ErrorBody, RequestList, audit_event_in, bad, journal_page, not_found,
 };
 use crate::auth::Principal;
+use crate::spaces;
 use crate::state::AppState;
 
 pub const SCAN_WINDOW: i64 = 10_000;
@@ -205,6 +207,8 @@ pub struct ScanQuery {
     /// Maximum number of entries to return (default 100).
     #[param(minimum = 1, maximum = 10000)]
     limit: Option<i64>,
+    /// Only entries of this space.
+    space: Option<String>,
 }
 
 #[derive(Deserialize, Default, Clone, utoipa::ToSchema)]
@@ -216,6 +220,8 @@ pub struct ScanScope {
     /// Only entries at or after this instant.
     #[serde(default)]
     pub since: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip)]
+    pub spaces: fastmock_core::SpaceFilter,
 }
 
 pub async fn scan(
@@ -231,6 +237,7 @@ pub async fn scan(
             .filter(|m| !m.eq_ignore_ascii_case("ANY")),
         since: scope.since,
         limit: Some(SCAN_WINDOW),
+        spaces: scope.spaces.clone(),
         ..Default::default()
     };
     Ok(app.stores.journal.query(&f).await?)
@@ -283,17 +290,26 @@ async fn find_matching(
 )]
 pub async fn get_request(
     State(app): State<AppState>,
+    Extension(p): Extension<Principal>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<JournalEntry>> {
     let id: i64 = id
         .parse()
         .map_err(|_| bad("request id must be an integer"))?;
-    app.stores
+    let e = app
+        .stores
         .journal
         .get(id)
         .await?
-        .map(Json)
-        .ok_or_else(|| not_found("request"))
+        .ok_or_else(|| not_found("request"))?;
+    spaces::item(
+        &p,
+        Permission::JournalRead,
+        Permission::JournalRead,
+        e.space.as_deref(),
+        "request",
+    )?;
+    Ok(Json(e))
 }
 
 #[derive(Deserialize, Default, utoipa::IntoParams)]
@@ -357,12 +373,14 @@ pub struct FoundRequests {
 )]
 pub async fn find(
     State(app): State<AppState>,
+    Extension(p): Extension<Principal>,
     Query(q): Query<ScanQuery>,
     Json(pattern): Json<RequestPattern>,
 ) -> ApiResult<Json<FoundRequests>> {
     let scope = ScanScope {
         source: q.source,
         since: q.since,
+        spaces: spaces::select(&app, &p, Permission::JournalRead, q.space.as_deref())?,
     };
     let (hit, _) = find_matching(&app, "find", &pattern, &scope).await?;
     let total = hit.len();
@@ -403,6 +421,7 @@ pub async fn remove(
     let scope = ScanScope {
         source: q.source,
         since: q.since,
+        spaces: spaces::select(&app, &p, Permission::JournalDelete, q.space.as_deref())?,
     };
     let (hit, _) = find_matching(&app, "remove", &pattern, &scope).await?;
     let ids: Vec<i64> = hit.iter().map(|e| e.id).collect();
@@ -411,9 +430,10 @@ pub async fn remove(
     } else {
         app.stores.journal.delete_ids(&ids).await?
     };
-    audit_event(
+    audit_event_in(
         &app,
         &p,
+        q.space.as_deref(),
         "journal.remove",
         json!({"deleted": deleted, "pattern": pattern}),
     )
@@ -544,6 +564,7 @@ pub fn expectation(b: &VerifyBody) -> Result<(u64, u64, String), String> {
     post, path = "/__admin/verify", tag = "verification", operation_id = "verify",
     summary = "Verify how often a request was received",
     description = "Counts journal entries matching `request` (a stub request pattern). Without `count`/`exactly`/`atLeast`/`atMost` the expectation is `atLeast: 1`. Answers 200 when the expectation holds and 422 with the actual count and the closest non-matching requests when it does not.",
+    params(spaces::SpaceQuery),
     request_body(content = VerifyBody, example = json!({"request": {"method": "POST", "urlPath": "/orders"}, "exactly": 1})),
     responses(
         (status = 200, description = "Expectation met", body = VerifyResult),
@@ -554,11 +575,17 @@ pub fn expectation(b: &VerifyBody) -> Result<(u64, u64, String), String> {
     ),
     security(("bearer" = []))
 )]
-pub async fn verify(State(app): State<AppState>, Json(b): Json<VerifyBody>) -> ApiResult<Response> {
+pub async fn verify(
+    State(app): State<AppState>,
+    Extension(p): Extension<Principal>,
+    Query(q): Query<spaces::SpaceQuery>,
+    Json(b): Json<VerifyBody>,
+) -> ApiResult<Response> {
     let (lo, hi, expected) = expectation(&b).map_err(bad)?;
     let scope = ScanScope {
         source: b.source.clone(),
         since: b.since,
+        spaces: spaces::select(&app, &p, Permission::JournalRead, q.space.as_deref())?,
     };
     let c = compile_pattern(&b.request)?;
     let all = scan(&app, &b.request, &scope).await?;
@@ -665,6 +692,7 @@ fn match_sequence_bounded(
     post, path = "/__admin/verify/sequence", tag = "verification", operation_id = "verifySequence",
     summary = "Verify that requests arrived in a given order",
     description = "MockServer-style sequence verification over the newest 10000 journal entries passing `source` and `since`. Answers 200 when every pattern was matched by a later request than the previous one, otherwise 422.",
+    params(spaces::SpaceQuery),
     request_body(content = VerifySequenceBody, example = json!({"requests": [{"method": "POST", "urlPath": "/login"}, {"method": "GET", "urlPath": "/profile"}, {"method": "POST", "urlPath": "/logout"}]})),
     responses(
         (status = 200, description = "Sequence found", body = SequenceResult),
@@ -677,8 +705,11 @@ fn match_sequence_bounded(
 )]
 pub async fn verify_sequence(
     State(app): State<AppState>,
+    Extension(p): Extension<Principal>,
+    Query(q): Query<spaces::SpaceQuery>,
     Json(b): Json<VerifySequenceBody>,
 ) -> ApiResult<Response> {
+    let sel = spaces::select(&app, &p, Permission::JournalRead, q.space.as_deref())?;
     if b.requests.is_empty() || b.requests.len() > MAX_SEQUENCE {
         return Err(bad(format!(
             "requests must hold 1..{MAX_SEQUENCE} patterns"
@@ -694,6 +725,7 @@ pub async fn verify_sequence(
         source: b.source.clone(),
         since: b.since,
         limit: Some(SCAN_WINDOW),
+        spaces: sel,
         ..Default::default()
     };
     let mut entries = app.stores.journal.query(&f).await?;

@@ -6,7 +6,9 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::model::{AuditEvent, CallbackFilter, CallbackJob, JournalEntry, JournalFilter, Stub};
+use crate::model::{
+    AuditEvent, CallbackFilter, CallbackJob, JournalEntry, JournalFilter, SpaceFilter, Stub,
+};
 
 pub type StoreResult<T> = anyhow::Result<T>;
 
@@ -17,9 +19,15 @@ pub trait StubStore: Send + Sync {
     async fn upsert(&self, stub: &Stub) -> StoreResult<()>;
     async fn insert(&self, stub: &Stub) -> StoreResult<bool>;
     async fn delete(&self, id: Uuid) -> StoreResult<bool>;
-    async fn delete_by_tag(&self, tag: &str) -> StoreResult<u64>;
-    async fn replace_tag(&self, tag: Option<&str>, stubs: &[Stub]) -> StoreResult<u64>;
-    async fn clear(&self) -> StoreResult<u64>;
+    async fn delete_by_tag(&self, tag: &str, spaces: &SpaceFilter) -> StoreResult<u64>;
+    /// Deletes the stubs carrying `tag` within `spaces` and inserts or replaces `stubs`, atomically.
+    async fn replace_tag(
+        &self,
+        tag: Option<&str>,
+        spaces: &SpaceFilter,
+        stubs: &[Stub],
+    ) -> StoreResult<u64>;
+    async fn clear(&self, spaces: &SpaceFilter) -> StoreResult<u64>;
     async fn revision(&self) -> StoreResult<i64>;
 }
 
@@ -34,7 +42,7 @@ pub trait JournalStore: Send + Sync {
     }
     async fn query(&self, filter: &JournalFilter) -> StoreResult<Vec<JournalEntry>>;
     async fn count(&self, filter: &JournalFilter) -> StoreResult<i64>;
-    async fn clear(&self) -> StoreResult<u64>;
+    async fn clear(&self, spaces: &SpaceFilter) -> StoreResult<u64>;
     async fn purge_older_than(&self, at: DateTime<Utc>) -> StoreResult<u64>;
     async fn get(&self, id: i64) -> StoreResult<Option<JournalEntry>> {
         let all = self
@@ -98,7 +106,7 @@ pub trait OutboxStore: Send + Sync {
     ) -> StoreResult<bool>;
     async fn list(&self, filter: &CallbackFilter) -> StoreResult<Vec<CallbackJob>>;
     async fn pending_count(&self) -> StoreResult<i64>;
-    async fn clear(&self) -> StoreResult<u64>;
+    async fn clear(&self, spaces: &SpaceFilter) -> StoreResult<u64>;
     async fn purge_finished_older_than(&self, at: DateTime<Utc>) -> StoreResult<u64>;
 }
 
@@ -165,6 +173,71 @@ pub trait AuditStore: Send + Sync {
         v.truncate(limit as usize);
         Ok(v)
     }
+}
+
+/// A token managed through the admin API. Only the SHA-256 of the value is stored.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ApiToken {
+    pub id: Uuid,
+    pub name: String,
+    /// Lowercase hex SHA-256 of the token value.
+    pub sha256: String,
+    pub role: String,
+    pub spaces: Vec<String>,
+    pub global: bool,
+    pub description: Option<String>,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    /// When the token was revoked, or, for a token retired after expiry, its expiry.
+    pub revoked_at: Option<DateTime<Utc>>,
+    /// Set by an explicit revocation; the status never compares clocks of different replicas.
+    pub revoked: bool,
+    /// The managed token that created this one.
+    pub parent_id: Option<Uuid>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApiTokenStatus {
+    Active,
+    Expired,
+    Revoked,
+}
+
+impl ApiToken {
+    pub fn status(&self, now: DateTime<Utc>) -> ApiTokenStatus {
+        if self.revoked {
+            ApiTokenStatus::Revoked
+        } else if self.expires_at <= now {
+            ApiTokenStatus::Expired
+        } else {
+            ApiTokenStatus::Active
+        }
+    }
+}
+
+#[async_trait]
+pub trait TokenStore: Send + Sync {
+    /// Stores a new token. Returns false when an active token already has the name; expired tokens with
+    /// the name are retired first, so the name can be reused.
+    async fn create(&self, token: &ApiToken, now: DateTime<Utc>) -> StoreResult<bool>;
+    async fn get(&self, id: Uuid) -> StoreResult<Option<ApiToken>>;
+    async fn by_hash(&self, sha256: &str) -> StoreResult<Option<ApiToken>>;
+    /// Every stored token, newest first.
+    async fn list(&self) -> StoreResult<Vec<ApiToken>>;
+    /// Marks the token revoked; false when it does not exist, is already revoked or retired, or has
+    /// expired by `at`.
+    async fn revoke(&self, id: Uuid, at: DateTime<Utc>) -> StoreResult<bool>;
+    /// Whether the store holds any token at all, whatever its status.
+    async fn has_any(&self) -> StoreResult<bool> {
+        Ok(!self.list().await?.is_empty())
+    }
+    /// Records a use, unless one was recorded less than a minute before `at`.
+    async fn touch(&self, id: Uuid, at: DateTime<Utc>) -> StoreResult<()>;
+    async fn count_active(&self, now: DateTime<Utc>) -> StoreResult<i64>;
+    /// Deletes tokens revoked or expired before `at`.
+    async fn purge_inactive_before(&self, at: DateTime<Utc>) -> StoreResult<u64>;
 }
 
 #[derive(Clone, Debug, Default)]

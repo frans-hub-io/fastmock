@@ -116,7 +116,9 @@ Never put credentials into settings: name a secret in a setting and read it with
 
 - **Callbacks.** Build a `fastmock_core::CallbackJob` and pass it to `ctx.schedule_callback`. The job is stored in
   the outbox first, so it survives restarts, follows the egress policy and is retried like stub callbacks. Set
-  `due_at` in the future instead of sleeping in the handler.
+  `due_at` in the future instead of sleeping in the handler. A job gets the [space](../operations/access-control.md#spaces) of the stub
+  being answered or, on a plugin admin route, the space that owns the request's path or host (when exactly one
+  space does), so it is listed and cleared with that space's callbacks.
 - **State.** `ctx.stores` gives the data, hot and journal stores. Use your plugin name as the namespace so data from
   different plugins does not collide. Everything stored there is shared between replicas in `postgres` mode.
 - **Correlation.** Insert `fastmock_core::Correlation(id)` into the response extensions to make the journal entry

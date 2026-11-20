@@ -30,3 +30,5 @@ class RO {
   disconnect() {}
 }
 if (!('ResizeObserver' in globalThis)) (globalThis as unknown as { ResizeObserver: typeof RO }).ResizeObserver = RO;
+
+if (typeof Element.prototype.scrollIntoView !== 'function') Element.prototype.scrollIntoView = () => undefined;

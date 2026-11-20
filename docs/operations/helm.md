@@ -44,6 +44,7 @@ connection settings.
 
 ```sh
 fastmock hash-token --generate          # or: docker run --rm fastmock:0.1.0 hash-token --generate
+CI_HASH=$(fastmock hash-token "$CI_TOKEN")   # an existing token: prints only the hex hash
 kubectl -n mocks create secret generic fastmock-admin-tokens \
   --from-literal=tokens="$(printf 'ci:editor:%s\nops:admin:%s\ngrafana:viewer:%s\n' "$CI_HASH" "$OPS_HASH" "$VIEW_HASH")"
 ```
@@ -170,10 +171,12 @@ helm uninstall fastmock -n mocks
 
 | Key | Default | Meaning |
 |---|---|---|
-| `admin.tokensSecret.name` | `""` (required) | Secret with the admin token entries. Mounted read-only at `/etc/fastmock/admin/tokens` (`FASTMOCK_ADMIN_TOKENS_FILE`). |
+| `admin.tokensSecret.name` | `""` (required unless `oidc.issuer` is set) | Secret with the admin token entries. Mounted read-only at `/etc/fastmock/admin/tokens` (`FASTMOCK_ADMIN_TOKENS_FILE`). |
 | `admin.tokensSecret.key` | `tokens` | Key inside the Secret. |
 | `admin.allowedOrigins` | `[]` | `FASTMOCK_ADMIN_ALLOWED_ORIGINS`: browser origins allowed besides the same origin. |
 | `admin.uiDataPlaneUrls` | `[]` | `FASTMOCK_UI_DATA_PLANE_URL`: exact public origins of the data plane that the web UI may call (its `connect-src`). |
+| `access.roles`, `access.spaces`, `access.bindings` | `[]` | Custom roles, spaces and bindings, see [Access control](#access-control). |
+| `oidc.*` | off | SSO sign-in and bearer JWTs, see [OIDC sign-in](#oidc-sign-in). |
 
 ### Storage
 
@@ -484,8 +487,98 @@ With `networkPolicy.enabled: true` the chart creates one policy for FastMock pod
 With `postgresql.enabled` or `valkey.enabled`, `networkPolicy.storage: true` adds a second policy that lets only FastMock pods of the
 release reach them.
 
+## Access control
+
+The `access` values become the access file ([Access control](access-control.md)): the chart renders them into the
+ConfigMap `<fullname>-access`, mounts it read-only at `/etc/fastmock/access/access.yaml` and sets
+`FASTMOCK_ACCESS_FILE`. Nothing is rendered while all three lists are empty. The pods carry a `checksum/access`
+annotation, so `helm upgrade` with changed values rolls them.
+
+```yaml
+access:
+  roles:
+    - name: stub-author
+      permissions: [stubs:read, stubs:write, imports:run, journal:read, state:read]
+  spaces:
+    - name: payments
+      pathPrefixes: [/payments/]
+      hosts: [psp.example.com]
+    - name: billing
+  bindings:
+    - subject: token:ci-billing
+      role: stub-author
+      spaces: [billing]
+    - subject: group:platform
+      role: admin
+      global: true
+```
+
+The values schema checks names, permission and subject formats; the server checks the rest at start-up (unknown
+permissions, roles and spaces, `token:` bindings without a matching entry in the tokens Secret). A token that
+should only get space bindings has an empty role in the Secret: `ci-billing::<sha256>`.
+
+## OIDC sign-in
+
+The `oidc` values configure [OIDC sign-in](access-control.md#oidc-sign-in-and-bearer-jwts). Bind the provider's
+groups in `access.bindings`; without a binding a user cannot sign in.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `oidc.issuer` | `""` | `FASTMOCK_OIDC_ISSUER`; an https URL. Empty: OIDC off. |
+| `oidc.clientId` | `""` | `FASTMOCK_OIDC_CLIENT_ID` (required with the issuer). |
+| `oidc.clientSecret.existingSecret` | `""` | Secret with the client secret (required with the issuer), mounted read-only at `/etc/fastmock/oidc/client-secret` (`FASTMOCK_OIDC_CLIENT_SECRET_FILE`). |
+| `oidc.clientSecret.key` | `client-secret` | Key inside the Secret. |
+| `oidc.redirectUrl` | `""` | `FASTMOCK_OIDC_REDIRECT_URL`: the public admin URL plus `/__admin/auth/callback` (required with the issuer). |
+| `oidc.scopes` | `[]` | `FASTMOCK_OIDC_SCOPES`; empty means `openid profile email`. |
+| `oidc.claims.username`, `oidc.claims.groups` | `""` | `FASTMOCK_OIDC_USERNAME_CLAIM`, `FASTMOCK_OIDC_GROUPS_CLAIM`; empty means `preferred_username` and `groups`. For `user:` bindings set `oidc.claims.username: sub` (or `oid` with Entra ID), see [choosing the username claim](access-control.md#choosing-the-username-claim). |
+| `oidc.apiAudience` | `""` | `FASTMOCK_OIDC_API_AUDIENCE`: accept the provider's JWTs with this audience on the admin API; must differ from `oidc.clientId`. |
+| `oidc.trustOutboundCA` | `false` | Trust the CA bundle of `outboundCA.configMap` for the provider connections (`FASTMOCK_OIDC_CA_FILE`). |
+| `oidc.session.ttl`, `oidc.session.idle` | `8h`, `1h` | `FASTMOCK_OIDC_SESSION_TTL`, `FASTMOCK_OIDC_SESSION_IDLE`. |
+| `oidc.allowedHosts` | `[]` | `FASTMOCK_OIDC_ALLOWED_HOSTS`: hosts besides the issuer's that discovery endpoints may use. |
+
+```yaml
+admin:
+  allowedOrigins: [https://mock-admin.example.com]
+oidc:
+  issuer: https://sso.example.com/realms/mocks
+  clientId: fastmock
+  clientSecret:
+    existingSecret: fastmock-oidc
+  redirectUrl: https://mock-admin.example.com/__admin/auth/callback
+  apiAudience: fastmock-api
+access:
+  spaces:
+    - name: payments
+  bindings:
+    - subject: group:payments-dev
+      role: editor
+      spaces: [payments]
+    - subject: group:platform
+      role: admin
+      global: true
+route:
+  admin:
+    enabled: true
+    hostnames: [mock-admin.example.com]
+```
+
+```sh
+kubectl create secret generic fastmock-oidc --from-literal=client-secret="$CLIENT_SECRET"
+```
+
+Sessions live in Valkey with `storage.mode=postgres`, so every replica accepts them; with `storage.mode=memory`
+they live in the single pod and end with it. The admin token Secret becomes optional with OIDC, but keep one
+admin token for automation and as a fallback when the provider is unavailable. With
+`networkPolicy.egress.enabled`, add a rule that lets the pods reach the provider. The client secret is read at
+start-up: after rotating it, `kubectl rollout restart deploy/<fullname>`.
+
 ## Upgrade notes
 
+- **Access control** (spaces, managed tokens, OIDC sign-in): with no `access` and `oidc` values the release
+  behaves as before, but read the [access control upgrade notes](access-control.md#upgrade-notes) first: a new
+  table needs grants when migrations run separately with per-table rights, audit log lines and auth failure
+  metrics changed, and new `/__admin/auth/*` routes must pass a WAF or route allow-list when OIDC is used.
+  Upgrade every replica before setting `access` or `oidc`.
 - **0.1.0**: first release. `FASTMOCK_STUB_SECRETS` (`secrets.stubSecrets`) is required for stub HMAC
   signatures; stubs that reference other secrets produce failed callbacks with
   `secret ... is not configured`.

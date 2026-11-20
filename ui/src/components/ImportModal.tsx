@@ -5,8 +5,11 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api, errorMessage } from '../api/http';
 import { notifySuccess } from '../api/mutations';
+import { can } from '../auth/permissions';
+import { useAuth, useSpaceChoice } from '../auth/useAuth';
 import { readFileText } from '../lib/download';
-import { detectImportKind, type ImportKind } from '../lib/stubs';
+import { SpaceField } from './spaces';
+import { detectImportKind, GLOBAL_ONLY_IMPORTS, type ImportKind } from '../lib/stubs';
 
 interface ImportResult {
   imported: number;
@@ -23,8 +26,16 @@ const KIND_LABEL: Record<ImportKind, string> = {
   postman: 'Postman collection',
   har: 'HAR',
   mockserver: 'MockServer expectations',
+  asyncapi: 'AsyncAPI',
+  wsdl: 'WSDL',
+  soapui: 'SoapUI project',
+  graphql: 'GraphQL SDL',
+  microcks: 'Microcks APIExamples',
   unknown: 'detected by the server',
 };
+
+const SPACE_FORMATS = 'FastMock export, WireMock mappings, OpenAPI 3 (JSON/YAML), Postman v2, HAR, MockServer';
+const GLOBAL_FORMATS = 'AsyncAPI, WSDL, SoapUI, GraphQL SDL, Microcks';
 
 const MAX_BYTES = 32 * 1024 * 1024;
 
@@ -35,6 +46,12 @@ export function ImportModal({ opened, onClose }: { opened: boolean; onClose: () 
   const [kind, setKind] = useState<ImportKind>('unknown');
   const [tag, setTag] = useState('');
   const [replace, setReplace] = useState(true);
+  const [chosenSpace, setSpace] = useSpaceChoice('imports:run');
+  const { permissions } = useAuth();
+  const globalImports = can(permissions, 'imports:run', null);
+  const globalOnly = GLOBAL_ONLY_IMPORTS.has(kind);
+  const blocked = globalOnly && !globalImports;
+  const space = globalOnly ? null : chosenSpace;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ImportResult | null>(null);
@@ -79,13 +96,13 @@ export function ImportModal({ opened, onClose }: { opened: boolean; onClose: () 
         if (dryRun) {
           r = { imported: 0, removed: 0, dryRun: true, stubs, warnings: [] };
         } else {
-          r = await api.post<ImportResult>('/__admin/stubs/import', { stubs, ...(tag.trim() && replace ? { replaceTag: tag.trim() } : {}) });
+          r = await api.post<ImportResult>('/__admin/stubs/import', { stubs, ...(tag.trim() && replace ? { replaceTag: tag.trim() } : {}) }, { query: { space: space ?? undefined } });
         }
       } else {
         r = await api.post<ImportResult>('/__admin/import', undefined, {
           rawBody: text,
           contentType: text.trimStart().startsWith('{') || text.trimStart().startsWith('[') ? 'application/json' : 'text/plain',
-          query: { tag: tag.trim() || undefined, replace, dryRun: dryRun || undefined },
+          query: { tag: tag.trim() || undefined, replace, dryRun: dryRun || undefined, space: space ?? undefined },
         });
       }
       setResult(r);
@@ -127,7 +144,7 @@ export function ImportModal({ opened, onClose }: { opened: boolean; onClose: () 
                 Drop a file here or click to choose
               </Text>
               <Text size="sm" c="dimmed">
-                FastMock export, WireMock mappings, OpenAPI 3 (JSON/YAML), Postman v2, HAR, MockServer, AsyncAPI, WSDL…
+                {globalImports ? `${SPACE_FORMATS}, ${GLOBAL_FORMATS}…` : `${SPACE_FORMATS}…`}
               </Text>
             </div>
           </Group>
@@ -139,6 +156,21 @@ export function ImportModal({ opened, onClose }: { opened: boolean; onClose: () 
             </Text>
             <Badge variant="light">{KIND_LABEL[kind]}</Badge>
           </Group>
+        )}
+        {blocked && (
+          <Alert color="yellow" title="Not available for your account" data-testid="import-global-only">
+            {KIND_LABEL[kind]} documents are imported into the global area only, which requires the imports:run permission for
+            the whole server.
+          </Alert>
+        )}
+        {globalOnly ? (
+          globalImports && (
+            <Text size="sm" c="dimmed">
+              {KIND_LABEL[kind]} documents are imported into the global area.
+            </Text>
+          )
+        ) : (
+          <SpaceField perm="imports:run" value={chosenSpace} onChange={setSpace} description="The imported stubs go to this space" />
         )}
         <TextInput
           label="Tag"
@@ -178,10 +210,10 @@ export function ImportModal({ opened, onClose }: { opened: boolean; onClose: () 
           <Button variant="default" onClick={close}>
             Close
           </Button>
-          <Button variant="light" disabled={!text} loading={busy} onClick={() => void run(true)}>
+          <Button variant="light" disabled={!text || blocked} loading={busy} onClick={() => void run(true)}>
             Preview
           </Button>
-          <Button disabled={!text} loading={busy} onClick={() => void run(false)} data-testid="import-submit">
+          <Button disabled={!text || blocked} loading={busy} onClick={() => void run(false)} data-testid="import-submit">
             Import
           </Button>
         </Group>

@@ -22,8 +22,8 @@ You need Docker (or a Rust toolchain), `curl`, and optionally `jq`.
 Pull the published image and tag it with the name used on this page:
 
 ```sh
-docker pull franshub/fastmock:0.1.0-dev10
-docker tag franshub/fastmock:0.1.0-dev10 fastmock:0.1.0
+docker pull franshub/fastmock:0.1.0-dev11
+docker tag franshub/fastmock:0.1.0-dev11 fastmock:0.1.0
 ```
 
 Or build it from the repository root:
@@ -55,6 +55,12 @@ Keep the token for your requests and give the server the hash, together with a n
 ```sh
 export FASTMOCK_TOKEN=fm_3c1f...e9a0
 export FASTMOCK_TOKEN_HASH=6b0d...41c2
+```
+
+For a token you already have, `hash-token` without `--generate` prints only the hex hash:
+
+```sh
+export FASTMOCK_TOKEN_HASH=$(docker run --rm fastmock:0.1.0 hash-token "$FASTMOCK_TOKEN")
 ```
 
 ## 3. Start FastMock in memory mode
@@ -276,11 +282,13 @@ FASTMOCK_ADMIN_TOKENS=me:admin:$FASTMOCK_TOKEN_HASH
 EOF
 chmod 600 .env
 docker compose up -d
-docker compose logs fastmock | grep -E 'migrations|storage ready|FastMock started'
+docker compose logs fastmock | grep -E 'migration|storage ready|FastMock started'
 ```
 
 ```text
-fastmock-1  | 2026-11-19T06:40:41.867428Z  INFO fastmock_store: applying database migrations
+fastmock-1  | 2026-11-19T06:40:41.867428Z  INFO fastmock_store: applying database migrations target_version=10
+fastmock-1  | 2026-11-19T06:40:41.871102Z  INFO fastmock_store::postgres: applied database migration version=1 name=init duration_ms=3
+fastmock-1  | ...
 fastmock-1  | 2026-11-19T06:40:41.887368Z  INFO fastmock_store: storage ready
 fastmock-1  | 2026-11-19T06:40:41.901674Z  INFO fastmock_server: FastMock started listen=0.0.0.0:8080 admin_listen=0.0.0.0:9090 plugins=[...] otel=false
 ```

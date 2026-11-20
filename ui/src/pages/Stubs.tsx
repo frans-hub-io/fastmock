@@ -33,7 +33,9 @@ import { Link, useNavigate, useSearchParams } from 'react-router';
 import { client, unwrap } from '../api/client';
 import { confirmAction, useApiMutation } from '../api/mutations';
 import type { Stub } from '../api/types';
-import { useCan } from '../auth/useAuth';
+import { useAuth, useCan, useSpace, useSpaceQuery } from '../auth/useAuth';
+import { Permitted } from '../components/Permitted';
+import { SpaceBadge } from '../components/spaces';
 import { MethodBadge, PageHeader, StatusBadge, Time } from '../components/common';
 import { ImportModal } from '../components/ImportModal';
 import { EmptyState, ErrorState, LoadingState } from '../components/States';
@@ -43,7 +45,12 @@ import { duplicateStub, stripServerFields, stubPath, stubTitle } from '../lib/st
 const PAGE_SIZE = 25;
 
 export default function Stubs() {
-  const canEdit = useCan('editor');
+  const can = useCan();
+  const canEdit = can('stubs:write');
+  const canImport = can('imports:run');
+  const { role } = useAuth();
+  const spaces = useSpace();
+  const spaceQ = useSpaceQuery();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const [search, setSearch] = useState(params.get('q') ?? '');
@@ -67,6 +74,7 @@ export default function Stubs() {
     enabled: enabled === 'all' ? undefined : enabled === 'enabled',
     limit: PAGE_SIZE,
     offset: (page - 1) * PAGE_SIZE,
+    ...spaceQ,
   };
   const list = useQuery({
     queryKey: ['stubs', query],
@@ -74,9 +82,9 @@ export default function Stubs() {
     placeholderData: keepPreviousData,
   });
   const allTags = useQuery({
-    queryKey: ['stubs', 'tags'],
+    queryKey: ['stubs', 'tags', spaceQ],
     queryFn: async () => {
-      const all = await unwrap(client.GET('/__admin/stubs', { params: { query: { limit: 10000 } } }));
+      const all = await unwrap(client.GET('/__admin/stubs', { params: { query: { limit: 10000, ...spaceQ } } }));
       return [...new Set(all.stubs.flatMap((s) => s.tags ?? []))].sort();
     },
     staleTime: 30_000,
@@ -99,14 +107,15 @@ export default function Stubs() {
     success: (d) => `Created ${stubTitle(d)}`,
   });
   const deleteTag = useApiMutation<string, { deleted: number }>({
-    fn: (t) => unwrap(client.DELETE('/__admin/stubs', { params: { query: { tag: t } } })),
+    fn: (t) => unwrap(client.DELETE('/__admin/stubs', { params: { query: { tag: t, ...spaceQ } } })),
     invalidate: [['stubs'], ['info']],
     success: (d, t) => `Deleted ${d.deleted} stubs tagged ${t}`,
   });
 
   const exportStubs = async () => {
-    const data = await unwrap(client.GET('/__admin/export', { params: { query: { tag: tag ?? undefined } } }));
-    downloadText(timestampedName(tag ? `fastmock-stubs-${tag}` : 'fastmock-stubs', 'json'), JSON.stringify(data, null, 2));
+    const data = await unwrap(client.GET('/__admin/export', { params: { query: { tag: tag ?? undefined, ...spaceQ } } }));
+    const base = ['fastmock-stubs', spaces.current, tag].filter(Boolean).join('-');
+    downloadText(timestampedName(base, 'json'), JSON.stringify(data, null, 2));
   };
 
   const total = list.data?.total ?? 0;
@@ -122,11 +131,13 @@ export default function Stubs() {
             <Button variant="default" leftSection={<IconDownload size={16} />} onClick={() => void exportStubs()}>
               Export{tag ? ` "${tag}"` : ''}
             </Button>
+            {canImport && (
+              <Button variant="default" leftSection={<IconUpload size={16} />} onClick={() => setImportOpen(true)}>
+                Import
+              </Button>
+            )}
             {canEdit && (
               <>
-                <Button variant="default" leftSection={<IconUpload size={16} />} onClick={() => setImportOpen(true)}>
-                  Import
-                </Button>
                 {tag && (
                   <Button
                     variant="light"
@@ -134,7 +145,7 @@ export default function Stubs() {
                     leftSection={<IconTags size={16} />}
                     onClick={() =>
                       confirmAction({
-                        title: `Delete all stubs tagged "${tag}"?`,
+                        title: spaces.current ? `Delete all stubs tagged "${tag}" in space ${spaces.current}?` : `Delete all stubs tagged "${tag}"?`,
                         message: 'This removes every stub carrying the tag. It cannot be undone.',
                         confirm: 'Delete stubs',
                         onConfirm: () => deleteTag.mutate(tag),
@@ -210,6 +221,7 @@ export default function Stubs() {
                   <Table.Th>Status</Table.Th>
                   <Table.Th>Prio</Table.Th>
                   <Table.Th>Tags</Table.Th>
+                  {spaces.enabled && <Table.Th>Space</Table.Th>}
                   <Table.Th>Updated</Table.Th>
                   <Table.Th w={50}>
                     <span className="sr-only">Actions</span>
@@ -217,97 +229,107 @@ export default function Stubs() {
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
-                {list.data.stubs.map((s) => (
-                  <Table.Tr key={s.id} data-testid="stub-row">
-                    <Table.Td>
-                      <Switch
-                        checked={s.enabled !== false}
-                        disabled={!canEdit || toggle.isPending}
-                        onChange={(e) => toggle.mutate({ stub: s, enabled: e.currentTarget.checked })}
-                        aria-label={`${s.enabled !== false ? 'Disable' : 'Enable'} ${stubTitle(s)}`}
-                        size="sm"
-                      />
-                    </Table.Td>
-                    <Table.Td maw={280}>
-                      <Text component={Link} to={`/stubs/${s.id ?? ''}`} size="sm" fw={500} c="var(--mantine-color-anchor)" className="truncate" display="block">
-                        {stubTitle(s)}
-                      </Text>
-                    </Table.Td>
-                    <Table.Td>
-                      <MethodBadge method={s.request.method} />
-                    </Table.Td>
-                    <Table.Td className="mono" maw={320} style={{ wordBreak: 'break-all' }}>
-                      {stubPath(s)}
-                    </Table.Td>
-                    <Table.Td>
-                      <StatusBadge status={s.response?.status ?? 200} />
-                    </Table.Td>
-                    <Table.Td>{s.priority ?? 5}</Table.Td>
-                    <Table.Td maw={220}>
-                      <Group gap={4}>
-                        {(s.tags ?? []).slice(0, 4).map((t) => (
-                          <Badge
-                            key={t}
+                {list.data.stubs.map((s) => {
+                  const editable = can('stubs:write', s.space ?? null);
+                  return (
+                    <Table.Tr key={s.id} data-testid="stub-row">
+                      <Table.Td>
+                        <Permitted perm="stubs:write" where={s.space ?? null}>
+                          <Switch
+                            checked={s.enabled !== false}
+                            disabled={toggle.isPending}
+                            onChange={(e) => toggle.mutate({ stub: s, enabled: e.currentTarget.checked })}
+                            aria-label={`${s.enabled !== false ? 'Disable' : 'Enable'} ${stubTitle(s)}`}
                             size="sm"
-                            variant="dot"
-                            style={{ cursor: 'pointer', textTransform: 'none' }}
-                            onClick={() => setParam('tag', t)}
-                          >
-                            {t}
-                          </Badge>
-                        ))}
-                        {(s.tags?.length ?? 0) > 4 && <Text size="xs">+{(s.tags?.length ?? 0) - 4}</Text>}
-                      </Group>
-                    </Table.Td>
-                    <Table.Td>
-                      <Time at={s.updatedAt} />
-                    </Table.Td>
-                    <Table.Td>
-                      <Menu position="bottom-end" withinPortal>
-                        <Menu.Target>
-                          <ActionIcon variant="subtle" color="gray" aria-label={`Actions for ${stubTitle(s)}`}>
-                            <IconDotsVertical size={16} />
-                          </ActionIcon>
-                        </Menu.Target>
-                        <Menu.Dropdown>
-                          <Menu.Item leftSection={<IconEdit size={16} />} onClick={() => void navigate(`/stubs/${s.id ?? ''}`)}>
-                            {canEdit ? 'Edit' : 'View'}
-                          </Menu.Item>
-                          {canEdit && (
-                            <Menu.Item leftSection={<IconCopy size={16} />} onClick={() => dup.mutate(s)}>
-                              Duplicate
+                          />
+                        </Permitted>
+                      </Table.Td>
+                      <Table.Td maw={280}>
+                        <Text component={Link} to={`/stubs/${s.id ?? ''}`} size="sm" fw={500} c="var(--mantine-color-anchor)" className="truncate" display="block">
+                          {stubTitle(s)}
+                        </Text>
+                      </Table.Td>
+                      <Table.Td>
+                        <MethodBadge method={s.request.method} />
+                      </Table.Td>
+                      <Table.Td className="mono" maw={320} style={{ wordBreak: 'break-all' }}>
+                        {stubPath(s)}
+                      </Table.Td>
+                      <Table.Td>
+                        <StatusBadge status={s.response?.status ?? 200} />
+                      </Table.Td>
+                      <Table.Td>{s.priority ?? 5}</Table.Td>
+                      <Table.Td maw={220}>
+                        <Group gap={4}>
+                          {(s.tags ?? []).slice(0, 4).map((t) => (
+                            <Badge
+                              key={t}
+                              size="sm"
+                              variant="dot"
+                              style={{ cursor: 'pointer', textTransform: 'none' }}
+                              onClick={() => setParam('tag', t)}
+                            >
+                              {t}
+                            </Badge>
+                          ))}
+                          {(s.tags?.length ?? 0) > 4 && <Text size="xs">+{(s.tags?.length ?? 0) - 4}</Text>}
+                        </Group>
+                      </Table.Td>
+                      {spaces.enabled && (
+                        <Table.Td>
+                          <SpaceBadge space={s.space} />
+                        </Table.Td>
+                      )}
+                      <Table.Td>
+                        <Time at={s.updatedAt} />
+                      </Table.Td>
+                      <Table.Td>
+                        <Menu position="bottom-end" withinPortal>
+                          <Menu.Target>
+                            <ActionIcon variant="subtle" color="gray" aria-label={`Actions for ${stubTitle(s)}`}>
+                              <IconDotsVertical size={16} />
+                            </ActionIcon>
+                          </Menu.Target>
+                          <Menu.Dropdown>
+                            <Menu.Item leftSection={<IconEdit size={16} />} onClick={() => void navigate(`/stubs/${s.id ?? ''}`)}>
+                              {editable ? 'Edit' : 'View'}
                             </Menu.Item>
-                          )}
-                          <Menu.Item
-                            leftSection={<IconDownload size={16} />}
-                            onClick={() => downloadText(`stub-${s.id ?? 'new'}.json`, JSON.stringify(stripServerFields(s), null, 2))}
-                          >
-                            Export JSON
-                          </Menu.Item>
-                          {canEdit && (
-                            <>
-                              <Menu.Divider />
-                              <Menu.Item
-                                color="red"
-                                leftSection={<IconTrash size={16} />}
-                                onClick={() =>
-                                  confirmAction({
-                                    title: 'Delete stub?',
-                                    message: `"${stubTitle(s)}" will be removed. This cannot be undone.`,
-                                    confirm: 'Delete',
-                                    onConfirm: () => remove.mutate(s),
-                                  })
-                                }
-                              >
-                                Delete
+                            {editable && (
+                              <Menu.Item leftSection={<IconCopy size={16} />} onClick={() => dup.mutate(s)}>
+                                Duplicate
                               </Menu.Item>
-                            </>
-                          )}
-                        </Menu.Dropdown>
-                      </Menu>
-                    </Table.Td>
-                  </Table.Tr>
-                ))}
+                            )}
+                            <Menu.Item
+                              leftSection={<IconDownload size={16} />}
+                              onClick={() => downloadText(`stub-${s.id ?? 'new'}.json`, JSON.stringify(stripServerFields(s), null, 2))}
+                            >
+                              Export JSON
+                            </Menu.Item>
+                            {editable && (
+                              <>
+                                <Menu.Divider />
+                                <Menu.Item
+                                  color="red"
+                                  leftSection={<IconTrash size={16} />}
+                                  onClick={() =>
+                                    confirmAction({
+                                      title: 'Delete stub?',
+                                      message: `"${stubTitle(s)}" will be removed. This cannot be undone.`,
+                                      confirm: 'Delete',
+                                      onConfirm: () => remove.mutate(s),
+                                    })
+                                  }
+                                >
+                                  Delete
+                                </Menu.Item>
+                              </>
+                            )}
+                          </Menu.Dropdown>
+                        </Menu>
+                      </Table.Td>
+                    </Table.Tr>
+                  );
+                })}
               </Table.Tbody>
             </Table>
           </div>
@@ -320,9 +342,9 @@ export default function Stubs() {
         </Paper>
       )}
       {!canEdit && (
-        <Tooltip label="Your role can read but not change stubs">
-          <Text size="xs" c="dimmed">
-            Read-only view (viewer role).
+        <Tooltip label={can.missing('stubs:write')}>
+          <Text size="xs" c="dimmed" data-testid="read-only-note">
+            {role === 'viewer' && !spaces.enabled ? 'Read-only view (viewer role).' : 'Read-only view.'}
           </Text>
         </Tooltip>
       )}

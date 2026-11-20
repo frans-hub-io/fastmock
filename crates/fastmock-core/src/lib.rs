@@ -12,6 +12,7 @@ pub mod mockserver;
 pub mod model;
 pub mod openapi;
 pub mod outbound;
+pub mod ownership;
 pub mod plugin;
 pub mod postman;
 pub mod request;

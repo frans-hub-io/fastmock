@@ -1,0 +1,37 @@
+replicaCount: 1
+
+storage:
+  mode: memory
+
+outboundCA:
+  configMap: corporate-ca
+
+oidc:
+  issuer: https://sso.example.com/realms/mocks
+  clientId: fastmock
+  clientSecret:
+    existingSecret: fastmock-oidc
+    key: client-secret
+  redirectUrl: https://mock-admin.example.com/__admin/auth/callback
+  scopes: [openid, profile, email]
+  claims:
+    username: preferred_username
+    groups: groups
+  apiAudience: fastmock-api
+  trustOutboundCA: true
+  session:
+    ttl: 8h
+    idle: 30m
+  allowedHosts: [sso-backchannel.example.com]
+
+access:
+  spaces:
+    - name: payments
+      pathPrefixes: [/payments/]
+  bindings:
+    - subject: group:payments-dev
+      role: editor
+      spaces: [payments]
+    - subject: group:platform
+      role: admin
+      global: true

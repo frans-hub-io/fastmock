@@ -10,7 +10,8 @@ import { PageHeader } from '../components/common';
 import { EmptyState, ErrorState, LoadingState } from '../components/States';
 
 export default function Grpc() {
-  const canEdit = useCan('editor');
+  const can = useCan();
+  const canEdit = can('grpc:write');
   const qc = useQueryClient();
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
