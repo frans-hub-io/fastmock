@@ -2,11 +2,12 @@
 
 FastMock ships a web UI inside the `fastmock` binary. It runs in the browser, talks only to the admin API, and
 covers everything the admin API offers: stubs, the request journal, verification, scenarios, callbacks,
-recording, chaos rules, files, services, contract tests, async mocks, settings, the audit log and the API
-reference.
+recording, chaos rules, files, services, contract tests, async mocks, settings, managed admin tokens, the audit
+log and the API reference.
 
 - [Opening the UI](#opening-the-ui)
-- [Signing in, roles and signing out](#signing-in-roles-and-signing-out)
+- [Signing in, permissions and signing out](#signing-in-permissions-and-signing-out)
+- [Spaces](#spaces)
 - [Screens](#screens)
 - [API docs (Swagger UI)](#api-docs-swagger-ui)
 - [Security](#security)
@@ -38,28 +39,60 @@ the choice is remembered in the browser. The layout adapts to narrow screens (th
 behind the burger button) and every action is reachable with the keyboard; "Skip to content" is the first
 focusable element.
 
-## Signing in, roles and signing out
+## Signing in, permissions and signing out
 
 The sign-in page asks for an admin token, the same bearer token the admin API takes (see
-[Admin API](admin-api.md#authentication)). The UI checks it with `GET /__admin/info` and then shows the token's
-name and role in the header.
+[Admin API](admin-api.md#authentication)): a static token or a [managed token](#admin-tokens). When the server
+has OIDC configured ([Access control: OIDC](../operations/access-control.md#oidc-sign-in-and-bearer-jwts)), the
+page also offers **Sign in with SSO**, which sends the browser to the identity provider and back to the page you
+were opening. The UI checks the sign-in with `GET /__admin/info` and shows the principal in the header: its name,
+its kind (`token`, `managed token` or `user`) and its role, or the space it is bound to. The account menu adds the
+groups of an SSO user and the bound spaces.
 
-- The token is kept in memory and in the tab's `sessionStorage`, so it survives a reload of the tab but not
+- A token is kept in memory and in the tab's `sessionStorage`, so it survives a reload of the tab but not
   closing it, and it is never written to `localStorage` or cookies. It is sent only to the admin listener, as
   `Authorization: Bearer <token>`.
-- **Sign out** (account menu in the header) forgets the token and clears all cached data.
-- When the server answers `401` (token removed or rotated), the UI returns to the sign-in page and says why.
+- After SSO sign-in the browser holds only the server's `HttpOnly` session cookie; the UI never sees an OIDC token.
+  Every admin request then carries the `X-FastMock-Request: 1` header that the server requires from cookie
+  sessions. A failed SSO sign-in comes back to the sign-in page with the reason (for example "your account has no
+  access to this FastMock server" when no binding matches the user or its groups).
+- **Sign out** (account menu in the header) forgets the token and clears all cached data; for an SSO session it
+  also ends the session on the server and, when the provider supports it, at the provider.
+- When the server answers `401` (token removed, rotated, revoked or expired, or the SSO session expired), the UI
+  returns to the sign-in page and says why.
 - When the server runs with `FASTMOCK_AUTH_DISABLED=true` (local development only), the UI opens without a token
   and shows "Authentication is disabled on this server" in the account menu.
 
-The role decides what the UI offers; the server enforces the same rules, so hiding a button is a convenience, not
-the protection.
+The principal's permissions (`principal.permissions` of `/__admin/info`, see
+[Access control: permissions](../operations/access-control.md#permissions)) decide what the UI offers. Controls
+for actions the principal may not take are hidden or disabled; a disabled control explains in its tooltip which
+permission is missing, for example "Requires the stubs:write permission in space billing". The server enforces
+the same rules, so hiding a button is a convenience, not the protection. With the built-in roles:
 
 | Role | In the UI |
 |---|---|
-| `viewer` | every screen read-only: no create, edit, delete, import, clear, trigger or upload controls; sensitive stub header values are masked by the server; the audit log is hidden |
+| `viewer` | every screen read-only: no create, edit, delete, import, clear, trigger or upload controls; sensitive stub header values are masked by the server; the audit log and admin tokens are hidden |
 | `editor` | everything that changes test state: stubs, imports, journal, callbacks, scenarios, chaos, KV, files, recordings, snapshots, contract tests, async mocks, settings, gRPC descriptors |
-| `admin` | everything an editor can do, plus the audit log and deleting all stubs |
+| `admin` | everything an editor can do, plus the audit log, admin tokens, secret headers of contract tests and deleting all stubs |
+
+Custom roles of the access file get exactly the controls their permissions allow.
+
+## Spaces
+
+When the access file defines [spaces](../operations/access-control.md#spaces), the header shows a space selector
+with the spaces you can see. **All spaces** is offered when you hold a permission globally or are bound to several
+spaces; a principal bound to a single space always works in it. The choice is remembered in this browser.
+
+- Lists send the selected space to the server (`?space=`): stubs, the request journal, near misses, verification,
+  scenarios, callbacks, files, contract tests, admin tokens and the dashboard counters. With **All spaces** they
+  show everything you may read, with a **Space** column (a dash marks the global area).
+- Create and import forms (new stub, import, file upload, scenario state, KV, contract test runs) have a **Space**
+  field that starts at the selected space and offers only the areas where you hold the permission: the global
+  area (for global principals) and your spaces. A stub's space cannot be changed later.
+- Clearing actions (journal, callbacks, scenarios, deleting a tag) act on the selected space; with **All spaces**
+  they act on everything you may change.
+
+Without spaces (no access file, or one without `spaces`), the selector and the Space columns are not shown.
 
 ## Screens
 
@@ -213,7 +246,8 @@ into stubs with a tag, optionally keeping request headers and turning repeated r
 ### Files
 
 Body files for `response.bodyFileName`: name, content type, size, last change. Editors upload by dropping files
-(optionally into a folder such as `payments/v1`, at most 10 MiB each), and everyone can download them.
+(optionally into a folder such as `payments/v1`, at most 10 MiB each), and everyone can download them. With
+spaces, a file belongs to a space and stubs of that space find it there first.
 
 ### Settings
 
@@ -242,15 +276,33 @@ companion artifacts. Editors can delete a service together with its stubs.
 ### Contract tests
 
 Start a run against an imported service or a pasted OpenAPI/AsyncAPI document, with the target URL, the
-operations to test (all by default), headers, secret headers (admins only; header name to secret name, see
+operations to test (all by default), headers, secret headers (only with the `contracts:secrets` permission,
+which admins have; header name to secret name, see
 [Contract testing: secrets](contract-testing.md#secrets-and-redaction)) and a per-call timeout. The history lists
 runs with status and passed/total; a run opens per-operation results with the request, the response excerpt, the
 received messages for event APIs, and every validation error. Viewers see the verdict, status code and size of
 each result only, with a note that the details are reserved to editors.
 
+### Admin tokens
+
+Shown with the `tokens:read` permission (admins, or a custom role such as a team lead). The list shows the
+managed tokens you may manage, filtered by status (active by default) and by the selected space: name and
+description, role (hover for its permissions), scope (global or spaces), who created it, creation, expiry, last
+use and status. Static tokens from `FASTMOCK_ADMIN_TOKENS` are not listed.
+
+- **Create token** (needs `tokens:write`) asks for a name, an optional description, a role, the scope and the
+  lifetime in days. Only roles you may grant are offered, and only in the spaces where you may grant them: you
+  must hold every permission of the role there ([escalation rule](../operations/access-control.md#managed-tokens)),
+  so a space-bound lead cannot create global tokens. The lifetime is limited to the server maximum
+  (`FASTMOCK_TOKENS_MAX_DAYS`) and defaults to 90 days.
+- After creation the value is shown **once**, with a copy button and a warning; it is kept only in the dialog and
+  dropped when the dialog closes. The UI never stores or logs it, and the server never returns it again.
+- **Revoke** (after a confirmation) stops the token on every replica within 10 seconds; revoked and expired tokens
+  stay visible under their status filters.
+
 ### Audit log
 
-Admins only. Every change made through the admin API with time, principal, role and action, filtered by
+Needs the `audit:read` permission (admins). Every change made through the admin API with time, principal, role and action, filtered by
 principal, action and detail text. An entry opens its detail: stub updates as a table of changed fields with the
 values before and after, deletions as a diff of the removed stub, everything else as JSON.
 
@@ -258,8 +310,8 @@ values before and after, deletions as a diff of the removed stub, everything els
 
 `/ui/api` renders Swagger UI for `/openapi.json`. The document lists every admin route with its parameters,
 schemas, examples and error responses. "Try it out" is enabled, and every request that Swagger UI sends to the
-admin listener carries the token you signed in with, so calls run with your role (a viewer gets `403` for
-changes). The token is attached only when the request URL, resolved against the page, has exactly the UI's origin
+admin listener carries the token you signed in with (or, after SSO sign-in, the session cookie and the
+`X-FastMock-Request` header), so calls run with your permissions (a viewer gets `403` for changes). The token is attached only when the request URL, resolved against the page, has exactly the UI's origin
 (scheme, host and port); requests to any other origin are sent without it. There is no need to use the **Authorize** dialog. Swagger UI is bundled into the binary and loaded only
 when this page is opened; it does not contact any external service.
 
@@ -281,8 +333,10 @@ when this page is opened; it does not contact any external service.
   blocked. Responses also carry `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and
   `Referrer-Policy: no-referrer`.
 - **No HTML from data.** Request bodies, stub names, headers and every other value are rendered as text.
-- **Token handling** as described in [Signing in](#signing-in-roles-and-signing-out); the token never appears in
-  URLs.
+- **Token handling** as described in [Signing in](#signing-in-permissions-and-signing-out); the token never
+  appears in URLs. SSO sessions use the server's `HttpOnly` cookie and the `X-FastMock-Request` header; cookies
+  are never sent with token-authenticated requests.
+- **Managed token values** appear only in the dialog right after creation.
 - **Same rules as the API.** The UI has no privileges of its own; it calls the documented admin endpoints with
   your token.
 

@@ -19,6 +19,7 @@ data-plane URL space.
 - [Ownership of the data plane](#ownership-of-the-data-plane)
 - [What is scoped and what is global](#what-is-scoped-and-what-is-global)
 - [Inspecting your permissions](#inspecting-your-permissions)
+- [In the web UI](#in-the-web-ui)
 - [Errors](#errors)
 - [Examples](#examples)
 - [Migrating an existing installation](#migrating-an-existing-installation)
@@ -178,6 +179,7 @@ response; FastMock stores its SHA-256 hash. Store it in your secret manager righ
 | `GET /tokens/{id}` | `tokens:read` in every scope of the token; others answer 404 |
 | `DELETE /tokens/{id}` | `tokens:write` in every scope of the token, or the token itself (self-revocation) |
 | `GET /tokens/self` | the managed token itself (any static token gets 404) |
+| `GET /tokens/options` | `tokens:write` somewhere; the roles with the scopes where the caller may grant them under the escalation rule, and `maxDays`/`defaultDays` (used by the UI's create form) |
 
 **Escalation rule.** The caller can create a token only if, in each requested scope, it holds `tokens:write` and
 every permission the role grants there: for a global token, globally; for a token in space `s`, the space
@@ -557,6 +559,28 @@ otherwise its bound spaces) with the caller's permissions in each:
 {"spaces": [{"name": "billing", "pathPrefixes": [], "hosts": [],
              "permissions": ["stubs:read", "stubs:write", "imports:run", "journal:read", "state:read"]}]}
 ```
+
+## In the web UI
+
+The [web UI](../guide/ui.md#signing-in-permissions-and-signing-out) follows the same model; it has no privileges
+of its own and the server checks every call.
+
+- **Sign-in.** With OIDC configured the sign-in page offers **Sign in with SSO** next to the token form. The UI
+  then uses the session cookie and sends `X-FastMock-Request: 1` on every admin call; the account menu shows the
+  user name, kind (`token`, `managed token` or `user`), groups and bound spaces, and **Sign out** ends the session
+  (and the provider session when it supports RP-initiated logout). The messages for each `loginError` and for an
+  expired session appear on the sign-in page.
+- **Space selector.** When the access file defines spaces, the header has a selector with the spaces the principal
+  can see, plus **All spaces** for principals with a global permission or several spaces. Lists (stubs, journal,
+  scenarios, callbacks, files, contract tests, tokens) send the selected space as `?space=` and show a Space
+  column; create and import forms preselect it and offer only the areas where the principal holds the needed
+  permission. The choice is remembered in the browser. Without spaces the selector and the column are hidden.
+- **Actions** follow `principal.permissions` from `GET /__admin/info`: controls the principal cannot use are hidden
+  or disabled, and a disabled control's tooltip names the missing permission (for example "Requires the
+  stubs:write permission in space billing").
+- **Admin tokens** (visible with `tokens:read`) lists managed tokens with role, scope, creator, creation, expiry,
+  last use and status, creates tokens limited to the roles and spaces of `GET /__admin/tokens/options` and to
+  `FASTMOCK_TOKENS_MAX_DAYS`, shows the new value once with a copy button, and revokes after a confirmation.
 
 ## Errors
 

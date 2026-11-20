@@ -123,7 +123,7 @@ selects data are listed in [Access control](../operations/access-control.md#perm
 | `GET /contract-tests`, `/contract-tests/{id}` | viewer (verdicts only; details need editor) |
 | `POST /contract-tests`, `DELETE /contract-tests/{id}` | editor; `POST` with `secretHeaders` needs admin |
 | `POST /reset`, `GET /audit` | admin |
-| `GET /tokens`, `/tokens/{id}`; `POST /tokens`, `DELETE /tokens/{id}` | admin (`tokens:read`, `tokens:write`; see [Managed tokens](#managed-tokens)) |
+| `GET /tokens`, `/tokens/{id}`; `POST /tokens`, `GET /tokens/options`, `DELETE /tokens/{id}` | admin (`tokens:read`, `tokens:write`; see [Managed tokens](#managed-tokens)) |
 | `GET /tokens/self`; `DELETE /tokens/{id}` of the calling token itself | the managed token itself |
 
 ## Sign-in endpoints
@@ -157,6 +157,7 @@ curl -s -X DELETE localhost:9090/__admin/tokens/$ID -H "Authorization: Bearer $A
 | `POST /tokens` | `{name, role, spaces?, global?, expiresInDays?, description?}`; exactly one of `spaces` and `global: true`; `expiresInDays` 1 to `FASTMOCK_TOKENS_MAX_DAYS`, default 90 | `201` with `token` (the value, once) and the metadata; `409` when the name is taken by an active or a static token |
 | `GET /tokens` | `?space=`, `?status=active\|expired\|revoked` | `{"tokens": [...]}`: metadata of the tokens the caller may manage, newest first |
 | `GET /tokens/{id}`, `GET /tokens/self` | | metadata: `id`, `name`, `role`, `spaces`, `global`, `description`, `createdBy`, `createdAt`, `expiresAt`, `lastUsedAt`, `revokedAt`, `status` |
+| `GET /tokens/options` | | what the caller may choose when creating a token: `maxDays`, `defaultDays` and every role with its `permissions`, `builtin`, and where the caller may grant it (`global`, `spaces`); needs `tokens:write` somewhere |
 | `DELETE /tokens/{id}` | | the metadata with `status: revoked`; every replica rejects the token within 10 seconds |
 
 Who may create, see and revoke which tokens (the escalation rule), expiry, caching and memory-mode behaviour are
