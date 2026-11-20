@@ -1,4 +1,5 @@
 use axum::http::StatusCode;
+use fastmock_core::ownership::under;
 use fastmock_core::{SpaceFilter, Stub};
 use serde::Deserialize;
 
@@ -15,8 +16,18 @@ pub struct SpaceQuery {
     pub space: Option<String>,
 }
 
-pub fn known(app: &AppState, space: &str) -> ApiResult<()> {
-    if app.auth.access().space(space).is_none() {
+/// Whether the principal may see a space at all: it holds some permission everywhere, or a binding
+/// names the space.
+pub fn visible(p: &Principal, space: &str) -> bool {
+    p.permissions.sees_all_spaces()
+        || p.permissions
+            .bound_spaces()
+            .any(|(n, _)| n.as_str() == space)
+}
+
+/// A configured space the principal may see; other names answer 404 alike.
+pub fn known(app: &AppState, p: &Principal, space: &str) -> ApiResult<()> {
+    if app.auth.access().space(space).is_none() || !visible(p, space) {
         return Err(ApiError(
             StatusCode::NOT_FOUND,
             format!("space {space} not found"),
@@ -34,7 +45,7 @@ pub fn select(
     requested: Option<&str>,
 ) -> ApiResult<SpaceFilter> {
     if let Some(s) = requested {
-        known(app, s)?;
+        known(app, p, s)?;
         require(p, perm, Some(s))?;
         return Ok(SpaceFilter::In(vec![s.to_string()]));
     }
@@ -57,7 +68,7 @@ pub fn target(
     requested: Option<&str>,
 ) -> ApiResult<Option<String>> {
     if let Some(s) = requested {
-        known(app, s)?;
+        known(app, p, s)?;
         require(p, perm, Some(s))?;
         return Ok(Some(s.to_string()));
     }
@@ -94,29 +105,6 @@ pub fn item(
         return Err(not_found(what));
     }
     require(p, perm, space)
-}
-
-/// Area of a stored key: `(Some(space), rest)` when the key starts with `<space>/` of a configured
-/// space, otherwise `(None, key)`.
-pub fn split_key<'a>(app: &AppState, key: &'a str) -> (Option<&'a str>, &'a str) {
-    if let Some((first, rest)) = key.split_once('/')
-        && app.auth.access().space(first).is_some()
-    {
-        return (Some(first), rest);
-    }
-    (None, key)
-}
-
-pub fn join_key(space: Option<&str>, key: &str) -> String {
-    match space {
-        Some(s) => format!("{s}/{key}"),
-        None => key.to_string(),
-    }
-}
-
-fn under(path: &str, prefix: &str) -> bool {
-    let p = prefix.trim_end_matches('/');
-    p.is_empty() || path == p || path.starts_with(&format!("{p}/"))
 }
 
 /// Ownership rules of a space: with `pathPrefixes`, the URL matcher must be an exact path or a path
@@ -205,11 +193,7 @@ pub async fn check_ids(app: &AppState, stubs: &[Stub], space: Option<&str>) -> A
         {
             return Err(ApiError(
                 StatusCode::CONFLICT,
-                format!(
-                    "stubs[{i}]: id {} belongs to a stub in {}",
-                    s.id,
-                    other.map_or("the global area".to_string(), |o| format!("space {o}"))
-                ),
+                format!("stubs[{i}]: id {} is already in use", s.id),
             ));
         }
     }

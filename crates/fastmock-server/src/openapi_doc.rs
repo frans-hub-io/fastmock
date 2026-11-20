@@ -18,7 +18,7 @@ impl utoipa::Modify for BearerScheme {
                 HttpBuilder::new()
                     .scheme(HttpAuthScheme::Bearer)
                     .description(Some(
-                        "Static admin token from FASTMOCK_ADMIN_TOKENS, a managed token from POST /__admin/tokens or, with FASTMOCK_OIDC_API_AUDIENCE, a JWT from the OIDC provider. The UI may instead use the SSO session cookie (see the `session` scheme). Every route needs a permission (`resource:action`); the built-in roles viewer, editor and admin are permission sets, custom roles and space bindings come from FASTMOCK_ACCESS_FILE. Without an access file: GET/HEAD and read-only POSTs need viewer, other changes editor; deleting all stubs, reset and the audit log need admin.",
+                        "Static admin token from FASTMOCK_ADMIN_TOKENS, a managed token from POST /__admin/tokens or, with FASTMOCK_OIDC_API_AUDIENCE, a JWT from the OIDC provider. The UI may instead use the SSO session cookie (see the `session` scheme). Every route needs a permission (`resource:action`); the built-in roles viewer, editor and admin are permission sets, custom roles and space bindings come from FASTMOCK_ACCESS_FILE. Without an access file: GET/HEAD and read-only POSTs need viewer, other changes editor; deleting all stubs, reset, the audit log and managing other tokens (`/__admin/tokens*`, `tokens:read`/`tokens:write`) need admin. Routes without a rule need admin.",
                     ))
                     .build(),
             ),

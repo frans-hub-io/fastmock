@@ -140,6 +140,7 @@ pub async fn build(
         Some(path) => access::AccessConfig::load(path)?,
         None => access::AccessConfig::default(),
     };
+    engine.set_ownership(access.ownership());
     let auth = Arc::new(auth::Authenticator::with_access(
         &cfg.admin_tokens,
         cfg.admin_tokens_file.as_deref(),

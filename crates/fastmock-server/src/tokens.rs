@@ -41,6 +41,9 @@ pub struct TokenService {
     ttl: Duration,
     cache: Mutex<Cache>,
     touched: Mutex<HashMap<Uuid, Instant>>,
+    /// Whether the store holds any token, and when that was read: an empty store answers unknown
+    /// values without a lookup.
+    any: Mutex<Option<(Instant, bool)>>,
 }
 
 pub enum Lookup {
@@ -66,7 +69,37 @@ impl TokenService {
             ttl,
             cache: Mutex::new(Cache::default()),
             touched: Mutex::new(HashMap::new()),
+            any: Mutex::new(None),
         }
+    }
+
+    /// Whether the store may hold the presented token. A failed read keeps a previous "empty" answer,
+    /// which only rejects; otherwise the error stands.
+    async fn store_has_tokens(&self) -> anyhow::Result<bool> {
+        let last = *self.any.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, any)) = last
+            && at.elapsed() < self.ttl
+        {
+            return Ok(any);
+        }
+        match self.store.has_any().await {
+            Ok(any) => {
+                *self.any.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), any));
+                Ok(any)
+            }
+            Err(e) => match last {
+                Some((_, false)) => {
+                    tracing::warn!(error = %e, "checking for managed tokens failed; the store held none");
+                    Ok(false)
+                }
+                _ => Err(e),
+            },
+        }
+    }
+
+    /// Records that the store now holds a token.
+    pub fn note_created(&self) {
+        *self.any.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), true));
     }
 
     pub fn store(&self) -> &Arc<dyn TokenStore> {
@@ -123,6 +156,7 @@ impl TokenService {
         let hash = hash_token(value);
         let token = match self.cached(&hash) {
             Some(t) => t,
+            None if !self.store_has_tokens().await? => None,
             None => {
                 let t = self.store.by_hash(&hash).await?.map(Arc::new);
                 self.remember(hash, t.clone());
@@ -268,6 +302,10 @@ pub struct TokenInfo {
     pub last_used_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub status: TokenStatus,
+    /// The managed token that created this one; it expires no later than that token and is revoked
+    /// with it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<Uuid>,
 }
 
 impl TokenInfo {
@@ -287,6 +325,7 @@ impl TokenInfo {
                 .revoked_at
                 .filter(|_| t.status(Utc::now()) == ApiTokenStatus::Revoked),
             status: t.status(Utc::now()).into(),
+            parent_id: t.parent_id,
         }
     }
 }
@@ -403,7 +442,7 @@ fn audit_space(t: &ApiToken) -> Option<&str> {
 #[utoipa::path(
     post, path = "/__admin/tokens", tag = "tokens", operation_id = "createToken",
     summary = "Create a managed token",
-    description = "Returns the token value once. The caller needs `tokens:write` and every permission of the role in each requested scope (globally for `global: true`), so a token never holds more than its creator; a caller bound only to spaces cannot create global tokens. Expiry is mandatory.",
+    description = "Returns the token value once. The caller needs `tokens:write` and every permission of the role in each requested scope (globally for `global: true`), so a token never holds more than its creator; a caller bound only to spaces cannot create global tokens. Expiry is mandatory; a token created by a managed token expires no later than that token and is revoked with it.",
     request_body = CreateToken,
     responses(
         (status = 201, description = "Created; `token` is shown only here", body = CreatedToken),
@@ -437,7 +476,7 @@ pub async fn create_token(
         (false, Some(list)) if !list.is_empty() => {
             let mut seen = BTreeSet::new();
             for s in &list {
-                crate::spaces::known(&app, s)?;
+                crate::spaces::known(&app, &p, s)?;
                 if !seen.insert(s.clone()) {
                     return Err(bad(format!("space `{s}` listed twice")));
                 }
@@ -483,6 +522,22 @@ pub async fn create_token(
     }
     let value = generate_token();
     let now = Utc::now();
+    let mut expires_at = now + chrono::Duration::days(i64::from(days));
+    if let Some(parent) = p.token_id {
+        let pt = app
+            .tokens
+            .store()
+            .get(parent)
+            .await?
+            .filter(|t| t.status(now) == ApiTokenStatus::Active)
+            .ok_or_else(|| {
+                ApiError(
+                    StatusCode::UNAUTHORIZED,
+                    "the calling token is no longer active".into(),
+                )
+            })?;
+        expires_at = expires_at.min(pt.expires_at);
+    }
     let t = ApiToken {
         id: Uuid::now_v7(),
         name,
@@ -493,9 +548,11 @@ pub async fn create_token(
         description,
         created_by: p.name.clone(),
         created_at: now,
-        expires_at: now + chrono::Duration::days(i64::from(days)),
+        expires_at,
         last_used_at: None,
         revoked_at: None,
+        revoked: false,
+        parent_id: p.token_id,
     };
     if !app.tokens.store().create(&t, now).await? {
         return Err(ApiError(
@@ -504,6 +561,7 @@ pub async fn create_token(
         ));
     }
     app.tokens.forget(&t.sha256);
+    app.tokens.note_created();
     audit_event_in(&app, &p, audit_space(&t), "token.create", audit_detail(&t)).await;
     refresh_gauge(&app).await;
     Ok((
@@ -542,7 +600,7 @@ pub async fn list_tokens(
         Some(_) => return Err(bad("status must be active, expired or revoked")),
     };
     if let Some(s) = &q.space {
-        crate::spaces::known(&app, s)?;
+        crate::spaces::known(&app, &p, s)?;
         require(&p, Permission::TokensRead, Some(s))?;
     }
     let now = Utc::now();
@@ -625,7 +683,7 @@ pub async fn get_token(
 #[utoipa::path(
     delete, path = "/__admin/tokens/{id}", tag = "tokens", operation_id = "revokeToken",
     summary = "Revoke a managed token",
-    description = "Needs `tokens:write` in every scope of the token; a managed token may always revoke itself. Every replica rejects the token within 10 seconds. Revoking a token that is no longer active changes nothing.",
+    description = "Needs `tokens:write` in every scope of the token; a managed token may always revoke itself. Every replica rejects the token within 10 seconds. Tokens created by this token, directly or not, are revoked with it. Revoking a token that is no longer active (revoked or expired) changes nothing and records no audit event.",
     params(("id" = Uuid, Path, description = "Token id")),
     responses(
         (status = 200, description = "The token after revocation", body = TokenInfo),
@@ -661,12 +719,39 @@ pub async fn revoke_token(
     app.tokens.forget(&t.sha256);
     let t = store.get(id).await?.ok_or_else(|| not_found("token"))?;
     if revoked {
+        let children = revoke_descendants(&app, id, now).await?;
         let mut detail = audit_detail(&t);
         detail["self"] = json!(own);
+        if !children.is_empty() {
+            detail["revokedChildren"] = json!(children);
+        }
         audit_event_in(&app, &p, audit_space(&t), "token.revoke", detail).await;
         refresh_gauge(&app).await;
     }
     Ok(Json(TokenInfo::of(&t)))
+}
+
+/// Revokes every active token created, directly or not, by the token `root`.
+async fn revoke_descendants(app: &AppState, root: Uuid, at: DateTime<Utc>) -> ApiResult<Vec<Uuid>> {
+    let store = app.tokens.store();
+    let all = store.list().await?;
+    let mut frontier = vec![root];
+    let mut seen: Vec<Uuid> = vec![root];
+    let mut revoked: Vec<Uuid> = Vec::new();
+    while let Some(parent) = frontier.pop() {
+        for t in all.iter().filter(|t| t.parent_id == Some(parent)) {
+            if seen.contains(&t.id) {
+                continue;
+            }
+            seen.push(t.id);
+            if store.revoke(t.id, at).await? {
+                app.tokens.forget(&t.sha256);
+                revoked.push(t.id);
+            }
+            frontier.push(t.id);
+        }
+    }
+    Ok(revoked)
 }
 
 /// A role and the scopes in which the caller may grant it.
@@ -782,6 +867,8 @@ mod tests {
             expires_at: now + expires_in,
             last_used_at: None,
             revoked_at: None,
+            revoked: false,
+            parent_id: None,
         }
     }
 
@@ -814,6 +901,95 @@ mod tests {
         let c = svc.cache.lock().unwrap();
         assert!(c.unknown.len() <= NEGATIVE_MAX);
         assert_eq!(c.known.len(), 1);
+    }
+
+    #[derive(Default)]
+    struct Probe {
+        inner: MemoryTokens,
+        lookups: std::sync::atomic::AtomicUsize,
+        down: std::sync::atomic::AtomicBool,
+    }
+
+    impl Probe {
+        fn check(&self) -> anyhow::Result<()> {
+            if self.down.load(std::sync::atomic::Ordering::SeqCst) {
+                anyhow::bail!("store down");
+            }
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl TokenStore for Probe {
+        async fn create(&self, t: &ApiToken, now: DateTime<Utc>) -> anyhow::Result<bool> {
+            self.inner.create(t, now).await
+        }
+        async fn get(&self, id: Uuid) -> anyhow::Result<Option<ApiToken>> {
+            self.inner.get(id).await
+        }
+        async fn by_hash(&self, h: &str) -> anyhow::Result<Option<ApiToken>> {
+            self.lookups
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.check()?;
+            self.inner.by_hash(h).await
+        }
+        async fn list(&self) -> anyhow::Result<Vec<ApiToken>> {
+            self.inner.list().await
+        }
+        async fn revoke(&self, id: Uuid, at: DateTime<Utc>) -> anyhow::Result<bool> {
+            self.inner.revoke(id, at).await
+        }
+        async fn touch(&self, id: Uuid, at: DateTime<Utc>) -> anyhow::Result<()> {
+            self.inner.touch(id, at).await
+        }
+        async fn count_active(&self, now: DateTime<Utc>) -> anyhow::Result<i64> {
+            self.inner.count_active(now).await
+        }
+        async fn purge_inactive_before(&self, at: DateTime<Utc>) -> anyhow::Result<u64> {
+            self.inner.purge_inactive_before(at).await
+        }
+        async fn has_any(&self) -> anyhow::Result<bool> {
+            self.check()?;
+            self.inner.has_any().await
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_values_skip_the_store_while_it_holds_no_tokens() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let probe = Arc::new(Probe::default());
+        let svc = TokenService::new(probe.clone(), Duration::from_millis(100));
+        for _ in 0..5 {
+            assert!(matches!(
+                svc.lookup(&generate_token()).await.unwrap(),
+                Lookup::Unknown
+            ));
+        }
+        assert_eq!(probe.lookups.load(SeqCst), 0);
+        probe.down.store(true, SeqCst);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(
+            matches!(
+                svc.lookup(&generate_token()).await.unwrap(),
+                Lookup::Unknown
+            ),
+            "the store held no tokens, so a failed check still rejects"
+        );
+        probe.down.store(false, SeqCst);
+        let v = generate_token();
+        probe
+            .create(&token("c", &v, chrono::Duration::days(1)), Utc::now())
+            .await
+            .unwrap();
+        svc.note_created();
+        assert!(matches!(svc.lookup(&v).await.unwrap(), Lookup::Valid(_)));
+        assert_eq!(probe.lookups.load(SeqCst), 1);
+        probe.down.store(true, SeqCst);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(
+            svc.lookup(&generate_token()).await.is_err(),
+            "with tokens in the store, an outage is reported"
+        );
     }
 
     #[tokio::test]

@@ -30,8 +30,26 @@ fn no_nul(s: &str) -> String {
 static MIGRATOR: LazyLock<Migrator> = LazyLock::new(|| {
     let mut m = sqlx::migrate!("./migrations");
     m.set_ignore_missing(true);
+    m.set_locking(false);
     m
 });
+
+/// The advisory lock key sqlx uses for a database, so that older binaries, which let sqlx take the
+/// lock, and this one never migrate at the same time.
+fn migration_lock_id(database: &str) -> i64 {
+    let mut crc: u32 = 0xffff_ffff;
+    for b in database.bytes() {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0xedb8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    0x3d32_ad9e * i64::from(!crc)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SslMode {
@@ -243,8 +261,28 @@ impl PgStore {
         Ok(Self { pool })
     }
 
+    /// Applies pending migrations under the migration lock. The lock is polled rather than waited
+    /// for: a session blocked on it would hold a snapshot that a concurrent index build waits for.
     pub async fn migrate(&self) -> anyhow::Result<()> {
-        MIGRATOR.run(&self.pool).await?;
+        let mut conn = self.pool.acquire().await?;
+        let database: String = sqlx::query_scalar("select current_database()")
+            .fetch_one(&mut *conn)
+            .await?;
+        let key = migration_lock_id(&database);
+        while !sqlx::query_scalar::<_, bool>("select pg_try_advisory_lock($1)")
+            .bind(key)
+            .fetch_one(&mut *conn)
+            .await?
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        let result = MIGRATOR.run_direct(&mut *conn).await;
+        let unlocked = sqlx::query("select pg_advisory_unlock($1)")
+            .bind(key)
+            .execute(&mut *conn)
+            .await;
+        result?;
+        unlocked?;
         Ok(())
     }
 
@@ -342,25 +380,28 @@ fn push_spaces<'a>(qb: &mut QueryBuilder<'a, Postgres>, f: &'a SpaceFilter) {
     }
 }
 
+/// The space comes from its column: an older binary that rewrites the definition keeps the column.
 fn row_to_stub(r: &PgRow) -> StoreResult<Stub> {
     let def: Value = r.try_get("definition")?;
     let mut s: Stub = serde_json::from_value(def)?;
     s.updated_at = Some(r.try_get("updated_at")?);
+    s.space = r.try_get("space")?;
     Ok(s)
 }
 
 #[async_trait]
 impl StubStore for PgStore {
     async fn list(&self) -> StoreResult<Vec<Stub>> {
-        let rows =
-            sqlx::query("select definition, updated_at from fm_stubs order by updated_at desc, id")
-                .fetch_all(&self.pool)
-                .await?;
+        let rows = sqlx::query(
+            "select definition, updated_at, space from fm_stubs order by updated_at desc, id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter().map(row_to_stub).collect()
     }
 
     async fn get(&self, id: Uuid) -> StoreResult<Option<Stub>> {
-        let row = sqlx::query("select definition, updated_at from fm_stubs where id = $1")
+        let row = sqlx::query("select definition, updated_at, space from fm_stubs where id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
@@ -1023,7 +1064,7 @@ impl AuditStore for PgStore {
     }
 }
 
-const TOKEN_COLUMNS: &str = "id, name, sha256, role, spaces, global, description, created_by, created_at, expires_at, last_used_at, revoked_at";
+const TOKEN_COLUMNS: &str = "id, name, sha256, role, spaces, global, description, created_by, created_at, expires_at, last_used_at, revoked_at, revoked, parent_id";
 
 fn row_to_token(r: &PgRow) -> StoreResult<ApiToken> {
     Ok(ApiToken {
@@ -1039,6 +1080,8 @@ fn row_to_token(r: &PgRow) -> StoreResult<ApiToken> {
         expires_at: r.try_get("expires_at")?,
         last_used_at: r.try_get("last_used_at")?,
         revoked_at: r.try_get("revoked_at")?,
+        revoked: r.try_get("revoked")?,
+        parent_id: r.try_get("parent_id")?,
     })
 }
 
@@ -1052,7 +1095,7 @@ impl TokenStore for PgStore {
             .execute(&mut *tx)
             .await?;
         let inserted = sqlx::query(&format!(
-            "insert into fm_api_tokens ({TOKEN_COLUMNS}) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) on conflict (name) where revoked_at is null do nothing"
+            "insert into fm_api_tokens ({TOKEN_COLUMNS}) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) on conflict (name) where revoked_at is null do nothing"
         ))
         .bind(t.id)
         .bind(no_nul(&t.name))
@@ -1066,6 +1109,8 @@ impl TokenStore for PgStore {
         .bind(t.expires_at)
         .bind(t.last_used_at)
         .bind(t.revoked_at)
+        .bind(t.revoked)
+        .bind(t.parent_id)
         .execute(&mut *tx)
         .await?
         .rows_affected()
@@ -1105,7 +1150,7 @@ impl TokenStore for PgStore {
 
     async fn revoke(&self, id: Uuid, at: DateTime<Utc>) -> StoreResult<bool> {
         Ok(sqlx::query(
-            "update fm_api_tokens set revoked_at = $2 where id = $1 and revoked_at is null",
+            "update fm_api_tokens set revoked = true, revoked_at = $2 where id = $1 and revoked_at is null and expires_at > $2",
         )
         .bind(id)
         .bind(at)
@@ -1113,6 +1158,14 @@ impl TokenStore for PgStore {
         .await?
         .rows_affected()
             == 1)
+    }
+
+    async fn has_any(&self) -> StoreResult<bool> {
+        Ok(
+            sqlx::query_scalar("select exists (select 1 from fm_api_tokens)")
+                .fetch_one(&self.pool)
+                .await?,
+        )
     }
 
     async fn touch(&self, id: Uuid, at: DateTime<Utc>) -> StoreResult<()> {
@@ -1126,7 +1179,7 @@ impl TokenStore for PgStore {
 
     async fn count_active(&self, now: DateTime<Utc>) -> StoreResult<i64> {
         Ok(sqlx::query_scalar(
-            "select count(*) from fm_api_tokens where revoked_at is null and expires_at > $1",
+            "select count(*) from fm_api_tokens where not revoked and expires_at > $1",
         )
         .bind(now)
         .fetch_one(&self.pool)
@@ -1141,5 +1194,14 @@ impl TokenStore for PgStore {
                 .await?
                 .rows_affected(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn migration_lock_matches_sqlx() {
+        assert_eq!(super::migration_lock_id("postgres"), 368907709894077238);
+        assert_eq!(super::migration_lock_id("fastmock"), 3340988666452667578);
     }
 }

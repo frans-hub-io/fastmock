@@ -654,13 +654,21 @@ impl TokenStore for MemoryTokens {
 
     async fn revoke(&self, id: Uuid, at: DateTime<Utc>) -> StoreResult<bool> {
         let mut v = self.tokens.lock().await;
-        match v.iter_mut().find(|t| t.id == id && t.revoked_at.is_none()) {
+        match v
+            .iter_mut()
+            .find(|t| t.id == id && t.revoked_at.is_none() && t.expires_at > at)
+        {
             Some(t) => {
                 t.revoked_at = Some(at);
+                t.revoked = true;
                 Ok(true)
             }
             None => Ok(false),
         }
+    }
+
+    async fn has_any(&self) -> StoreResult<bool> {
+        Ok(!self.tokens.lock().await.is_empty())
     }
 
     async fn touch(&self, id: Uuid, at: DateTime<Utc>) -> StoreResult<()> {

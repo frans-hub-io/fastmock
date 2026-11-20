@@ -507,6 +507,7 @@ impl AccessConfig {
                 },
             );
         }
+        cfg.check_ownership()?;
         for (i, b) in doc.bindings.into_iter().enumerate() {
             let at = format!("bindings[{i}] ({})", b.subject);
             let subject = Subject::parse(&b.subject).map_err(|e| anyhow::anyhow!("{at}: {e}"))?;
@@ -540,6 +541,53 @@ impl AccessConfig {
             ));
         }
         Ok(cfg)
+    }
+
+    /// Each path prefix and host belongs to one space: overlaps between spaces are refused.
+    fn check_ownership(&self) -> anyhow::Result<()> {
+        use fastmock_core::ownership::{hosts_overlap, prefixes_overlap};
+        let all: Vec<&SpaceDef> = self.spaces.values().collect();
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                for pa in &a.path_prefixes {
+                    if let Some(pb) = b.path_prefixes.iter().find(|pb| prefixes_overlap(pa, pb)) {
+                        bail!(
+                            "space {} and space {} overlap: path prefix `{pa}` of space {} and `{pb}` of space {}; each path belongs to one space",
+                            a.name,
+                            b.name,
+                            a.name,
+                            b.name
+                        );
+                    }
+                }
+                for ha in &a.hosts {
+                    if let Some(hb) = b.hosts.iter().find(|hb| hosts_overlap(ha, hb)) {
+                        bail!(
+                            "space {} and space {} overlap: host `{ha}` of space {} and `{hb}` of space {}; each host belongs to one space",
+                            a.name,
+                            b.name,
+                            a.name,
+                            b.name
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The data-plane paths and hosts owned by spaces.
+    pub fn ownership(&self) -> fastmock_core::ownership::Ownership {
+        let mut o = fastmock_core::ownership::Ownership::default();
+        for s in self.spaces.values() {
+            for p in &s.path_prefixes {
+                o.add_prefix(&s.name, p);
+            }
+            for h in &s.hosts {
+                o.add_host(&s.name, h);
+            }
+        }
+        o
     }
 
     /// Permissions of a built-in or custom role.
@@ -703,8 +751,9 @@ impl Serialize for Grants {
 }
 
 /// Permission and scope kind a route needs before its handler runs. Handlers of space-scoped routes
-/// check the space they act on.
-pub fn route_rule(method: &Method, full_path: &str) -> (Permission, ScopeKind) {
+/// check the space they act on. `None`: the route has no rule, so only an admin (every permission
+/// globally) may call it.
+pub fn route_rule(method: &Method, full_path: &str) -> Option<(Permission, ScopeKind)> {
     let path = full_path.strip_prefix("/__admin").unwrap_or(full_path);
     let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let m = if method == Method::HEAD {
@@ -712,15 +761,8 @@ pub fn route_rule(method: &Method, full_path: &str) -> (Permission, ScopeKind) {
     } else {
         method.as_str()
     };
-    let natural = |p: Permission| (p, p.scope());
-    let global = |p: Permission| (p, ScopeKind::Global);
-    let fallback = || {
-        if m == "GET" {
-            global(InfoRead)
-        } else {
-            global(StubsWrite)
-        }
-    };
+    let natural = |p: Permission| Some((p, p.scope()));
+    let global = |p: Permission| Some((p, ScopeKind::Global));
     match (m, segs.as_slice()) {
         ("GET", ["stubs"]) => natural(StubsRead),
         ("POST" | "DELETE", ["stubs"]) => natural(StubsWrite),
@@ -781,7 +823,28 @@ pub fn route_rule(method: &Method, full_path: &str) -> (Permission, ScopeKind) {
         ("GET", ["tokens", _]) => natural(TokensRead),
         ("GET", ["plugins", _, ..]) => global(StubsRead),
         (_, ["plugins", _, ..]) => global(StubsWrite),
-        _ => fallback(),
+        _ => None,
+    }
+}
+
+/// The rule of earlier versions for paths without a rule (unknown paths included), used when neither an
+/// access file nor OIDC is configured: reads need viewer, everything else editor.
+pub fn legacy_fallback(method: &Method) -> (Permission, ScopeKind) {
+    if method == Method::GET || method == Method::HEAD {
+        (InfoRead, ScopeKind::Global)
+    } else {
+        (StubsWrite, ScopeKind::Global)
+    }
+}
+
+/// The rule a principal holding only global built-in roles meets at the middleware for routes whose
+/// handler checks the admin role itself, as before permissions existed: `/audit` as a read and
+/// `/reset` as a change, so the handler answers with the earlier denial body.
+pub fn legacy_gate(rule: (Permission, ScopeKind)) -> (Permission, ScopeKind) {
+    match rule.0 {
+        AuditRead => (InfoRead, ScopeKind::Global),
+        SystemReset => (StubsWrite, ScopeKind::Global),
+        _ => rule,
     }
 }
 
@@ -1011,7 +1074,7 @@ bindings:
 
     #[test]
     fn route_rules() {
-        let r = |m: Method, p: &str| route_rule(&m, p);
+        let r = |m: Method, p: &str| route_rule(&m, p).unwrap_or((SystemReset, ScopeKind::Global));
         assert_eq!(
             r(Method::GET, "/__admin/stubs"),
             (StubsRead, ScopeKind::Space)
@@ -1084,13 +1147,114 @@ bindings:
             r(Method::GET, "/__admin/tokens/options"),
             (TokensWrite, ScopeKind::Space)
         );
-        assert_eq!(
-            r(Method::GET, "/__admin/nope"),
-            (InfoRead, ScopeKind::Global)
+        assert_eq!(route_rule(&Method::GET, "/__admin/nope"), None);
+        assert_eq!(route_rule(&Method::OPTIONS, "/__admin/stubs"), None);
+    }
+
+    fn concrete(path: &str) -> String {
+        path.split('/')
+            .map(|seg| match seg {
+                s if s.starts_with("{*") => "x/y".to_string(),
+                s if s.starts_with('{') => "x".to_string(),
+                s => s.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
+    /// `(method, path)` of every `.route(…)` in the sources of the core admin routers.
+    fn router_routes() -> Vec<(String, String)> {
+        const SOURCES: [&str; 10] = [
+            include_str!("admin.rs"),
+            include_str!("admin_core.rs"),
+            include_str!("asyncmock.rs"),
+            include_str!("contract.rs"),
+            include_str!("files.rs"),
+            include_str!("imports.rs"),
+            include_str!("journal_api.rs"),
+            include_str!("services.rs"),
+            include_str!("snapshot.rs"),
+            include_str!("tokens.rs"),
+        ];
+        const OUTSIDE_ADMIN: [&str; 4] = ["/healthz", "/readyz", "/metrics", "/openapi.json"];
+        let mut out = Vec::new();
+        for src in SOURCES {
+            let mut rest = src;
+            while let Some(i) = rest.find(".route(") {
+                rest = &rest[i + 7..];
+                let mut depth = 1;
+                let end = rest
+                    .char_indices()
+                    .find(|(_, c)| {
+                        match c {
+                            '(' => depth += 1,
+                            ')' => depth -= 1,
+                            _ => {}
+                        }
+                        depth == 0
+                    })
+                    .map(|(j, _)| j)
+                    .unwrap();
+                let expr = &rest[..end];
+                let Some(path) = expr.split('"').nth(1) else {
+                    continue;
+                };
+                if !path.starts_with('/') || OUTSIDE_ADMIN.contains(&path) {
+                    continue;
+                }
+                let after = &expr[expr.find(path).unwrap() + path.len() + 1..];
+                for m in ["get", "post", "put", "delete", "patch"] {
+                    let found = after.match_indices(&format!("{m}(")).any(|(k, _)| {
+                        k == 0 || {
+                            let b = after.as_bytes()[k - 1];
+                            !(b.is_ascii_alphanumeric() || b == b'_')
+                        }
+                    });
+                    if found {
+                        out.push((
+                            m.to_ascii_uppercase(),
+                            format!("/__admin{}", path.replace("{*", "{")),
+                        ));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_core_admin_route_has_an_explicit_rule() {
+        let routes = router_routes();
+        assert!(routes.len() >= 80, "only {} routes found", routes.len());
+        let doc = serde_json::to_value(crate::openapi_doc::spec()).unwrap();
+        let mut documented = Vec::new();
+        for (path, item) in doc["paths"].as_object().unwrap() {
+            if !path.starts_with("/__admin/") || path.starts_with("/__admin/auth/") {
+                continue;
+            }
+            for m in ["get", "put", "post", "delete", "patch"] {
+                if item.get(m).is_some() {
+                    documented.push((m.to_ascii_uppercase(), path.clone()));
+                }
+            }
+        }
+        assert!(
+            documented.len() >= 80,
+            "only {} documented",
+            documented.len()
         );
-        assert_eq!(
-            r(Method::OPTIONS, "/__admin/stubs"),
-            (StubsWrite, ScopeKind::Global)
-        );
+        for (m, path) in routes.iter().chain(documented.iter()) {
+            let method = Method::from_bytes(m.as_bytes()).unwrap();
+            assert!(
+                route_rule(&method, &concrete(path)).is_some(),
+                "{m} {path} has no explicit rule in route_rule"
+            );
+        }
+        for (m, path) in &routes {
+            assert!(
+                documented.contains(&(m.clone(), path.clone())),
+                "{m} {path} is routed but missing from the OpenAPI document"
+            );
+        }
     }
 }

@@ -13,6 +13,7 @@ use crate::admin::{ApiError, ApiResult, ErrorBody, audit_event_in, bad, not_foun
 use crate::auth::Principal;
 use crate::spaces::{self, SpaceQuery};
 use crate::state::AppState;
+use fastmock_core::engine::files_namespace;
 
 pub const NAMESPACE: &str = "files";
 pub const MAX_FILE_BYTES: usize = 10 * 1024 * 1024;
@@ -27,6 +28,13 @@ pub fn routes() -> Router<AppState> {
             get(get_file).put(put_file).delete(delete_file),
         )
         .layer(axum::extract::DefaultBodyLimit::max(MAX_FILE_BYTES + 1024))
+}
+
+/// The global area and every configured space.
+fn areas(app: &AppState) -> Vec<Option<String>> {
+    std::iter::once(None)
+        .chain(app.auth.access().spaces().map(|s| Some(s.name.clone())))
+        .collect()
 }
 
 pub fn valid_name(name: &str) -> Result<(), String> {
@@ -102,23 +110,26 @@ pub async fn list_files(
     Query(q): Query<SpaceQuery>,
 ) -> ApiResult<Json<FileList>> {
     let sel = spaces::select(&app, &p, Permission::FilesRead, q.space.as_deref())?;
-    let items = app
-        .stores
-        .data
-        .list_without(NAMESPACE, MAX_FILES as i64, "base64")
-        .await?;
-    let files: Vec<FileInfo> = items
-        .into_iter()
-        .filter_map(|(k, v)| {
-            let (space, name) = spaces::split_key(&app, &k);
-            if !sel.matches(space) {
-                return None;
-            }
-            let mut info = info_of(name.to_string(), &v);
-            info.space = space.map(String::from);
-            Some(info)
-        })
-        .collect();
+    let mut files: Vec<FileInfo> = Vec::new();
+    for area in areas(&app) {
+        if !sel.matches(area.as_deref()) {
+            continue;
+        }
+        let items = app
+            .stores
+            .data
+            .list_without(
+                &files_namespace(area.as_deref()),
+                MAX_FILES as i64,
+                "base64",
+            )
+            .await?;
+        files.extend(items.into_iter().map(|(name, v)| {
+            let mut info = info_of(name, &v);
+            info.space = area.clone();
+            info
+        }));
+    }
     Ok(Json(FileList {
         total: files.len(),
         files,
@@ -149,7 +160,7 @@ pub async fn get_file(
     let v = app
         .stores
         .data
-        .get(NAMESPACE, &spaces::join_key(space.as_deref(), &name))
+        .get(&files_namespace(space.as_deref()), &name)
         .await?
         .ok_or_else(|| not_found("file"))?;
     let bytes = v
@@ -216,7 +227,7 @@ pub async fn put_file(
 ) -> ApiResult<Response> {
     let space = spaces::target(&app, &p, Permission::FilesWrite, q.space.as_deref())?;
     checked(&name)?;
-    let key = spaces::join_key(space.as_deref(), &name);
+    let ns = files_namespace(space.as_deref());
     if body.len() > MAX_FILE_BYTES {
         return Err(ApiError(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -224,14 +235,21 @@ pub async fn put_file(
         ));
     }
     let ct = content_type(&headers)?;
-    let existed = app.stores.data.get(NAMESPACE, &key).await?.is_some();
+    let existed = app.stores.data.get(&ns, &name).await?.is_some();
     if !existed {
-        let n = app
-            .stores
-            .data
-            .list_without(NAMESPACE, MAX_FILES as i64 + 1, "base64")
-            .await?
-            .len();
+        let mut n = 0;
+        for area in areas(&app) {
+            n += app
+                .stores
+                .data
+                .list_without(
+                    &files_namespace(area.as_deref()),
+                    MAX_FILES as i64 + 1,
+                    "base64",
+                )
+                .await?
+                .len();
+        }
         if n >= MAX_FILES {
             return Err(ApiError(
                 StatusCode::CONFLICT,
@@ -246,7 +264,7 @@ pub async fn put_file(
         "size": body.len(),
         "updatedAt": now,
     });
-    app.stores.data.put(NAMESPACE, &key, &v).await?;
+    app.stores.data.put(&ns, &name, &v).await?;
     app.engine.invalidate_files();
     metrics::counter!("fastmock_files_written_total").increment(1);
     metrics::histogram!("fastmock_file_size_bytes").record(body.len() as f64);
@@ -295,7 +313,7 @@ pub async fn delete_file(
     if !app
         .stores
         .data
-        .delete(NAMESPACE, &spaces::join_key(space.as_deref(), &name))
+        .delete(&files_namespace(space.as_deref()), &name)
         .await?
     {
         return Err(not_found("file"));

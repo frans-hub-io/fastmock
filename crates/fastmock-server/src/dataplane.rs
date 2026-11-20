@@ -3,12 +3,12 @@ use std::time::{Duration, Instant};
 
 use axum::body::{Body, to_bytes};
 use axum::extract::{Request, State};
-use axum::http::{HeaderName, HeaderValue, StatusCode};
+use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use chrono::Utc;
-use fastmock_core::plugin::TRACEPARENT;
+use fastmock_core::plugin::{SPACE, TRACEPARENT};
 use fastmock_core::{CapturedRequest, Correlation, Fault, JournalEntry};
 use futures::{StreamExt, stream};
 use serde_json::json;
@@ -153,6 +153,18 @@ pub async fn data_plane_middleware(
     let chaos = crate::extras::chaos(&app, &source, parts.method.as_str(), parts.uri.path()).await;
     let req = Request::from_parts(parts, Body::from(bytes.clone()));
     let tp = Some(ids.traceparent());
+    let (host, port) = match req
+        .headers()
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+    {
+        Some(h) => {
+            let (h, p) = fastmock_core::request::split_host_port(h);
+            (Some(h), p)
+        }
+        None => (None, None),
+    };
+    let space = app.engine.owner(req.uri().path(), host.as_deref(), port);
     let mut chaos_rule = None;
     let mut resp = match chaos {
         crate::extras::ChaosOutcome::Respond(r, id) => {
@@ -162,13 +174,19 @@ pub async fn data_plane_middleware(
         crate::extras::ChaosOutcome::Delay(d, id) => {
             chaos_rule = Some(id);
             tokio::time::sleep(d).await;
-            TRACEPARENT
-                .scope(tp, next.run(req).instrument(span.clone()))
+            SPACE
+                .scope(
+                    space,
+                    TRACEPARENT.scope(tp, next.run(req).instrument(span.clone())),
+                )
                 .await
         }
         crate::extras::ChaosOutcome::None => {
-            TRACEPARENT
-                .scope(tp, next.run(req).instrument(span.clone()))
+            SPACE
+                .scope(
+                    space,
+                    TRACEPARENT.scope(tp, next.run(req).instrument(span.clone())),
+                )
                 .await
         }
     };

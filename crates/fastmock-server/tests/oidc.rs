@@ -191,6 +191,8 @@ struct IdpState {
     jwks_uri_override: Option<String>,
     issuer_override: Option<String>,
     token_requests: u32,
+    redirect_token: bool,
+    moved_token_requests: u32,
 }
 
 #[derive(Clone)]
@@ -221,6 +223,7 @@ impl Idp {
             )
             .route("/realms/test/authorize", get(authorize))
             .route("/realms/test/token", post(token))
+            .route("/realms/test/token-moved", post(token_moved))
             .route("/realms/test/userinfo", get(userinfo))
             .route("/realms/test/jwks", get(jwks))
             .with_state(idp.clone());
@@ -307,6 +310,10 @@ async fn token(
     Form(f): Form<HashMap<String, String>>,
 ) -> Response {
     let bad = |e: &str| (StatusCode::BAD_REQUEST, axum::Json(json!({"error": e}))).into_response();
+    if idp.with(|s| s.redirect_token) {
+        let to = format!("{}/token-moved", idp.issuer());
+        return (StatusCode::TEMPORARY_REDIRECT, [(header::LOCATION, to)]).into_response();
+    }
     let basic = format!(
         "Basic {}",
         STANDARD.encode(format!("{CLIENT_ID}:{CLIENT_SECRET}"))
@@ -354,6 +361,15 @@ async fn token(
         URL_SAFE_NO_PAD.encode(serde_json::to_vec(&code.user.userinfo_groups).unwrap())
     );
     axum::Json(json!({"access_token": access, "token_type": "Bearer", "expires_in": 300, "id_token": id_token}))
+        .into_response()
+}
+
+async fn token_moved(State(idp): State<Idp>) -> Response {
+    idp.with(|s| s.moved_token_requests += 1);
+    (
+        StatusCode::BAD_REQUEST,
+        axum::Json(json!({"error": "invalid_grant"})),
+    )
         .into_response()
 }
 
@@ -737,7 +753,7 @@ async fn code_flow_session_csrf_and_logout() {
         let (st, _) = h
             .with_session(Method::POST, "/stubs", &session, true, Some(billing))
             .await;
-        assert_eq!(st, 403, "{name}");
+        assert_eq!(st, 404, "{name}: an unbound space looks unknown");
         let (st, _) = h
             .with_session(
                 Method::DELETE,
@@ -1119,6 +1135,7 @@ async fn bearer_jwts_next_to_static_and_managed_tokens() {
             idp.api_token("alice", &["payments-dev"], API_AUDIENCE, -120),
             idp.jwt(&json!({"iss": "https://evil.example.com", "aud": API_AUDIENCE, "sub": "x", "exp": now() + 60})),
             format!("{}x", &t[..t.len() - 1]),
+            idp.jwt(&json!({"iss": idp.issuer(), "aud": API_AUDIENCE, "sub": "sub-alice", "preferred_username": "alice", "groups": ["payments-dev"], "nonce": "n", "iat": now(), "exp": now() + 60})),
         ] {
             let (st, v) = h.bearer(Method::GET, "/info", &bad, None).await;
             assert_eq!(st, 401, "{name}: {v}");
@@ -1321,4 +1338,42 @@ async fn insecure_cookie_for_local_http() {
             .0,
         200
     );
+}
+
+#[tokio::test]
+async fn unknown_kids_do_not_hold_back_a_key_rotation() {
+    let idp = Idp::start().await;
+    let h = H::start(StorageKind::Memory, &idp, &Opts::default()).await;
+    let stranger = Key::new("junk-kid");
+    let forged = stranger
+        .sign(&json!({"iss": idp.issuer(), "aud": API_AUDIENCE, "sub": "x", "exp": now() + 60}));
+    assert_eq!(h.bearer(Method::GET, "/info", &forged, None).await.0, 401);
+    let rotated = Key::new("k-rotated");
+    idp.with(|s| {
+        s.published.push(rotated.clone());
+        s.signing = Some(rotated.clone());
+    });
+    tokio::time::sleep(fastmock_server::oidc::JWKS_MIN_AGE + Duration::from_millis(200)).await;
+    let t = idp.api_token("alice", &["payments-dev"], API_AUDIENCE, 300);
+    let (st, v) = h.bearer(Method::GET, "/info", &t, None).await;
+    assert_eq!(st, 200, "a new key is accepted well before a minute: {v}");
+    let before = idp.with(|s| s.jwks_fetches);
+    assert_eq!(h.bearer(Method::GET, "/info", &forged, None).await.0, 401);
+    assert_eq!(
+        idp.with(|s| s.jwks_fetches),
+        before,
+        "a kid that a refresh did not find waits"
+    );
+}
+
+#[tokio::test]
+async fn the_token_request_follows_no_redirect() {
+    let idp = Idp::start().await;
+    let h = H::start(StorageKind::Memory, &idp, &Opts::default()).await;
+    idp.with(|s| s.redirect_token = true);
+    let r = h
+        .login(&idp, Some(user("alice", &["payments-dev"])), "/ui/")
+        .await;
+    assert!(r.session.is_none(), "{}", r.location);
+    assert_eq!(idp.with(|s| s.moved_token_requests), 0);
 }

@@ -1151,7 +1151,7 @@ export interface paths {
         put?: never;
         /**
          * Create a managed token
-         * @description Returns the token value once. The caller needs `tokens:write` and every permission of the role in each requested scope (globally for `global: true`), so a token never holds more than its creator; a caller bound only to spaces cannot create global tokens. Expiry is mandatory.
+         * @description Returns the token value once. The caller needs `tokens:write` and every permission of the role in each requested scope (globally for `global: true`), so a token never holds more than its creator; a caller bound only to spaces cannot create global tokens. Expiry is mandatory; a token created by a managed token expires no later than that token and is revoked with it.
          */
         post: operations["createToken"];
         delete?: never;
@@ -1216,7 +1216,7 @@ export interface paths {
         post?: never;
         /**
          * Revoke a managed token
-         * @description Needs `tokens:write` in every scope of the token; a managed token may always revoke itself. Every replica rejects the token within 10 seconds. Revoking a token that is no longer active changes nothing.
+         * @description Needs `tokens:write` in every scope of the token; a managed token may always revoke itself. Every replica rejects the token within 10 seconds. Tokens created by this token, directly or not, are revoked with it. Revoking a token that is no longer active (revoked or expired) changes nothing and records no audit event.
          */
         delete: operations["revokeToken"];
         options?: never;
@@ -1765,6 +1765,7 @@ export interface components {
             storage: string;
             /** Format: int64 */
             uptimeSeconds: number;
+            /** @description Loaded stubs the caller may read. */
             stubsLoaded: number;
             plugins: components["schemas"]["PluginInfo"][];
             principal: components["schemas"]["Principal"];
@@ -2396,6 +2397,12 @@ export interface components {
             /** Format: date-time */
             revokedAt?: string | null;
             status: components["schemas"]["TokenStatus"];
+            /**
+             * Format: uuid
+             * @description The managed token that created this one; it expires no later than that token and is revoked
+             *     with it.
+             */
+            parentId?: string | null;
         };
         TokenList: {
             tokens: components["schemas"]["TokenInfo"][];

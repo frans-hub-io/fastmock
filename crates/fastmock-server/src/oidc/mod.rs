@@ -6,6 +6,7 @@ pub mod routes;
 pub mod session;
 pub mod settings;
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -28,8 +29,18 @@ const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 const STARTUP_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const JWKS_REFRESH_EVERY: Duration = Duration::from_secs(3600);
-/// Unknown `kid`: at most one JWKS refresh per this interval.
+/// The same unknown `kid` triggers at most one JWKS refresh per this interval.
 pub const JWKS_MIN_REFRESH: Duration = Duration::from_secs(60);
+/// Refreshes for unknown keys are at least this far apart, whatever the `kid`.
+pub const JWKS_MIN_AGE: Duration = Duration::from_secs(5);
+const MAX_UNKNOWN_KIDS: usize = 256;
+
+/// Refreshes triggered by unknown keys: when the last one ran, and the `kid`s it did not find.
+#[derive(Default)]
+struct Refreshes {
+    last: Option<Instant>,
+    unknown: HashMap<String, Instant>,
+}
 const LOGIN_BURST: f64 = 100.0;
 const LOGINS_PER_SECOND: f64 = 10.0;
 
@@ -61,10 +72,13 @@ struct Bucket {
 pub struct Oidc {
     pub settings: OidcSettings,
     http: reqwest::Client,
+    /// For the token endpoint: never follows redirects, so the client credentials go only to the
+    /// discovered endpoint.
+    token_http: reqwest::Client,
     hosts: Arc<Vec<String>>,
     provider: RwLock<Option<Arc<Provider>>>,
     jwks: RwLock<Arc<JwkSet>>,
-    refreshed: tokio::sync::Mutex<Option<Instant>>,
+    refreshed: tokio::sync::Mutex<Refreshes>,
     limiter: Mutex<Bucket>,
 }
 
@@ -203,36 +217,40 @@ impl Oidc {
             Some(p) => load_ca(p)?,
             None => vec![],
         };
-        let mut builder = reqwest::Client::builder();
-        for c in roots {
-            builder = builder.add_root_certificate(c);
-        }
+        let client = |policy: reqwest::redirect::Policy| {
+            let mut builder = reqwest::Client::builder();
+            for c in &roots {
+                builder = builder.add_root_certificate(c.clone());
+            }
+            builder
+                .redirect(policy)
+                .timeout(HTTP_TIMEOUT)
+                .connect_timeout(Duration::from_secs(5))
+                .user_agent(concat!("FastMock/", env!("CARGO_PKG_VERSION")))
+                .build()
+                .context("building the OIDC HTTP client")
+        };
         let allowed = hosts.clone();
-        let http = builder
-            .redirect(reqwest::redirect::Policy::custom(move |attempt| {
-                if attempt.previous().len() >= 3 {
-                    attempt.error("too many redirects")
-                } else if egress_ok(&allowed, attempt.url()) {
-                    attempt.follow()
-                } else {
-                    attempt.error(
-                        "redirect to a host outside the issuer and FASTMOCK_OIDC_ALLOWED_HOSTS",
-                    )
-                }
-            }))
-            .timeout(HTTP_TIMEOUT)
-            .connect_timeout(Duration::from_secs(5))
-            .user_agent(concat!("FastMock/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .context("building the OIDC HTTP client")?;
+        let http = client(reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= 3 {
+                attempt.error("too many redirects")
+            } else if egress_ok(&allowed, attempt.url()) {
+                attempt.follow()
+            } else {
+                attempt
+                    .error("redirect to a host outside the issuer and FASTMOCK_OIDC_ALLOWED_HOSTS")
+            }
+        }))?;
+        let token_http = client(reqwest::redirect::Policy::none())?;
         metrics::gauge!("fastmock_oidc_ready").set(0.0);
         Ok(Arc::new(Self {
             settings,
             http,
+            token_http,
             hosts,
             provider: RwLock::new(None),
             jwks: RwLock::new(Arc::new(JwkSet::default())),
-            refreshed: tokio::sync::Mutex::new(None),
+            refreshed: tokio::sync::Mutex::new(Refreshes::default()),
             limiter: Mutex::new(Bucket {
                 tokens: LOGIN_BURST,
                 at: Instant::now(),
@@ -415,24 +433,41 @@ impl Oidc {
         Ok(())
     }
 
-    /// Refreshes the JWKS when the token's `kid` is unknown, at most once per [`JWKS_MIN_REFRESH`].
+    /// Refreshes the JWKS when the token's `kid` is unknown: a `kid` that a refresh did not find waits
+    /// [`JWKS_MIN_REFRESH`], any other at most [`JWKS_MIN_AGE`], so unknown keys cannot hold back a
+    /// real key rotation for long.
     async fn refresh_for(&self, kid: Option<&str>) -> bool {
-        let mut last = self.refreshed.lock().await;
+        let mut st = self.refreshed.lock().await;
         if let Some(k) = kid
             && self.keys().knows(k)
         {
             return true;
         }
-        if last.is_some_and(|t| t.elapsed() < JWKS_MIN_REFRESH) {
+        let key = kid.unwrap_or_default().to_string();
+        if st
+            .unknown
+            .get(&key)
+            .is_some_and(|t| t.elapsed() < JWKS_MIN_REFRESH)
+            || st.last.is_some_and(|t| t.elapsed() < JWKS_MIN_AGE)
+        {
             return false;
         }
         let Some(p) = self.provider() else {
             return false;
         };
-        *last = Some(Instant::now());
+        st.last = Some(Instant::now());
         match self.fetch_jwks(&p.jwks_uri).await {
             Ok(keys) => {
                 tracing::info!(keys = keys.len(), "OIDC signing keys refreshed");
+                if kid.is_none_or(|k| !keys.knows(k)) {
+                    if st.unknown.len() >= MAX_UNKNOWN_KIDS {
+                        st.unknown.retain(|_, t| t.elapsed() < JWKS_MIN_REFRESH);
+                        if st.unknown.len() >= MAX_UNKNOWN_KIDS {
+                            st.unknown.clear();
+                        }
+                    }
+                    st.unknown.insert(key, Instant::now());
+                }
                 *self.jwks.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(keys);
                 true
             }
@@ -472,8 +507,13 @@ impl Oidc {
         }
     }
 
+    /// The user name and groups of a set of claims. With `email` as the username claim, the address
+    /// counts only when `email_verified` is true.
     pub fn identity(&self, claims: &Map<String, Value>) -> (Option<String>, Option<Vec<String>>) {
+        let verified = self.settings.username_claim != "email"
+            || claims.get("email_verified") == Some(&Value::Bool(true));
         let name = claim(claims, &self.settings.username_claim)
+            .filter(|_| verified)
             .and_then(Value::as_str)
             .and_then(clean_name);
         let groups = claim(claims, &self.settings.groups_claim).map(groups_of);
@@ -552,7 +592,7 @@ impl Oidc {
             ("code_verifier", verifier),
         ];
         let mut rb = self
-            .http
+            .token_http
             .post(p.token.clone())
             .header(header::ACCEPT, "application/json");
         if p.basic_auth {
@@ -695,36 +735,54 @@ const STRIPPED_COOKIES: &[&str] = &[
 
 /// Removes the admin session cookies from a data-plane request: cookies ignore ports, so a browser
 /// sends them to the mock port of the same host as well, where stubs could echo or forward them.
+/// Headers are read as bytes; a `Cookie` header with an unparsable pair is dropped whole.
 pub fn strip_admin_cookies(headers: &mut HeaderMap) {
-    let values: Vec<String> = headers
+    fn pairs(v: &[u8]) -> impl Iterator<Item = &[u8]> {
+        v.split(|b| *b == b';').map(<[u8]>::trim_ascii)
+    }
+    fn name(pair: &[u8]) -> Option<&[u8]> {
+        pair.iter()
+            .position(|b| *b == b'=')
+            .map(|i| pair[..i].trim_ascii())
+    }
+    let admin = |n: &[u8]| STRIPPED_COOKIES.iter().any(|c| c.as_bytes() == n);
+    let values: Vec<Vec<u8>> = headers
         .get_all(header::COOKIE)
         .iter()
-        .filter_map(|v| v.to_str().ok().map(String::from))
+        .map(|v| v.as_bytes().to_vec())
         .collect();
-    if !values.iter().any(|v| {
-        v.split(';').any(|kv| {
-            kv.trim()
-                .split_once('=')
-                .is_some_and(|(k, _)| STRIPPED_COOKIES.contains(&k))
-        })
-    }) {
+    let mut changed = false;
+    let mut kept: Vec<header::HeaderValue> = Vec::with_capacity(values.len());
+    for v in &values {
+        let mut out: Vec<&[u8]> = Vec::new();
+        let mut drop_all = false;
+        for pair in pairs(v).filter(|p| !p.is_empty()) {
+            match name(pair) {
+                Some(n) if admin(n) => changed = true,
+                Some(n) if !n.is_empty() && n.iter().all(|b| b.is_ascii_graphic()) => {
+                    out.push(pair)
+                }
+                _ => drop_all = true,
+            }
+        }
+        if drop_all {
+            changed = true;
+            continue;
+        }
+        if out.is_empty() {
+            continue;
+        }
+        match header::HeaderValue::from_bytes(&out.join(&b"; "[..])) {
+            Ok(h) => kept.push(h),
+            Err(_) => changed = true,
+        }
+    }
+    if !changed {
         return;
     }
     headers.remove(header::COOKIE);
-    let kept: Vec<&str> = values
-        .iter()
-        .flat_map(|v| v.split(';'))
-        .map(str::trim)
-        .filter(|kv| !kv.is_empty())
-        .filter(|kv| {
-            kv.split_once('=')
-                .is_none_or(|(k, _)| !STRIPPED_COOKIES.contains(&k))
-        })
-        .collect();
-    if !kept.is_empty()
-        && let Ok(v) = header::HeaderValue::from_str(&kept.join("; "))
-    {
-        headers.insert(header::COOKIE, v);
+    for v in kept {
+        headers.append(header::COOKIE, v);
     }
 }
 
@@ -847,5 +905,73 @@ mod tests {
         strip_admin_cookies(&mut other);
         assert_eq!(other.get(header::COOKIE).unwrap(), "x=1;y=2");
         assert_eq!(cookie_value(&h, "a"), Some("1"));
+    }
+
+    #[test]
+    fn email_names_need_a_verified_address() {
+        let vars = |claim: &'static str| {
+            move |k: &str| {
+                match k {
+                    "OIDC_ISSUER" => Some("https://idp.example.com/realms/test"),
+                    "OIDC_CLIENT_ID" => Some("fastmock"),
+                    "OIDC_CLIENT_SECRET" => Some("s3cret"),
+                    "OIDC_REDIRECT_URL" => {
+                        Some("https://mock-admin.example.com/__admin/auth/callback")
+                    }
+                    "OIDC_USERNAME_CLAIM" => Some(claim),
+                    _ => None,
+                }
+                .map(String::from)
+            }
+        };
+        let by_email = Oidc::new(settings::from_env(&vars("email")).unwrap().unwrap()).unwrap();
+        let c = |v: Value| -> Map<String, Value> { serde_json::from_value(v).unwrap() };
+        let mail = "alice@example.com";
+        assert_eq!(by_email.identity(&c(json!({"email": mail}))).0, None);
+        assert_eq!(
+            by_email
+                .identity(&c(json!({"email": mail, "email_verified": "true"})))
+                .0,
+            None
+        );
+        assert_eq!(
+            by_email
+                .identity(&c(json!({"email": mail, "email_verified": true})))
+                .0
+                .as_deref(),
+            Some(mail)
+        );
+        let by_sub = Oidc::new(settings::from_env(&vars("sub")).unwrap().unwrap()).unwrap();
+        assert_eq!(
+            by_sub.identity(&c(json!({"sub": "u-1"}))).0.as_deref(),
+            Some("u-1")
+        );
+    }
+
+    #[test]
+    fn admin_cookies_are_stripped_from_non_utf8_headers() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            header::COOKIE,
+            HeaderValue::from_bytes(b"__Host-fastmock_session=abc; x=\xc3\xa9").unwrap(),
+        );
+        strip_admin_cookies(&mut h);
+        assert_eq!(h.get(header::COOKIE).unwrap().as_bytes(), b"x=\xc3\xa9");
+        let mut garbled = HeaderMap::new();
+        garbled.append(
+            header::COOKIE,
+            HeaderValue::from_bytes(b"a=1; \xc3\xa9=2; fastmock_session=abc").unwrap(),
+        );
+        garbled.append(header::COOKIE, HeaderValue::from_static("keep=1"));
+        strip_admin_cookies(&mut garbled);
+        assert_eq!(garbled.get_all(header::COOKIE).iter().count(), 1);
+        assert_eq!(garbled.get(header::COOKIE).unwrap(), "keep=1");
+        let mut flag = HeaderMap::new();
+        flag.insert(
+            header::COOKIE,
+            HeaderValue::from_static("flag; __Host-fastmock_login=x"),
+        );
+        strip_admin_cookies(&mut flag);
+        assert!(flag.get(header::COOKIE).is_none());
     }
 }

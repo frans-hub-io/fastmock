@@ -193,6 +193,15 @@ pub fn from_env(env: &dyn Fn(&str) -> Option<String>) -> anyhow::Result<Option<O
         bail!("FASTMOCK_OIDC_USERNAME_CLAIM `{username_claim}` has an empty path segment");
     }
     let api_audience = env("OIDC_API_AUDIENCE").map(|s| s.trim().to_string());
+    match api_audience.as_deref() {
+        Some("") => bail!(
+            "FASTMOCK_OIDC_API_AUDIENCE is empty: set the audience of the API tokens, or leave it unset to refuse bearer JWTs"
+        ),
+        Some(a) if a == client_id => bail!(
+            "FASTMOCK_OIDC_API_AUDIENCE must differ from FASTMOCK_OIDC_CLIENT_ID: the client id is the audience of ID tokens, which are not API tokens"
+        ),
+        _ => {}
+    }
     let session_ttl = duration(
         "OIDC_SESSION_TTL",
         env("OIDC_SESSION_TTL"),
@@ -346,6 +355,12 @@ mod tests {
             .filter(|(k, _)| *k != "OIDC_CLIENT_ID")
             .collect();
         assert!(err(&no_id).contains("CLIENT_ID"));
+        assert!(err(&with(&[("OIDC_API_AUDIENCE", " ")])).contains("is empty"));
+        assert!(err(&with(&[("OIDC_API_AUDIENCE", "fastmock")])).contains("must differ"));
+        let api = parse(&with(&[("OIDC_API_AUDIENCE", "fastmock-api")]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(api.api_audience.as_deref(), Some("fastmock-api"));
     }
 
     #[test]

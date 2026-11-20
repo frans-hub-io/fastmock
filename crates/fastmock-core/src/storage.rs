@@ -190,7 +190,12 @@ pub struct ApiToken {
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
+    /// When the token was revoked, or, for a token retired after expiry, its expiry.
     pub revoked_at: Option<DateTime<Utc>>,
+    /// Set by an explicit revocation; the status never compares clocks of different replicas.
+    pub revoked: bool,
+    /// The managed token that created this one.
+    pub parent_id: Option<Uuid>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -201,12 +206,13 @@ pub enum ApiTokenStatus {
 }
 
 impl ApiToken {
-    /// A token retired because it expired has `revoked_at == expires_at`; it counts as expired.
     pub fn status(&self, now: DateTime<Utc>) -> ApiTokenStatus {
-        match self.revoked_at {
-            Some(r) if r < self.expires_at => ApiTokenStatus::Revoked,
-            _ if self.expires_at <= now => ApiTokenStatus::Expired,
-            _ => ApiTokenStatus::Active,
+        if self.revoked {
+            ApiTokenStatus::Revoked
+        } else if self.expires_at <= now {
+            ApiTokenStatus::Expired
+        } else {
+            ApiTokenStatus::Active
         }
     }
 }
@@ -220,8 +226,13 @@ pub trait TokenStore: Send + Sync {
     async fn by_hash(&self, sha256: &str) -> StoreResult<Option<ApiToken>>;
     /// Every stored token, newest first.
     async fn list(&self) -> StoreResult<Vec<ApiToken>>;
-    /// Marks the token revoked; false when it does not exist or is already revoked or retired.
+    /// Marks the token revoked; false when it does not exist, is already revoked or retired, or has
+    /// expired by `at`.
     async fn revoke(&self, id: Uuid, at: DateTime<Utc>) -> StoreResult<bool>;
+    /// Whether the store holds any token at all, whatever its status.
+    async fn has_any(&self) -> StoreResult<bool> {
+        Ok(!self.list().await?.is_empty())
+    }
     /// Records a use, unless one was recorded less than a minute before `at`.
     async fn touch(&self, id: Uuid, at: DateTime<Utc>) -> StoreResult<()>;
     async fn count_active(&self, now: DateTime<Utc>) -> StoreResult<i64>;

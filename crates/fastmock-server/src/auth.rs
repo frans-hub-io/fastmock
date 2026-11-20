@@ -12,7 +12,7 @@ use subtle::ConstantTimeEq;
 
 use crate::access::{
     AccessConfig, BUILTIN_ROLES, Binding, BindingScope, Grants, PermSet, Permission, PrincipalKind,
-    ScopeKind, editor_permissions, minimal_role, route_rule,
+    ScopeKind, editor_permissions, legacy_fallback, legacy_gate, minimal_role, route_rule,
 };
 use crate::state::AppState;
 
@@ -544,13 +544,13 @@ pub async fn admin_auth(State(app): State<AppState>, mut req: Request, next: Nex
             metrics::counter!("fastmock_admin_auth_failures_total", "reason" => "permission")
                 .increment(1);
             tracing::warn!(target: "audit", principal = %name, kind = "user", path = %path, "admin request rejected: no binding for the user or its groups");
-            let (perm, _) = route_rule(req.method(), &path);
+            let required = route_rule(req.method(), &path).map_or("admin", |(p, _)| p.name());
             return (
                 StatusCode::FORBIDDEN,
                 axum::Json(serde_json::json!({
                     "error": "forbidden",
                     "details": [format!("user {name} has no access: the access file binds neither user:{name} nor any of the user's groups")],
-                    "required": perm.name()
+                    "required": required
                 })),
             )
                 .into_response();
@@ -579,15 +579,23 @@ pub async fn admin_auth(State(app): State<AppState>, mut req: Request, next: Nex
                 .into_response();
         }
     };
-    let (perm, scope) = route_rule(req.method(), &path);
-    let ok = match scope {
-        ScopeKind::Space => principal.permissions.anywhere(perm),
-        ScopeKind::Global => principal.permissions.global_has(perm),
+    let legacy_setup = app.cfg.access_file.is_none() && app.oidc.is_none();
+    let rule = route_rule(req.method(), &path)
+        .or_else(|| legacy_setup.then(|| legacy_fallback(req.method())))
+        .map(|r| if principal.legacy { legacy_gate(r) } else { r });
+    let ok = match rule {
+        Some((perm, ScopeKind::Space)) => principal.permissions.anywhere(perm),
+        Some((perm, ScopeKind::Global)) => principal.permissions.global_has(perm),
+        None => principal.permissions.global().includes(PermSet::all()),
     };
     if !ok {
         principal.count_denial();
-        tracing::warn!(target: "audit", principal = %principal.name, kind = principal.kind.as_str(), path = %path, permission = %perm, "admin request rejected: permission missing");
-        let (detail, required) = principal.denial(perm, None);
+        let needed = rule.map_or("admin", |(p, _)| p.name());
+        tracing::warn!(target: "audit", principal = %principal.name, kind = principal.kind.as_str(), path = %path, permission = %needed, "admin request rejected: permission missing");
+        let (detail, required) = match rule {
+            Some((perm, _)) => principal.denial(perm, None),
+            None => ("requires role admin".to_string(), "admin".to_string()),
+        };
         return (
             StatusCode::FORBIDDEN,
             axum::Json(serde_json::json!({

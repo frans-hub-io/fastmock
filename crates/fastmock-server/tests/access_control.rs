@@ -245,7 +245,13 @@ async fn without_access_file_every_openapi_route_keeps_its_role() {
                     level < need,
                     "{m} {path} with role level {level}: {st} {v}"
                 );
-                if st == 403 && level < need {
+                if st == 403 && level < need && v.get("required").is_none() {
+                    assert_eq!(
+                        v,
+                        json!({"error": "requires role admin", "details": []}),
+                        "{m} {path}: the handler denial of earlier versions"
+                    );
+                } else if st == 403 && level < need {
                     let shown = if level < first { first } else { need };
                     let names = ["viewer", "editor", "admin"];
                     assert!(
@@ -731,6 +737,11 @@ async fn ownership_rules_apply_on_create_update_and_import() {
             st, 409,
             "{name}: an import cannot take over another space's stub: {v}"
         );
+        let msg = v["error"].as_str().unwrap();
+        assert!(
+            msg.contains("already in use") && !msg.contains("bill"),
+            "{name}: the conflict names no other space: {v}"
+        );
         let (st, _) = h
             .call(
                 Method::PUT,
@@ -748,7 +759,7 @@ async fn ownership_rules_apply_on_create_update_and_import() {
                 Some(json!({"request": {"urlPath": "/bill/y"}, "response": {"status": 200}})),
             )
             .await;
-        assert_eq!(st, 403, "{name}");
+        assert_eq!(st, 404, "{name}");
         let (st, _) = h
             .call(
                 Method::POST,
@@ -832,7 +843,10 @@ async fn space_principals_see_only_their_spaces() {
         let v = h.ok(Method::GET, "/stubs?space=bill", ADMIN, None).await;
         assert_eq!(ids(&v), vec![bill_id.to_string()], "{name}");
         let (st, _) = h.call(Method::GET, "/stubs?space=bill", PAY_T, None).await;
-        assert_eq!(st, 403, "{name}");
+        assert_eq!(
+            st, 404,
+            "{name}: spaces the caller is not bound to look unknown"
+        );
         let (st, _) = h.call(Method::GET, "/stubs?space=nope", ADMIN, None).await;
         assert_eq!(st, 404, "{name}");
         for m in [Method::GET, Method::DELETE] {
@@ -1247,4 +1261,336 @@ async fn journal_pagination_for_a_scoped_principal() {
         let v = h.ok(Method::GET, "/requests?limit=1", ADMIN, None).await;
         assert_eq!(v["total"], 36, "{name}");
     }
+}
+
+#[tokio::test]
+async fn space_data_never_resolves_across_spaces_or_from_global_names() {
+    for (name, storage) in storages().await {
+        let h = H::start(storage, space_tokens(), Some(SPACES)).await;
+        let put = |token: &'static str, path: &'static str, body: &'static str| {
+            h.http
+                .put(format!("{}/__admin{path}", h.admin))
+                .bearer_auth(token)
+                .header("content-type", "application/json")
+                .body(body)
+                .send()
+        };
+        assert_eq!(
+            put(BILL_T, "/files/secret.json", "{\"who\":\"bill\"}")
+                .await
+                .unwrap()
+                .status(),
+            201
+        );
+        for stub in [
+            json!({"request": {"urlPath": "/pay/steal"}, "response": {"bodyFileName": "bill/secret.json"}}),
+            json!({"request": {"urlPathTemplate": "/pay/t/{a}/{b}"}, "response": {"bodyFileName": "{{request.path.a}}/{{request.path.b}}", "templated": true}}),
+        ] {
+            h.ok(Method::POST, "/stubs", PAY_T, Some(stub)).await;
+        }
+        for path in ["/pay/steal", "/pay/t/bill/secret.json"] {
+            let (_, body) = h.hit(Method::GET, path).await;
+            assert!(
+                !body.contains("bill"),
+                "{name}: {path} served another space's file: {body}"
+            );
+        }
+
+        let (st, v) = h
+            .call(
+                Method::PUT,
+                "/kv/pay%2Fx",
+                ADMIN,
+                Some(json!({"value": "global"})),
+            )
+            .await;
+        assert_eq!(st, 204, "{name}: {v}");
+        let (st, v) = h.call(Method::GET, "/kv/x", PAY_T, None).await;
+        assert_eq!(st, 404, "{name}: a global key is not space data: {v}");
+        assert_eq!(
+            h.ok(Method::GET, "/kv/pay%2Fx", ADMIN, None).await["value"],
+            "global",
+            "{name}"
+        );
+        h.call(Method::PUT, "/kv/x", PAY_T, Some(json!({"value": "pay"})))
+            .await;
+        assert_eq!(
+            h.ok(Method::GET, "/kv/pay%2Fx", ADMIN, None).await["value"],
+            "global",
+            "{name}: space keys do not overwrite global ones"
+        );
+
+        h.call(
+            Method::PUT,
+            "/scenarios/pay%2Fflow",
+            ADMIN,
+            Some(json!({"state": "Global"})),
+        )
+        .await;
+        let v = h.ok(Method::GET, "/scenarios", PAY_T, None).await;
+        assert_eq!(v["scenarios"], json!([]), "{name}");
+        let v = h.ok(Method::GET, "/scenarios", ADMIN, None).await;
+        assert_eq!(
+            v["scenarios"],
+            json!([{"name": "pay/flow", "state": "Global"}]),
+            "{name}"
+        );
+        let v = h.ok(Method::DELETE, "/scenarios", PAY_T, None).await;
+        assert_eq!(v["reset"], 0, "{name}");
+
+        assert_eq!(
+            put(ADMIN, "/files/pay/g.json", "{\"who\":\"global\"}")
+                .await
+                .unwrap()
+                .status(),
+            201
+        );
+        let v = h.ok(Method::GET, "/files", PAY_T, None).await;
+        assert_eq!(v["files"], json!([]), "{name}");
+        let (st, _) = h.call(Method::GET, "/files/g.json", PAY_T, None).await;
+        assert_eq!(st, 404, "{name}");
+        let v = h.ok(Method::GET, "/files", ADMIN, None).await;
+        let names: Vec<(String, Value)> = v["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| (f["name"].as_str().unwrap().to_string(), f["space"].clone()))
+            .collect();
+        assert!(
+            names.contains(&("pay/g.json".to_string(), Value::Null)),
+            "{name}: {names:?}"
+        );
+        assert!(
+            names.contains(&("secret.json".to_string(), json!("bill"))),
+            "{name}: {names:?}"
+        );
+    }
+}
+
+const OWNED: &str = r#"
+spaces:
+  - name: pay
+    pathPrefixes: [/pay/]
+  - name: bill
+    hosts: [bill.example.com]
+  - name: free
+bindings:
+  - subject: token:pay
+    role: editor
+    spaces: [pay]
+  - subject: token:bill
+    role: editor
+    spaces: [bill]
+  - subject: token:free
+    role: editor
+    spaces: [free]
+"#;
+
+const FREE_T: &str = "fm_free_space_token_0123456789abcdef";
+
+#[tokio::test]
+async fn owned_paths_and_hosts_are_answered_only_by_their_space_or_global_stubs() {
+    for (bad, both) in [
+        (
+            "spaces:\n  - name: a\n    pathPrefixes: [/pay/]\n  - name: b\n    pathPrefixes: [/pay/x]\n",
+            ("a", "b"),
+        ),
+        (
+            "spaces:\n  - name: c\n    pathPrefixes: [/]\n  - name: d\n    pathPrefixes: [/d/]\n",
+            ("c", "d"),
+        ),
+        (
+            "spaces:\n  - name: e\n    hosts: [psp.example.com]\n  - name: f\n    hosts: [PSP.example.com]\n",
+            ("e", "f"),
+        ),
+    ] {
+        let mut cfg = Config::for_tests(StorageKind::Memory, legacy_tokens());
+        cfg.plugins = Some(vec![]);
+        cfg.access_file = Some(access_file(bad));
+        let e = match fastmock_server::build(cfg, prom()).await {
+            Ok(_) => panic!("overlapping ownership accepted: {bad}"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(
+            e.contains(&format!("space {}", both.0)) && e.contains(&format!("space {}", both.1)),
+            "{e}"
+        );
+    }
+
+    for (name, storage) in storages().await {
+        let mut tokens = legacy_tokens();
+        tokens.push(format!("pay::{}", hash_token(PAY_T)));
+        tokens.push(format!("bill::{}", hash_token(BILL_T)));
+        tokens.push(format!("free::{}", hash_token(FREE_T)));
+        let h = H::start(storage, tokens, Some(OWNED)).await;
+        h.ok(
+            Method::POST,
+            "/stubs",
+            FREE_T,
+            Some(json!({"request": {"urlPathPattern": ".*"}, "response": {"status": 200, "body": "free"}, "priority": 1})),
+        )
+        .await;
+        h.ok(
+            Method::POST,
+            "/stubs",
+            PAY_T,
+            Some(json!({"request": {"urlPath": "/pay/a"}, "response": {"status": 200, "body": "pay"}, "priority": 9})),
+        )
+        .await;
+        h.ok(
+            Method::POST,
+            "/stubs",
+            BILL_T,
+            Some(json!({"request": {"urlPath": "/b", "host": {"equalTo": "bill.example.com"}}, "response": {"status": 200, "body": "bill"}, "priority": 9})),
+        )
+        .await;
+        h.ok(
+            Method::POST,
+            "/stubs",
+            ADMIN,
+            Some(json!({"request": {"urlPath": "/pay/g"}, "response": {"status": 200, "body": "global"}, "priority": 9})),
+        )
+        .await;
+        assert_eq!(h.hit(Method::GET, "/pay/a").await.1, "pay", "{name}");
+        assert_eq!(h.hit(Method::GET, "/pay/g").await.1, "global", "{name}");
+        let (_, body) = h.hit(Method::GET, "/pay/other").await;
+        assert_ne!(body, "free", "{name}: another space answered an owned path");
+        assert_eq!(h.hit(Method::GET, "/other").await.1, "free", "{name}");
+        assert_eq!(
+            h.hit_host("/b", "bill.example.com").await.1,
+            "bill",
+            "{name}"
+        );
+        let (_, body) = h.hit_host("/x", "bill.example.com").await;
+        assert_ne!(body, "free", "{name}: another space answered an owned host");
+        assert_eq!(
+            h.hit_host("/x", "other.example.com").await.1,
+            "free",
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn admin_only_denials_keep_the_previous_body_for_legacy_tokens() {
+    let h = H::start(StorageKind::Memory, legacy_tokens(), None).await;
+    let raw = |m: Method, path: &'static str, token: &'static str| {
+        let rb = h
+            .http
+            .request(m, format!("{}/__admin{path}", h.admin))
+            .bearer_auth(token);
+        async move {
+            let r = rb.send().await.unwrap();
+            (r.status().as_u16(), r.text().await.unwrap())
+        }
+    };
+    let handler = r#"{"error":"requires role admin","details":[]}"#;
+    assert_eq!(
+        raw(Method::GET, "/audit", VIEWER).await,
+        (403, handler.to_string())
+    );
+    assert_eq!(
+        raw(Method::GET, "/audit", EDITOR).await,
+        (403, handler.to_string())
+    );
+    assert_eq!(
+        raw(Method::POST, "/reset", EDITOR).await,
+        (403, handler.to_string())
+    );
+    assert_eq!(
+        raw(Method::POST, "/reset", VIEWER).await,
+        (
+            403,
+            r#"{"error":"forbidden","details":["requires role editor"],"required":"editor"}"#
+                .to_string()
+        )
+    );
+    assert_eq!(raw(Method::GET, "/audit", ADMIN).await.0, 200);
+}
+
+#[tokio::test]
+async fn info_counts_only_the_stubs_the_caller_can_read() {
+    let h = H::start(StorageKind::Memory, space_tokens(), Some(SPACES)).await;
+    h.ok(
+        Method::POST,
+        "/stubs",
+        PAY_T,
+        Some(json!({"request": {"urlPath": "/pay/a"}, "response": {"status": 200}})),
+    )
+    .await;
+    h.ok(
+        Method::POST,
+        "/stubs",
+        BILL_T,
+        Some(json!({"request": {"urlPath": "/bill/a", "host": {"equalTo": "bill.example.com"}}, "response": {"status": 200}})),
+    )
+    .await;
+    h.ok(
+        Method::POST,
+        "/stubs",
+        ADMIN,
+        Some(json!({"request": {"urlPath": "/g"}, "response": {"status": 200}})),
+    )
+    .await;
+    h.app.engine.reload().await.unwrap();
+    assert_eq!(
+        h.ok(Method::GET, "/info", ADMIN, None).await["stubsLoaded"],
+        3
+    );
+    assert_eq!(
+        h.ok(Method::GET, "/info", PAY_T, None).await["stubsLoaded"],
+        1
+    );
+    assert_eq!(
+        h.ok(Method::GET, "/info", MULTI_T, None).await["stubsLoaded"],
+        2
+    );
+}
+
+/// Unknown admin paths answer as in earlier versions when neither an access file nor OIDC is set
+/// (GET needs viewer, other methods editor, then 404); with an access file only admins pass.
+#[tokio::test]
+async fn unknown_admin_paths_keep_the_previous_answers_without_access_control() {
+    let h = H::start(StorageKind::Memory, legacy_tokens(), None).await;
+    let raw = |m: Method, path: &'static str, token: &'static str| {
+        let rb = h
+            .http
+            .request(m, format!("{}/__admin{path}", h.admin))
+            .bearer_auth(token);
+        async move {
+            let r = rb.send().await.unwrap();
+            (r.status().as_u16(), r.text().await.unwrap())
+        }
+    };
+    let not_found = r#"{"error":"not found","details":[]}"#.to_string();
+    let editor_needed =
+        r#"{"error":"forbidden","details":["requires role editor"],"required":"editor"}"#
+            .to_string();
+    assert_eq!(
+        raw(Method::GET, "/nope", VIEWER).await,
+        (404, not_found.clone())
+    );
+    assert_eq!(
+        raw(Method::GET, "/stubs/a/b/c", VIEWER).await,
+        (404, not_found.clone())
+    );
+    assert_eq!(
+        raw(Method::POST, "/nope", VIEWER).await,
+        (403, editor_needed.clone())
+    );
+    assert_eq!(
+        raw(Method::DELETE, "/nope/x", VIEWER).await,
+        (403, editor_needed)
+    );
+    assert_eq!(
+        raw(Method::POST, "/nope", EDITOR).await,
+        (404, not_found.clone())
+    );
+    assert_eq!(raw(Method::GET, "/nope", ADMIN).await, (404, not_found));
+
+    let h = H::start(StorageKind::Memory, access_tokens(), Some(ACCESS)).await;
+    let (st, v) = h.call(Method::GET, "/nope", VIEWER, None).await;
+    assert_eq!((st, v["required"].clone()), (403, json!("admin")), "{v}");
+    let (st, _) = h.call(Method::GET, "/nope", ADMIN, None).await;
+    assert_eq!(st, 404);
 }

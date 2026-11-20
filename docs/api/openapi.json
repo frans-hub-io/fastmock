@@ -6070,7 +6070,7 @@
           "tokens"
         ],
         "summary": "Create a managed token",
-        "description": "Returns the token value once. The caller needs `tokens:write` and every permission of the role in each requested scope (globally for `global: true`), so a token never holds more than its creator; a caller bound only to spaces cannot create global tokens. Expiry is mandatory.",
+        "description": "Returns the token value once. The caller needs `tokens:write` and every permission of the role in each requested scope (globally for `global: true`), so a token never holds more than its creator; a caller bound only to spaces cannot create global tokens. Expiry is mandatory; a token created by a managed token expires no later than that token and is revoked with it.",
         "operationId": "createToken",
         "requestBody": {
           "content": {
@@ -6318,7 +6318,7 @@
           "tokens"
         ],
         "summary": "Revoke a managed token",
-        "description": "Needs `tokens:write` in every scope of the token; a managed token may always revoke itself. Every replica rejects the token within 10 seconds. Revoking a token that is no longer active changes nothing.",
+        "description": "Needs `tokens:write` in every scope of the token; a managed token may always revoke itself. Every replica rejects the token within 10 seconds. Tokens created by this token, directly or not, are revoked with it. Revoking a token that is no longer active (revoked or expired) changes nothing and records no audit event.",
         "operationId": "revokeToken",
         "parameters": [
           {
@@ -8346,6 +8346,7 @@
           },
           "stubsLoaded": {
             "type": "integer",
+            "description": "Loaded stubs the caller may read.",
             "minimum": 0
           },
           "plugins": {
@@ -10756,6 +10757,14 @@
           },
           "status": {
             "$ref": "#/components/schemas/TokenStatus"
+          },
+          "parentId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The managed token that created this one; it expires no later than that token and is revoked\nwith it."
           }
         }
       },
@@ -11139,7 +11148,7 @@
       "bearer": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Static admin token from FASTMOCK_ADMIN_TOKENS, a managed token from POST /__admin/tokens or, with FASTMOCK_OIDC_API_AUDIENCE, a JWT from the OIDC provider. The UI may instead use the SSO session cookie (see the `session` scheme). Every route needs a permission (`resource:action`); the built-in roles viewer, editor and admin are permission sets, custom roles and space bindings come from FASTMOCK_ACCESS_FILE. Without an access file: GET/HEAD and read-only POSTs need viewer, other changes editor; deleting all stubs, reset and the audit log need admin."
+        "description": "Static admin token from FASTMOCK_ADMIN_TOKENS, a managed token from POST /__admin/tokens or, with FASTMOCK_OIDC_API_AUDIENCE, a JWT from the OIDC provider. The UI may instead use the SSO session cookie (see the `session` scheme). Every route needs a permission (`resource:action`); the built-in roles viewer, editor and admin are permission sets, custom roles and space bindings come from FASTMOCK_ACCESS_FILE. Without an access file: GET/HEAD and read-only POSTs need viewer, other changes editor; deleting all stubs, reset, the audit log and managing other tokens (`/__admin/tokens*`, `tokens:read`/`tokens:write`) need admin. Routes without a rule need admin."
       },
       "session": {
         "type": "apiKey",

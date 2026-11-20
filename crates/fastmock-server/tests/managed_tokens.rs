@@ -200,6 +200,8 @@ fn stored(name: &str, value: &str, expires_in: chrono::Duration) -> ApiToken {
         expires_at: now + expires_in,
         last_used_at: None,
         revoked_at: None,
+        revoked: false,
+        parent_id: None,
     }
 }
 
@@ -268,7 +270,7 @@ async fn create_use_list_self_expire_and_revoke() {
                 Some(json!({"request": {"urlPath": "/b"}, "response": {"status": 200}})),
             )
             .await;
-        assert_eq!(st, 403, "{name}");
+        assert_eq!(st, 404, "{name}");
         let own = h.ok(Method::GET, "/tokens/self", &value, None).await;
         assert_eq!(own["id"], json!(id), "{name}");
         assert!(own.get("token").is_none(), "{name}");
@@ -520,14 +522,6 @@ async fn no_escalation_through_tokens() {
                 "contracts:secrets",
             ),
             (
-                json!({"name": "a2", "role": "viewer", "spaces": ["beta"]}),
-                "tokens:write",
-            ),
-            (
-                json!({"name": "a3", "role": "viewer", "spaces": ["alpha", "beta"]}),
-                "tokens:write",
-            ),
-            (
                 json!({"name": "a4", "role": "viewer", "global": true}),
                 "tokens:write",
             ),
@@ -537,6 +531,17 @@ async fn no_escalation_through_tokens() {
                 .await;
             assert_eq!(st, 403, "{name}: {body} {v}");
             assert_eq!(v["required"], required, "{name}: {body} {v}");
+        }
+        for spaces in [json!(["beta"]), json!(["alpha", "beta"])] {
+            let (st, v) = h
+                .call(
+                    Method::POST,
+                    "/tokens",
+                    LEAD,
+                    Some(json!({"name": "a2", "role": "viewer", "spaces": spaces})),
+                )
+                .await;
+            assert_eq!(st, 404, "{name}: a space the caller cannot see: {v}");
         }
         let (st, v) = h
             .call(
@@ -598,7 +603,7 @@ async fn no_escalation_through_tokens() {
         let beta = h.ok(Method::GET, "/tokens?space=beta", ADMIN, None).await;
         assert_eq!(names(&beta), vec!["beta-admin", "both"], "{name}");
         let (st, _) = h.call(Method::GET, "/tokens?space=beta", LEAD, None).await;
-        assert_eq!(st, 403, "{name}");
+        assert_eq!(st, 404, "{name}");
         for id in [&global_id, &beta_id, &both_id] {
             let (st, _) = h
                 .call(Method::GET, &format!("/tokens/{id}"), LEAD, None)
@@ -879,7 +884,7 @@ async fn token_values_never_appear_in_logs_audit_or_later_responses() {
         ] {
             later.push(h.raw(m, &path, token, None).await);
         }
-        assert_eq!(later[3].0, 403, "{name}");
+        assert_eq!(later[3].0, 404, "{name}");
         assert_eq!(later[7].0, 401, "{name}");
         assert!(later[9].1.contains("token.revoke"), "{name}");
         for (st, body) in &later {
@@ -896,5 +901,104 @@ async fn token_values_never_appear_in_logs_audit_or_later_responses() {
             "{name}"
         );
         assert!(!logs.contains(&value[3..]), "{name}: token value logged");
+    }
+}
+
+#[tokio::test]
+async fn tokens_created_by_tokens_never_outlive_or_survive_their_parent() {
+    for (name, storage) in storages().await {
+        let h = H::start(storage, None).await;
+        let (parent, pid) = h
+            .create(
+                ADMIN,
+                json!({"name": "parent", "role": "admin", "global": true, "expiresInDays": 1}),
+            )
+            .await;
+        let parent_exp: chrono::DateTime<Utc> = serde_json::from_value(
+            h.ok(Method::GET, &format!("/tokens/{pid}"), ADMIN, None)
+                .await["expiresAt"]
+                .clone(),
+        )
+        .unwrap();
+        let (st, child) = h
+            .call(
+                Method::POST,
+                "/tokens",
+                &parent,
+                Some(
+                    json!({"name": "child", "role": "admin", "global": true, "expiresInDays": 365}),
+                ),
+            )
+            .await;
+        assert_eq!(st, 201, "{name}: {child}");
+        let child_exp: chrono::DateTime<Utc> =
+            serde_json::from_value(child["expiresAt"].clone()).unwrap();
+        assert!(
+            child_exp <= parent_exp,
+            "{name}: child expires {child_exp}, parent {parent_exp}"
+        );
+        let child = child["token"].as_str().unwrap().to_string();
+        let (grandchild, _) = h
+            .create(
+                &child,
+                json!({"name": "grandchild", "role": "viewer", "global": true}),
+            )
+            .await;
+        let (other, _) = h
+            .create(
+                ADMIN,
+                json!({"name": "other", "role": "viewer", "global": true}),
+            )
+            .await;
+        for t in [&parent, &child, &grandchild, &other] {
+            assert_eq!(h.status_of(t).await, 200, "{name}");
+        }
+        h.ok(Method::DELETE, &format!("/tokens/{pid}"), ADMIN, None)
+            .await;
+        for t in [&parent, &child, &grandchild] {
+            assert_eq!(h.status_of(t).await, 401, "{name}: revoked with the parent");
+        }
+        assert_eq!(h.status_of(&other).await, 200, "{name}");
+        let v = h
+            .ok(Method::GET, "/tokens?status=revoked", ADMIN, None)
+            .await;
+        assert_eq!(names(&v), ["child", "grandchild", "parent"], "{name}");
+    }
+}
+
+/// While the store holds no tokens, other replicas answer unknown values without a lookup for up to
+/// the cache TTL; the creating replica accepts its token at once, the others within the TTL.
+#[tokio::test]
+async fn a_first_token_reaches_other_replicas_within_the_cache_ttl() {
+    let Some(storage) = pg_storage().await else {
+        eprintln!(
+            "FASTMOCK_TEST_DATABASE_URL/FASTMOCK_TEST_VALKEY_URL not set: two-replica test skipped"
+        );
+        return;
+    };
+    let ttl = Duration::from_secs(2);
+    let a = H::start(storage.clone(), Some(ttl)).await;
+    let b = H::start(storage, Some(ttl)).await;
+    assert_eq!(b.status_of(&generate_token()).await, 401);
+    assert_eq!(a.status_of(&generate_token()).await, 401);
+    let (value, _) = a
+        .create(
+            ADMIN,
+            json!({"name": "first", "role": "viewer", "global": true}),
+        )
+        .await;
+    let created = Instant::now();
+    assert_eq!(
+        a.status_of(&value).await,
+        200,
+        "the creating replica at once"
+    );
+    while b.status_of(&value).await != 200 {
+        assert!(
+            created.elapsed() < ttl + Duration::from_secs(1),
+            "replica b still rejects the new token after {:?}",
+            created.elapsed()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }

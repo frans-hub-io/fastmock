@@ -736,6 +736,8 @@ fn api_token(name: &str, hash: &str, expires_in: chrono::Duration) -> ApiToken {
         expires_at: now + expires_in,
         last_used_at: None,
         revoked_at: None,
+        revoked: false,
+        parent_id: None,
     }
 }
 
@@ -814,4 +816,80 @@ async fn token_store_contract() {
         );
         assert_eq!(s.list().await.unwrap().len(), 2, "{name}");
     }
+}
+
+#[tokio::test]
+async fn revocation_is_a_flag_and_expired_tokens_are_not_revoked() {
+    for (name, s) in token_backends().await {
+        assert!(!s.has_any().await.unwrap(), "{name}");
+        let now = Utc::now();
+        let soon = api_token("soon", &"f".repeat(64), chrono::Duration::seconds(30));
+        assert!(s.create(&soon, now).await.unwrap(), "{name}");
+        assert!(s.has_any().await.unwrap(), "{name}");
+        let late_clock = now + chrono::Duration::seconds(29);
+        assert!(s.revoke(soon.id, late_clock).await.unwrap(), "{name}");
+        let t = s.get(soon.id).await.unwrap().unwrap();
+        assert!(t.revoked, "{name}");
+        assert_eq!(
+            t.status(now),
+            ApiTokenStatus::Revoked,
+            "{name}: a replica with an earlier clock sees the revocation"
+        );
+        let old = api_token("old", &"0".repeat(64), chrono::Duration::seconds(-5));
+        assert!(s.create(&old, now).await.unwrap(), "{name}");
+        assert!(
+            !s.revoke(old.id, Utc::now()).await.unwrap(),
+            "{name}: an expired token is not revoked"
+        );
+        let o = s.get(old.id).await.unwrap().unwrap();
+        assert_eq!(o.status(Utc::now()), ApiTokenStatus::Expired, "{name}");
+        assert!(!o.revoked, "{name}");
+        let mut child = api_token("child", &"9".repeat(64), chrono::Duration::days(1));
+        child.parent_id = Some(soon.id);
+        assert!(s.create(&child, now).await.unwrap(), "{name}");
+        assert_eq!(
+            s.get(child.id).await.unwrap().unwrap().parent_id,
+            Some(soon.id),
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_space_of_a_stub_comes_from_its_column() {
+    let Ok(admin_url) = std::env::var("FASTMOCK_TEST_DATABASE_URL") else {
+        eprintln!("FASTMOCK_TEST_DATABASE_URL not set: skipped");
+        return;
+    };
+    let db = format!("fm_{}", uuid::Uuid::new_v4().simple());
+    let mut admin = sqlx::PgConnection::connect(&admin_url).await.unwrap();
+    sqlx::query(&format!("create database {db}"))
+        .execute(&mut admin)
+        .await
+        .unwrap();
+    let url = format!("{}/{}", admin_url.rsplit_once('/').unwrap().0, db);
+    let pg = PgStore::connect(&url, 5).await.unwrap();
+    pg.migrate().await.unwrap();
+    use fastmock_core::StubStore;
+    let mut s = stub("/pay/x", 1, &["t"]);
+    s.space = Some("pay".into());
+    pg.upsert(&s).await.unwrap();
+    sqlx::query("update fm_stubs set definition = definition - 'space' where id = $1")
+        .bind(s.id)
+        .execute(pg.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        StubStore::get(&pg, s.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .space
+            .as_deref(),
+        Some("pay")
+    );
+    assert_eq!(
+        StubStore::list(&pg).await.unwrap()[0].space.as_deref(),
+        Some("pay")
+    );
 }

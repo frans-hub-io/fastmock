@@ -208,7 +208,8 @@ impl std::fmt::Display for JwtError {
 pub struct Expect<'a> {
     pub issuer: &'a str,
     pub audience: &'a str,
-    /// ID tokens: the nonce of the pending login.
+    /// ID tokens: the nonce of the pending login. `None` (API tokens): a token carrying a nonce is an
+    /// ID token and is refused.
     pub nonce: Option<&'a str>,
     /// ID tokens: `azp`, when present, must be the audience (the client id).
     pub check_azp: bool,
@@ -313,7 +314,7 @@ fn check_claims(c: &Map<String, Value>, e: &Expect<'_>) -> Result<(), JwtError> 
         return Err(JwtError::Claims("azp"));
     }
     let exp = time(c, "exp")?.ok_or(JwtError::Claims("exp"))?;
-    if e.now > exp.saturating_add(SKEW_SECS) {
+    if e.now >= exp.saturating_add(SKEW_SECS) {
         return Err(JwtError::Claims("exp"));
     }
     if let Some(nbf) = time(c, "nbf")?
@@ -326,11 +327,15 @@ fn check_claims(c: &Map<String, Value>, e: &Expect<'_>) -> Result<(), JwtError> 
         None if e.require_iat => return Err(JwtError::Claims("iat")),
         _ => {}
     }
-    if let Some(want) = e.nonce {
-        let got = c.get("nonce").and_then(Value::as_str).unwrap_or_default();
-        if !bool::from(got.as_bytes().ct_eq(want.as_bytes())) {
-            return Err(JwtError::Claims("nonce"));
+    match e.nonce {
+        Some(want) => {
+            let got = c.get("nonce").and_then(Value::as_str).unwrap_or_default();
+            if !bool::from(got.as_bytes().ct_eq(want.as_bytes())) {
+                return Err(JwtError::Claims("nonce"));
+            }
         }
+        None if c.contains_key("nonce") => return Err(JwtError::Claims("nonce")),
+        None => {}
     }
     if c.get("sub")
         .and_then(Value::as_str)
@@ -605,6 +610,11 @@ pub mod tests {
         );
         assert!(with(&|c| c["exp"] = json!(NOW - SKEW_SECS + 1)).is_ok());
         assert_eq!(
+            with(&|c| c["exp"] = json!(NOW - SKEW_SECS)),
+            Err(JwtError::Claims("exp")),
+            "a token is invalid from exp on (RFC 7519 4.1.4)"
+        );
+        assert_eq!(
             with(&|c| {
                 c.as_object_mut().unwrap().remove("exp");
             }),
@@ -660,6 +670,12 @@ pub mod tests {
         assert_eq!(
             verify(&k.sign(&claims()), &keys, &api),
             Err(JwtError::Claims("aud"))
+        );
+        c["nonce"] = json!("n-1");
+        assert_eq!(
+            verify(&k.sign(&c), &keys, &api),
+            Err(JwtError::Claims("nonce")),
+            "an ID token is not an API token"
         );
     }
 

@@ -65,6 +65,7 @@ serde_json_path.workspace = true
 serde_yaml_ng.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 prost-types = "0.14"
 hyper-util = { workspace = true, features = ["client-legacy", "http2"] }
 rskafka.workspace = true

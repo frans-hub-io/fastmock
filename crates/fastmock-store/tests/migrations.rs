@@ -93,3 +93,70 @@ async fn skip_mode_checks_the_schema_version() {
     let e = format!("{:#}", pg.check_schema().await.unwrap_err());
     assert!(e.contains("never be edited"), "{e}");
 }
+
+/// Indexes on tables that already hold data are built with `CREATE INDEX CONCURRENTLY` in migrations of
+/// their own that run outside a transaction, so writes of running replicas never wait for them.
+#[test]
+fn indexes_on_existing_tables_are_built_concurrently() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/migrations");
+    let mut files: Vec<(i64, String, String)> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "sql"))
+        .map(|p| {
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            let version: i64 = name.split('_').next().unwrap().parse().unwrap();
+            (version, name, std::fs::read_to_string(&p).unwrap())
+        })
+        .collect();
+    files.sort();
+    let mut created: Vec<String> = Vec::new();
+    for (version, name, sql) in &files {
+        let lower = sql.to_ascii_lowercase();
+        let statements: Vec<&str> = lower
+            .split(';')
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && !s.lines().all(|l| l.trim_start().starts_with("--")))
+            .collect();
+        let new_tables: Vec<String> = statements
+            .iter()
+            .filter_map(|s| {
+                s.strip_prefix("create table if not exists ")
+                    .or_else(|| s.strip_prefix("create table "))
+                    .map(|r| r.split_whitespace().next().unwrap().to_string())
+            })
+            .collect();
+        for s in &statements {
+            let body: String = s
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("--"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let Some(on) = body.split(" on ").nth(1) else {
+                continue;
+            };
+            if !body.contains("create index") && !body.contains("create unique index") {
+                continue;
+            }
+            let table = on.split_whitespace().next().unwrap().to_string();
+            if *version < 6 || new_tables.contains(&table) || !created.contains(&table) {
+                continue;
+            }
+            assert!(
+                body.contains("concurrently") && body.contains("if not exists"),
+                "{name}: index on {table} must use CREATE INDEX CONCURRENTLY IF NOT EXISTS"
+            );
+            assert!(
+                lower.trim_start().starts_with("-- no-transaction"),
+                "{name}: concurrent index builds need a no-transaction migration"
+            );
+            assert_eq!(
+                statements.len(),
+                1,
+                "{name}: one statement per no-transaction migration"
+            );
+        }
+        created.extend(new_tables);
+    }
+    assert!(created.contains(&"fm_journal".to_string()));
+}

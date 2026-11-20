@@ -108,6 +108,22 @@ pub fn require(p: &Principal, perm: Permission, space: Option<&str>) -> ApiResul
     Err(ApiError(StatusCode::FORBIDDEN, p.denial(perm, space).0))
 }
 
+/// Handler check of the admin-only `/audit` and `/reset`: principals holding only global built-in
+/// roles get the denial body of earlier versions.
+fn admin_route_denial(p: &Principal, perm: Permission) -> Option<Response> {
+    if p.legacy && !p.allowed(perm, None) {
+        p.count_denial();
+        tracing::warn!(target: "audit", principal = %p.name, kind = p.kind.as_str(), permission = %perm, "admin request rejected: permission missing");
+        return Some(
+            DetailedError(StatusCode::FORBIDDEN, "requires role admin".into(), vec![])
+                .into_response(),
+        );
+    }
+    require(p, perm, None)
+        .err()
+        .map(IntoResponse::into_response)
+}
+
 pub async fn audit_event(app: &AppState, p: &Principal, action: &str, detail: Value) {
     audit_event_in(app, p, None, action, detail).await
 }
@@ -799,7 +815,7 @@ pub async fn delete_stubs(
             require(&p, Permission::StubsPurge, None)?;
             let sel = match &q.space {
                 Some(s) => {
-                    spaces::known(&app, s)?;
+                    spaces::known(&app, &p, s)?;
                     SpaceFilter::In(vec![s.clone()])
                 }
                 None => SpaceFilter::Any,
@@ -1581,13 +1597,9 @@ pub async fn list_scenarios(
     Ok(Json(ScenarioList {
         scenarios: states
             .into_iter()
-            .filter_map(|(key, state)| {
-                let (space, name) = spaces::split_key(&app, &key);
-                sel.matches(space).then(|| ScenarioState {
-                    name: name.to_string(),
-                    state,
-                    space: space.map(String::from),
-                })
+            .filter_map(|(space, name, state)| {
+                sel.matches(space.as_deref())
+                    .then_some(ScenarioState { name, state, space })
             })
             .collect(),
     }))
@@ -1674,13 +1686,14 @@ pub async fn reset_scenarios(
     Ok(Json(ResetCount { reset: n }))
 }
 
-/// Hot-store key of a key-value entry: `kv:{key}` globally, `kv:{space}/{key}` in a space.
+/// Hot-store key of a key-value entry: `kv:{key}` globally, `kv@{space}:{key}` in a space, so that no
+/// global key can name space data.
 fn kv_key(space: Option<&str>, key: &str) -> ApiResult<String> {
     if key.is_empty() || key.len() > 512 {
         return Err(bad("key must be 1..512 bytes"));
     }
     Ok(match space {
-        Some(s) => format!("kv:{s}/{key}"),
+        Some(s) => format!("kv@{s}:{key}"),
         None => format!("kv:{key}"),
     })
 }
@@ -1818,11 +1831,14 @@ pub struct ResetResult {
     ),
     security(("bearer" = []))
 )]
-pub async fn reset(
-    State(app): State<AppState>,
-    Extension(p): Extension<Principal>,
-) -> ApiResult<Json<ResetResult>> {
-    require(&p, Permission::SystemReset, None)?;
+pub async fn reset(State(app): State<AppState>, Extension(p): Extension<Principal>) -> Response {
+    if let Some(denied) = admin_route_denial(&p, Permission::SystemReset) {
+        return denied;
+    }
+    reset_all(&app, &p).await.into_response()
+}
+
+async fn reset_all(app: &AppState, p: &Principal) -> ApiResult<Json<ResetResult>> {
     let r = ResetResult {
         requests: app.stores.journal.clear(&SpaceFilter::Any).await?,
         callbacks: app.stores.outbox.clear(&SpaceFilter::Any).await?,
@@ -1830,8 +1846,8 @@ pub async fn reset(
     };
     app.engine.reset_counters().await?;
     audit_event(
-        &app,
-        &p,
+        app,
+        p,
         "reset",
         json!({"requests": r.requests, "callbacks": r.callbacks, "scenarios": r.scenarios}),
     )
@@ -1847,6 +1863,7 @@ pub struct InfoResponse {
     /// `memory` or `postgres+valkey`
     pub storage: String,
     pub uptime_seconds: u64,
+    /// Loaded stubs the caller may read.
     pub stubs_loaded: usize,
     pub plugins: Vec<crate::state::PluginInfo>,
     pub principal: Principal,
@@ -1875,7 +1892,12 @@ pub async fn info(
         }
         .into(),
         uptime_seconds: app.started.elapsed().as_secs(),
-        stubs_loaded: app.engine.snapshot().len(),
+        stubs_loaded: app
+            .engine
+            .snapshot()
+            .iter()
+            .filter(|c| p.allowed(Permission::StubsRead, c.stub.space.as_deref()))
+            .count(),
         plugins: (*app.plugins).clone(),
         principal: p,
         auth_disabled: app.auth.disabled(),
@@ -1957,6 +1979,7 @@ pub fn version_info() -> VersionResponse {
             "recording",
             "verification",
             "files",
+            "tokens",
             "import-openapi",
             "import-wiremock",
             "import-postman",
@@ -2019,8 +2042,14 @@ pub async fn list_audit(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
     Query(q): Query<AuditQuery>,
-) -> ApiResult<Json<AuditList>> {
-    require(&p, Permission::AuditRead, None)?;
+) -> Response {
+    if let Some(denied) = admin_route_denial(&p, Permission::AuditRead) {
+        return denied;
+    }
+    audit_events(&app, q).await.into_response()
+}
+
+async fn audit_events(app: &AppState, q: AuditQuery) -> ApiResult<Json<AuditList>> {
     if q.action.as_ref().is_some_and(|a| a.len() > 128)
         || q.principal.as_ref().is_some_and(|a| a.len() > 128)
     {
