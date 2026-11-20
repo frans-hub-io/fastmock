@@ -7590,7 +7590,8 @@
         "required": [
           "name",
           "pathPrefixes",
-          "hosts"
+          "hosts",
+          "mailDomains"
         ],
         "properties": {
           "name": {
@@ -7615,6 +7616,16 @@
             "description": "Hosts the space's stubs must match (empty: no restriction).",
             "example": [
               "psp.example.com"
+            ]
+          },
+          "mailDomains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Mail domains whose captured messages go to the space (`*.domain` for subdomains).",
+            "example": [
+              "billing.example.com"
             ]
           }
         }
@@ -11293,6 +11304,7 @@
           "name",
           "pathPrefixes",
           "hosts",
+          "mailDomains",
           "permissions"
         ],
         "properties": {
@@ -11319,6 +11331,16 @@
               "type": "string"
             },
             "description": "Hosts the space's stubs must match (empty: no restriction)."
+          },
+          "mailDomains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Mail domains whose captured messages go to the space (`*.domain` for subdomains).",
+            "example": [
+              "billing.example.com"
+            ]
           },
           "permissions": {
             "type": "array",
@@ -12082,7 +12104,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Compiled-in optional features and capabilities."
+            "description": "Compiled-in optional features and capabilities; with the mail module enabled also `mail`, and\n`mail.imap`, `mail.pop3` (when their listeners are on) and `mail.providers`."
           }
         }
       },

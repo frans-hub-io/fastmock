@@ -426,7 +426,8 @@ async fn custom_roles_bindings_info_and_spaces() {
             "files:read",
             "callbacks:read",
             "state:read",
-            "contracts:read"
+            "contracts:read",
+            "mail:read"
         ])
     );
     let v = h.ok(Method::GET, "/spaces", AUDITOR, None).await;

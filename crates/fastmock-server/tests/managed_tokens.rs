@@ -22,7 +22,7 @@ roles:
   - name: team-lead
     permissions: [stubs:read, stubs:write, imports:run, journal:read, journal:delete, files:read, files:write,
       callbacks:read, callbacks:delete, state:read, state:write, contracts:read, contracts:details,
-      contracts:write, tokens:read, tokens:write]
+      contracts:write, tokens:read, tokens:write, mail:read, mail:write, mail:delete]
 spaces:
   - name: alpha
   - name: beta

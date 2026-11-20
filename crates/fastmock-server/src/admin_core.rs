@@ -36,6 +36,9 @@ pub struct AccessSpace {
     /// Hosts the space's stubs must match (empty: no restriction).
     #[schema(example = json!(["psp.example.com"]))]
     pub hosts: Vec<String>,
+    /// Mail domains whose captured messages go to the space (`*.domain` for subdomains).
+    #[schema(example = json!(["billing.example.com"]))]
+    pub mail_domains: Vec<String>,
 }
 
 /// A built-in role or a custom role of the access file.
@@ -112,6 +115,7 @@ impl AccessView {
                     name: s.name.clone(),
                     path_prefixes: s.path_prefixes.clone(),
                     hosts: s.hosts.clone(),
+                    mail_domains: s.mail_domains.clone(),
                 })
                 .collect(),
             roles: access

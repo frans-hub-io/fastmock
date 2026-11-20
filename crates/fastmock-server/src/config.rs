@@ -218,6 +218,8 @@ pub struct Config {
     pub token_cache_ttl: Duration,
     /// OIDC sign-in and bearer JWTs (`FASTMOCK_OIDC_*`); off when `None`.
     pub oidc: Option<crate::oidc::OidcSettings>,
+    /// The mail module (`FASTMOCK_MAIL_*`); `None` unless `FASTMOCK_MAIL_ENABLED=true`.
+    pub mail: Option<fastmock_mail::MailConfig>,
 }
 
 pub const DEFAULT_TOKEN_DAYS: u32 = 90;
@@ -620,6 +622,7 @@ impl Config {
             tokens_max_days: 365,
             token_cache_ttl: TOKEN_CACHE_TTL,
             oidc: None,
+            mail: None,
         }
     }
 
@@ -749,6 +752,7 @@ impl Config {
             tokens_max_days: parse_tokens_max_days(env("TOKENS_MAX_DAYS").as_deref())?,
             token_cache_ttl: TOKEN_CACHE_TTL,
             oidc: crate::oidc::settings::from_env(&oidc_env)?,
+            mail: None,
         };
         if cfg.max_inflight_body_bytes < cfg.max_body_bytes {
             bail!("FASTMOCK_MAX_INFLIGHT_BODY_BYTES must be at least FASTMOCK_MAX_BODY_BYTES");
@@ -758,8 +762,150 @@ impl Config {
                 "FASTMOCK_LISTEN and FASTMOCK_ADMIN_LISTEN must differ: the control plane is never served on the mock port"
             );
         }
-        Ok(cfg)
+        let mail = mail_settings(
+            &|n| std::env::var(format!("FASTMOCK_{n}")).ok(),
+            cfg.listen,
+            cfg.admin_listen,
+            cfg.tls.as_ref(),
+        )?;
+        Ok(Config { mail, ..cfg })
     }
+}
+
+/// Reads the `FASTMOCK_MAIL_*` settings through `get` (the name without `FASTMOCK_`, the raw value, so an
+/// empty listener variable turns that listener off) and checks them: limits, listeners against each other
+/// and against the HTTP listeners `listen` and `admin_listen`, and the TLS files. `None` unless
+/// `MAIL_ENABLED` is true.
+pub fn mail_settings(
+    get: &dyn Fn(&str) -> Option<String>,
+    listen: SocketAddr,
+    admin_listen: SocketAddr,
+    server_tls: Option<&TlsSettings>,
+) -> anyhow::Result<Option<fastmock_mail::MailConfig>> {
+    use fastmock_mail::config::{MailTlsFiles, addr_conflict, parse_smtp_users};
+    let val = |n: &str| get(n).filter(|v| !v.trim().is_empty());
+    let flag = |n: &str, default: bool| -> anyhow::Result<bool> {
+        match val(n)
+            .as_deref()
+            .map(|v| v.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            None => Ok(default),
+            Some("1" | "true" | "yes" | "on") => Ok(true),
+            Some("0" | "false" | "no" | "off") => Ok(false),
+            Some(other) => bail!("FASTMOCK_{n}: not a boolean: {other}"),
+        }
+    };
+    if !flag("MAIL_ENABLED", false)? {
+        return Ok(None);
+    }
+    let d = fastmock_mail::MailConfig::default();
+    let listener = |n: &str, default: Option<SocketAddr>| -> anyhow::Result<Option<SocketAddr>> {
+        match get(n) {
+            None => Ok(default),
+            Some(v) if v.trim().is_empty() => Ok(None),
+            Some(v) => v
+                .trim()
+                .parse()
+                .map(Some)
+                .map_err(|e| anyhow::anyhow!("FASTMOCK_{n}: {e} (`{}`)", v.trim())),
+        }
+    };
+    fn number<T: std::str::FromStr>(
+        val: &dyn Fn(&str) -> Option<String>,
+        n: &str,
+        default: T,
+    ) -> anyhow::Result<T>
+    where
+        T::Err: std::fmt::Display,
+    {
+        match val(n) {
+            None => Ok(default),
+            Some(v) => v
+                .trim()
+                .parse()
+                .map_err(|e| anyhow::anyhow!("FASTMOCK_{n}: {e} (`{}`)", v.trim())),
+        }
+    }
+    let duration = |n: &str, default: Duration| -> anyhow::Result<Duration> {
+        match val(n) {
+            None => Ok(default),
+            Some(v) => parse_duration(&v).with_context(|| format!("FASTMOCK_{n}")),
+        }
+    };
+    let tls = match (val("MAIL_TLS_CERT_FILE"), val("MAIL_TLS_KEY_FILE")) {
+        (Some(c), Some(k)) => Some(MailTlsFiles {
+            cert_file: c.trim().into(),
+            key_file: k.trim().into(),
+            from_server: false,
+        }),
+        (None, None) => server_tls.map(|t| MailTlsFiles {
+            cert_file: t.cert_file.clone(),
+            key_file: t.key_file.clone(),
+            from_server: true,
+        }),
+        _ => {
+            bail!("set both FASTMOCK_MAIL_TLS_CERT_FILE and FASTMOCK_MAIL_TLS_KEY_FILE, or neither")
+        }
+    };
+    let cfg = fastmock_mail::MailConfig {
+        listeners: fastmock_mail::config::MailListeners {
+            smtp: listener("MAIL_SMTP_LISTEN", d.listeners.smtp)?,
+            smtps: listener("MAIL_SMTPS_LISTEN", None)?,
+            imap: listener("MAIL_IMAP_LISTEN", None)?,
+            imaps: listener("MAIL_IMAPS_LISTEN", None)?,
+            pop3: listener("MAIL_POP3_LISTEN", None)?,
+            pop3s: listener("MAIL_POP3S_LISTEN", None)?,
+        },
+        tls,
+        hostname: val("MAIL_HOSTNAME")
+            .map(|h| h.trim().to_string())
+            .unwrap_or(d.hostname),
+        allow_plaintext_auth: flag("MAIL_ALLOW_PLAINTEXT_AUTH", false)?,
+        smtp_require_auth: flag("MAIL_SMTP_REQUIRE_AUTH", false)?,
+        smtp_users: parse_smtp_users(&val("MAIL_SMTP_USERS").unwrap_or_default())
+            .map_err(anyhow::Error::msg)?,
+        max_message_bytes: number(&val, "MAIL_MAX_MESSAGE_BYTES", d.max_message_bytes)?,
+        max_recipients: number(&val, "MAIL_MAX_RECIPIENTS", d.max_recipients)?,
+        max_line_bytes: number(&val, "MAIL_MAX_LINE_BYTES", d.max_line_bytes)?,
+        idle_timeout: duration("MAIL_IDLE_TIMEOUT", d.idle_timeout)?,
+        data_timeout: duration("MAIL_DATA_TIMEOUT", d.data_timeout)?,
+        session_timeout: duration("MAIL_SESSION_TIMEOUT", d.session_timeout)?,
+        max_connections: number(&val, "MAIL_MAX_CONNECTIONS", d.max_connections)?,
+        max_connections_per_ip: number(
+            &val,
+            "MAIL_MAX_CONNECTIONS_PER_IP",
+            d.max_connections_per_ip,
+        )?,
+        max_auth_failures: number(&val, "MAIL_MAX_AUTH_FAILURES", d.max_auth_failures)?,
+        imap_idle_timeout: duration("MAIL_IMAP_IDLE_TIMEOUT", d.imap_idle_timeout)?,
+        retention: fastmock_core::mail::MailRetention {
+            max_messages: number(&val, "MAIL_MAX_MESSAGES", d.retention.max_messages)?,
+            max_age: duration("MAIL_MAX_AGE", d.retention.max_age)?,
+        },
+    };
+    cfg.validate().map_err(anyhow::Error::msg)?;
+    for (name, addr, _) in cfg.listeners.enabled() {
+        for (other, at) in [
+            ("FASTMOCK_LISTEN", listen),
+            ("FASTMOCK_ADMIN_LISTEN", admin_listen),
+        ] {
+            if addr_conflict(addr, at) {
+                bail!(
+                    "{name} ({addr}) and {other} ({at}) use the same port; mail listeners need ports of their own"
+                );
+            }
+        }
+    }
+    if let Some(t) = &cfg.tls {
+        let what = if t.from_server {
+            "FASTMOCK_TLS_CERT_FILE / FASTMOCK_TLS_KEY_FILE (used for mail)"
+        } else {
+            "FASTMOCK_MAIL_TLS_CERT_FILE / FASTMOCK_MAIL_TLS_KEY_FILE"
+        };
+        fastmock_mail::tls::server_config(t).with_context(|| what.to_string())?;
+    }
+    Ok(Some(cfg))
 }
 
 #[cfg(test)]
@@ -1331,5 +1477,183 @@ mod tests {
         assert_eq!(parse_duration("2").unwrap(), Duration::from_secs(2));
         assert!(parse_duration("5y").is_err());
         assert!(parse_duration("abc").is_err());
+    }
+
+    fn mail(
+        vars: &[(&str, &str)],
+        tls: Option<&TlsSettings>,
+    ) -> anyhow::Result<Option<fastmock_mail::MailConfig>> {
+        let get = |n: &str| {
+            vars.iter()
+                .find(|(k, _)| *k == n)
+                .map(|(_, v)| v.to_string())
+        };
+        mail_settings(
+            &get,
+            "0.0.0.0:8080".parse().unwrap(),
+            "127.0.0.1:9090".parse().unwrap(),
+            tls,
+        )
+    }
+
+    fn mail_err(vars: &[(&str, &str)]) -> String {
+        format!("{:#}", mail(vars, None).unwrap_err())
+    }
+
+    #[test]
+    fn mail_is_off_by_default_and_has_design_defaults() {
+        assert!(mail(&[], None).unwrap().is_none());
+        assert!(
+            mail(
+                &[("MAIL_ENABLED", "false"), ("MAIL_SMTP_LISTEN", "x")],
+                None
+            )
+            .unwrap()
+            .is_none()
+        );
+        let c = mail(&[("MAIL_ENABLED", "true")], None).unwrap().unwrap();
+        assert_eq!(c, fastmock_mail::MailConfig::default());
+        let c = mail(
+            &[
+                ("MAIL_ENABLED", "yes"),
+                ("MAIL_SMTP_LISTEN", ""),
+                ("MAIL_IMAP_LISTEN", "127.0.0.1:1143"),
+                ("MAIL_POP3_LISTEN", " 127.0.0.1:1110 "),
+                ("MAIL_MAX_MESSAGE_BYTES", "2048"),
+                ("MAIL_MAX_RECIPIENTS", "5"),
+                ("MAIL_IDLE_TIMEOUT", "5s"),
+                ("MAIL_SESSION_TIMEOUT", "2m"),
+                ("MAIL_MAX_MESSAGES", "10"),
+                ("MAIL_MAX_AGE", "1d"),
+                ("MAIL_HOSTNAME", "mail.example.test"),
+                ("MAIL_ALLOW_PLAINTEXT_AUTH", "true"),
+                ("MAIL_SMTP_REQUIRE_AUTH", "on"),
+                ("MAIL_SMTP_USERS", &format!("app:{}", "0".repeat(64))),
+            ],
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(c.listeners.smtp, None);
+        assert_eq!(c.listeners.imap, Some("127.0.0.1:1143".parse().unwrap()));
+        assert_eq!(c.listeners.pop3, Some("127.0.0.1:1110".parse().unwrap()));
+        assert_eq!((c.max_message_bytes, c.max_recipients), (2048, 5));
+        assert_eq!(c.idle_timeout, Duration::from_secs(5));
+        assert_eq!(c.session_timeout, Duration::from_secs(120));
+        assert_eq!(c.retention.max_messages, 10);
+        assert_eq!(c.retention.max_age, Duration::from_secs(86_400));
+        assert_eq!(c.hostname, "mail.example.test");
+        assert!(c.allow_plaintext_auth && c.smtp_require_auth);
+        assert_eq!(c.smtp_users[0].name, "app");
+        assert_eq!(
+            c.features(),
+            vec!["mail", "mail.imap", "mail.pop3", "mail.providers"]
+        );
+    }
+
+    #[test]
+    fn mail_settings_are_validated() {
+        let on = ("MAIL_ENABLED", "true");
+        for (vars, want) in [
+            (vec![("MAIL_ENABLED", "maybe")], "not a boolean"),
+            (
+                vec![on, ("MAIL_SMTP_LISTEN", "0.0.0.0:8080")],
+                "FASTMOCK_MAIL_SMTP_LISTEN (0.0.0.0:8080) and FASTMOCK_LISTEN (0.0.0.0:8080) use the same port",
+            ),
+            (
+                vec![on, ("MAIL_SMTP_LISTEN", "127.0.0.1:9090")],
+                "and FASTMOCK_ADMIN_LISTEN (127.0.0.1:9090)",
+            ),
+            (
+                vec![on, ("MAIL_POP3_LISTEN", "127.0.0.1:2525")],
+                "FASTMOCK_MAIL_SMTP_LISTEN (0.0.0.0:2525) and FASTMOCK_MAIL_POP3_LISTEN",
+            ),
+            (
+                vec![on, ("MAIL_IMAP_LISTEN", "localhost")],
+                "FASTMOCK_MAIL_IMAP_LISTEN",
+            ),
+            (
+                vec![on, ("MAIL_MAX_RECIPIENTS", "0")],
+                "FASTMOCK_MAIL_MAX_RECIPIENTS must be greater than zero",
+            ),
+            (
+                vec![on, ("MAIL_MAX_MESSAGES", "-1")],
+                "FASTMOCK_MAIL_MAX_MESSAGES",
+            ),
+            (
+                vec![on, ("MAIL_MAX_AGE", "0s")],
+                "FASTMOCK_MAIL_MAX_AGE must be greater than zero",
+            ),
+            (
+                vec![on, ("MAIL_DATA_TIMEOUT", "soon")],
+                "FASTMOCK_MAIL_DATA_TIMEOUT",
+            ),
+            (
+                vec![on, ("MAIL_SMTPS_LISTEN", "0.0.0.0:4650")],
+                "FASTMOCK_MAIL_SMTPS_LISTEN needs a certificate",
+            ),
+            (
+                vec![on, ("MAIL_TLS_CERT_FILE", "/nonexistent/c.pem")],
+                "set both FASTMOCK_MAIL_TLS_CERT_FILE and FASTMOCK_MAIL_TLS_KEY_FILE",
+            ),
+            (
+                vec![on, ("MAIL_SMTP_USERS", "app:nothex")],
+                "FASTMOCK_MAIL_SMTP_USERS",
+            ),
+        ] {
+            let e = mail_err(&vars);
+            assert!(e.contains(want), "{vars:?}: {e}");
+        }
+    }
+
+    #[test]
+    fn mail_tls_files_are_read_or_taken_from_the_server() {
+        let (dir, _ca, cert, key) = kafka_pems();
+        let e = mail_err(&[
+            ("MAIL_ENABLED", "true"),
+            ("MAIL_TLS_CERT_FILE", "/nonexistent/c.pem"),
+            ("MAIL_TLS_KEY_FILE", &key),
+        ]);
+        assert!(
+            e.contains("FASTMOCK_MAIL_TLS_CERT_FILE") && e.contains("/nonexistent/c.pem"),
+            "{e}"
+        );
+        let c = mail(
+            &[
+                ("MAIL_ENABLED", "true"),
+                ("MAIL_SMTPS_LISTEN", "127.0.0.1:4650"),
+                ("MAIL_TLS_CERT_FILE", &cert),
+                ("MAIL_TLS_KEY_FILE", &key),
+            ],
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let t = c.tls.unwrap();
+        assert!(!t.from_server);
+        assert_eq!(t.cert_file, PathBuf::from(&cert));
+        let server = TlsSettings {
+            cert_file: cert.clone().into(),
+            key_file: key.clone().into(),
+            client_ca_file: None,
+            client_auth_required: false,
+        };
+        let c = mail(&[("MAIL_ENABLED", "true")], Some(&server))
+            .unwrap()
+            .unwrap();
+        assert!(c.tls.unwrap().from_server);
+        let broken = TlsSettings {
+            key_file: dir.join("empty.pem"),
+            ..server
+        };
+        let e = format!(
+            "{:#}",
+            mail(&[("MAIL_ENABLED", "true")], Some(&broken)).unwrap_err()
+        );
+        assert!(
+            e.contains("FASTMOCK_TLS_CERT_FILE / FASTMOCK_TLS_KEY_FILE (used for mail)"),
+            "{e}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

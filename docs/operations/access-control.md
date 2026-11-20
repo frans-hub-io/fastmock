@@ -61,6 +61,9 @@ everywhere.
 | `access:read` | `GET /access` (the [access configuration](#viewing-the-access-configuration): spaces, roles and bindings) | global |
 | `system:reset` | `POST /reset` | global |
 | `tokens:read`, `tokens:write` | `GET /tokens`, `/tokens/{id}`; `POST /tokens`, `DELETE /tokens/{id}` ([managed tokens](#managed-tokens)) | space (the scopes of the token) |
+| `mail:read` | captured mail: `GET /mail/messages*`, `/mail/stream`, `/mail/mailboxes`, `/mail/chaos`, `/mail/webhooks`; `POST /mail/messages/wait`, `/mail/verify` | space |
+| `mail:write` | `POST /mail/messages` (inject), `PUT /mail/messages/{id}/labels`, mailbox passwords, mail chaos rules and webhooks, `POST /mail/inbound` | space |
+| `mail:delete` | `DELETE /mail/messages`, `/mail/messages/{id}` | space |
 
 Endpoints without a space of their own need the permission globally:
 
@@ -80,7 +83,7 @@ masked ([Security: redaction](security.md#redaction)).
 | Role | Permissions |
 |---|---|
 | `viewer` | every `*:read` permission except `audit:read`, `tokens:read` and `access:read` |
-| `editor` | `viewer` plus `stubs:write`, `imports:run`, `journal:delete`, `files:write`, `recordings:write`, `callbacks:delete`, `state:write`, `chaos:write`, `grpc:write`, `contracts:details`, `contracts:write` |
+| `editor` | `viewer` plus `stubs:write`, `imports:run`, `journal:delete`, `files:write`, `recordings:write`, `callbacks:delete`, `state:write`, `chaos:write`, `grpc:write`, `contracts:details`, `contracts:write`, `mail:write`, `mail:delete` |
 | `admin` | every permission |
 
 The built-in roles cannot be redefined.
@@ -291,7 +294,7 @@ The built-in `editor` role lacks `tokens:write`; to let a team manage its own to
 roles:
   - name: team-lead
     permissions: [stubs:*, imports:run, journal:*, files:*, callbacks:*, state:*, contracts:read,
-      contracts:details, contracts:write, tokens:read, tokens:write]
+      contracts:details, contracts:write, mail:*, tokens:read, tokens:write]
 bindings:
   - subject: token:billing-lead
     role: team-lead
@@ -607,6 +610,7 @@ A space is a named partition, named like a Kubernetes namespace (`[a-z0-9]([a-z0
 | `description` | Optional text, shown by `GET /__admin/spaces`. |
 | `pathPrefixes` | Optional data-plane path prefixes that the space's stubs must stay under ([ownership](#ownership-of-the-data-plane)). Each must be a plain path starting with `/`: no query, fragment, `.` or `..` segment, encoded slash or backslash (`%2F`, `%5C`) or backslash. |
 | `hosts` | Optional `Host` values the space's stubs must match. |
+| `mailDomains` | Optional mail domains whose captured messages go to the space (lowercase; `*.example.com` covers the subdomains of `example.com`, not `example.com` itself). A domain belongs to one space: overlaps between spaces stop the start, like overlapping path prefixes. |
 
 What belongs to a space:
 

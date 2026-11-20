@@ -316,6 +316,7 @@ mod tests {
             description: None,
             path_prefixes: prefixes.iter().map(|s| s.to_string()).collect(),
             hosts: hosts.iter().map(|s| s.to_string()).collect(),
+            mail_domains: vec![],
         }
     }
 

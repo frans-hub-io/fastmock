@@ -42,6 +42,8 @@ pub struct AppState {
     pub scans: Arc<tokio::sync::Semaphore>,
     pub tokens: Arc<crate::tokens::TokenService>,
     pub oidc: Option<Arc<crate::oidc::Oidc>>,
+    /// The mail module; `None` unless `FASTMOCK_MAIL_ENABLED=true`.
+    pub mail: Option<Arc<fastmock_mail::MailService>>,
 }
 
 pub struct StubSecrets {

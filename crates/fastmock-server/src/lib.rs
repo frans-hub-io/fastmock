@@ -12,6 +12,8 @@ pub mod files;
 pub mod grpc;
 pub mod imports;
 pub mod journal_api;
+pub mod mail_api;
+pub mod mail_setup;
 pub mod oidc;
 pub mod openapi_doc;
 pub mod outbox;
@@ -141,6 +143,7 @@ pub async fn build(
         None => access::AccessConfig::default(),
     };
     engine.set_ownership(access.ownership());
+    let mail = mail_setup::build(&cfg, &access).await?;
     let problems = spaces::ownership_problems(&access, engine.snapshot().iter().map(|c| &c.stub));
     for p in problems.iter().take(50) {
         tracing::warn!(stub_id = %p.stub_id, space = %p.space, reason = %p.reason, "stored stub breaks the rules of its space; fix or delete it");
@@ -245,6 +248,7 @@ pub async fn build(
         scans: Arc::new(tokio::sync::Semaphore::new(cfg.journal_scan_concurrency)),
         tokens: Arc::new(tokens::TokenService::new(token_store, cfg.token_cache_ttl)),
         oidc,
+        mail,
     };
     if let Err(e) = app.grpc.reload(&app).await {
         tracing::warn!(error = %e, "loading gRPC descriptors failed");
@@ -313,6 +317,13 @@ pub async fn maintenance(app: AppState, mut shutdown: watch::Receiver<bool>) {
                 tracing::error!(error = %e, "audit retention failed");
             }
             tokens::maintain(&app).await;
+            if let Some(mail) = &app.mail {
+                match mail.sweep(Utc::now()).await {
+                    Ok(n) if n > 0 => tracing::info!(deleted = n, "mail retention applied"),
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(error = %e, "mail retention failed"),
+                }
+            }
         }
     }
 }

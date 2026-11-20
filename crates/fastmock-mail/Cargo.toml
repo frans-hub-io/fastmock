@@ -1,0 +1,27 @@
+[package]
+name = "fastmock-mail"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+fastmock-core.workspace = true
+mail-builder.workspace = true
+mail-parser.workspace = true
+metrics.workspace = true
+regex.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+utoipa.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+rcgen = { version = "0.14", features = ["pem"] }
+tokio.workspace = true

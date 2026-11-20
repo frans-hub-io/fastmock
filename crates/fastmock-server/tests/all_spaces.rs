@@ -29,7 +29,7 @@ roles:
   - name: team-lead
     permissions: [stubs:read, stubs:write, imports:run, journal:read, journal:delete, files:read, files:write,
       callbacks:read, callbacks:delete, state:read, state:write, contracts:read, contracts:details,
-      contracts:write, tokens:read, tokens:write]
+      contracts:write, tokens:read, tokens:write, mail:read, mail:write, mail:delete]
   - name: minter
     permissions: [stubs:read, tokens:write]
   - name: auditor
@@ -252,6 +252,7 @@ fn viewer_space_permissions() -> Vec<String> {
         "callbacks:read",
         "state:read",
         "contracts:read",
+        "mail:read",
     ]
     .into_iter()
     .map(String::from)
@@ -808,8 +809,8 @@ async fn access_view_lists_the_access_file_without_secrets() {
     assert_eq!(
         v["spaces"],
         json!([
-            {"name": "alpha", "pathPrefixes": ["/alpha/"], "hosts": []},
-            {"name": "beta", "pathPrefixes": [], "hosts": ["beta.example.com"]},
+            {"name": "alpha", "pathPrefixes": ["/alpha/"], "hosts": [], "mailDomains": []},
+            {"name": "beta", "pathPrefixes": [], "hosts": ["beta.example.com"], "mailDomains": []},
         ])
     );
     let roles: Vec<(&str, bool)> = v["roles"]
@@ -980,7 +981,7 @@ async fn access_view_without_an_access_file_is_admin_only() {
             ],
         })
     );
-    assert_eq!(v["roles"][2]["permissions"].as_array().unwrap().len(), 28);
+    assert_eq!(v["roles"][2]["permissions"].as_array().unwrap().len(), 31);
     for token in [VIEWER, EDITOR] {
         let (st, body) = h.call(Method::GET, "/access", token, None).await;
         assert_eq!(
