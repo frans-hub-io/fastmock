@@ -286,7 +286,7 @@ The claim value is also the principal name in `/__admin/info`, logs and the audi
 |---|---|
 | Cookie | `__Host-fastmock_session`, `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, `Max-Age` = `FASTMOCK_OIDC_SESSION_TTL` |
 | Value | 256 random bits (43 base64url characters) |
-| Server side | in the hot store under the SHA-256 of the value: user name, group names, creation and last-seen time |
+| Server side | in the hot store under the SHA-256 of the value: user name, group names, creation and last-seen time, and the ID token of the sign-in (for the logout hint) |
 | Lifetime | absolute `FASTMOCK_OIDC_SESSION_TTL` (default `8h`) and idle `FASTMOCK_OIDC_SESSION_IDLE` (default `1h`); the groups captured at sign-in are kept until one of them expires |
 | Replicas | every replica and every cluster sharing the Valkey sees the same sessions; in memory mode they live in the process |
 
@@ -300,12 +300,19 @@ An expired or unknown session answers `401 {"error":"unauthorized","details":["s
 and clears the cookie.
 
 `POST /__admin/auth/logout` deletes the session and clears the cookie. When the provider publishes an
-`end_session_endpoint`, the response carries `logoutUrl` (with `client_id` and `post_logout_redirect_uri` set to
-the admin URL's `/ui/`) so the UI can end the provider session too:
+`end_session_endpoint`, the response carries `logoutUrl` so the UI can end the provider session too. The URL has
+`client_id`, `post_logout_redirect_uri` set to the admin URL's `/ui/` (which shows the sign-in page once the
+session is gone) and `id_token_hint` with the ID token of the sign-in, so the provider ends its session without
+asking the user to confirm:
 
 ```json
-{"loggedOut": true, "logoutUrl": "https://sso.example.com/realms/mocks/protocol/openid-connect/logout?client_id=fastmock&post_logout_redirect_uri=https%3A%2F%2Fmock-admin.example.com%2Fui%2F"}
+{"loggedOut": true, "logoutUrl": "https://sso.example.com/realms/mocks/protocol/openid-connect/logout?client_id=fastmock&post_logout_redirect_uri=https%3A%2F%2Fmock-admin.example.com%2Fui%2F&id_token_hint=eyJhbGciOi..."}
 ```
+
+The ID token is kept only in the session record in the hot store and leaves the server only in this URL, which
+goes to the browser that signed in. It is never put in a cookie or logged. Tokens larger than 16 KiB are not kept;
+the logout then goes without the hint and the provider may ask for confirmation. Sessions created by an earlier
+version have no ID token either.
 
 `GET /__admin/auth/config` (no authentication) tells the login page what is available:
 `{"oidc": true, "tokenLogin": true}`.
@@ -481,8 +488,8 @@ curl -s https://mock-admin.example.com/__admin/stubs?space=payments -H "Authoriz
 ```
 
 Login, failed login and logout are audit events (`auth.login` with the group names, `auth.login_failed` with the
-reason, `auth.logout`); changes made by a user record `principalKind: user`. Codes, tokens, session ids, the
-client secret and the PKCE verifier are never logged.
+reason, `auth.logout`); changes made by a user record `principalKind: user`. Codes, tokens (the ID token
+included), session ids, the client secret and the PKCE verifier are never logged.
 
 ## Spaces
 
@@ -556,8 +563,14 @@ checked on create, update and import (`400` with the reason):
 
 - with `pathPrefixes`, the stub's URL matcher must be `url`, `urlPath` or `urlPathTemplate` lying under one of
   the prefixes (`/payments/` and `/payments` both allow `/payments/x`, neither allows `/paymentsx`). Regular
-  expression matchers (`urlPattern`, `urlPathPattern`) and stubs without a URL matcher are rejected;
+  expression matchers (`urlPattern`, `urlPathPattern`) and stubs without a URL matcher are rejected, and so are
+  paths with a `.` or `..` segment, plain or percent-encoded (`/payments/../billing/x`, `/payments/%2E%2E/x`);
 - with `hosts`, the stub must have a `request.host` matcher with `equalTo` one of the hosts and nothing else.
+
+The rules apply when a stub is written. Stubs stored before the access file gave the space prefixes or hosts, or
+before it dropped the space, stay stored and keep their space. Each replica logs a warning at start-up for every
+such stub (`stored stub breaks the rules of its space`, with `stub_id`, `space` and `reason`), and
+`GET /__admin/info` lists them in `warnings` to principals that can read stubs in that space. Fix or delete them.
 
 **Owned prefixes and hosts do not overlap.** Two spaces may not own overlapping path prefixes (such as
 `/payments/` and `/payments/refunds/`) or the same host; a host without a port overlaps the same host with any
@@ -569,6 +582,12 @@ conflicting values:
 or whose `Host` is a host owned by a space, is answered only by stubs of that space or by global stubs; stubs of
 other spaces are skipped for it. Requests outside every owned prefix and host are matched against all enabled
 stubs as usual.
+
+The data plane does not normalise request paths: the owning space is decided on the path as received, the same
+path the stubs are matched against. A request is therefore answered only by stubs of the space that owns its
+path as sent. Clients and proxies normally remove dot segments before sending; a request that keeps them, such as
+`/payments/../billing/x` sent with `curl --path-as-is`, belongs to `/payments/` and never reaches stubs of the
+space that owns `/billing/`.
 
 Stubs in the global area are not restricted; only principals with global `stubs:write` can create them. When
 several teams share an instance, give each team's space the `pathPrefixes` or `hosts` of the traffic it mocks, so
@@ -743,7 +762,11 @@ authentication like every other admin route.
 
 **Rolling upgrade and rollback.** Upgrade every replica before you add an access file, create spaces or let
 teams create stubs in spaces; while old and new versions run side by side, the old ones do not know spaces. A
-previous version starts against the new schema and ignores the new columns and tables. After a rollback, stubs
+previous version that starts against the new schema ignores the new columns and tables. Replicas of earlier
+versions that are already running when the first new pod adds the columns may log
+`cached plan must not change result type` and fail to claim callbacks or read the journal until they are
+replaced, usually for a few seconds; due callbacks wait for a new replica and are then sent. From this version on
+the queries name their columns, so later additive migrations do not cause this. After a rollback, stubs
 in spaces behave as global stubs, the files, scenario states and key-value entries of spaces are not visible,
 and managed tokens and SSO sign-in are not available. Before rolling back, remove the access file and the OIDC
 settings, and give every entry of `FASTMOCK_ADMIN_TOKENS` / `FASTMOCK_ADMIN_TOKENS_FILE` a built-in role again: the
