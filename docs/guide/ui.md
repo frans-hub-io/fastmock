@@ -285,7 +285,8 @@ each result only, with a note that the details are reserved to editors.
 
 ### Admin tokens
 
-Shown with the `tokens:read` permission (admins, or a custom role such as a team lead). The list shows the
+Shown when the server supports managed tokens (`tokens` in the `features` of `GET /__admin/version`) and you
+hold the `tokens:read` permission (admins, or a custom role such as a team lead). The list shows the
 managed tokens you may manage, filtered by status (active by default) and by the selected space: name and
 description, role (hover for its permissions), scope (global or spaces), who created it, creation, expiry, last
 use and status. Static tokens from `FASTMOCK_ADMIN_TOKENS` are not listed.
@@ -294,11 +295,13 @@ use and status. Static tokens from `FASTMOCK_ADMIN_TOKENS` are not listed.
   lifetime in days. Only roles you may grant are offered, and only in the spaces where you may grant them: you
   must hold every permission of the role there ([escalation rule](../operations/access-control.md#managed-tokens)),
   so a space-bound lead cannot create global tokens. The lifetime is limited to the server maximum
-  (`FASTMOCK_TOKENS_MAX_DAYS`) and defaults to 90 days.
+  (`FASTMOCK_TOKENS_MAX_DAYS`) and defaults to 90 days, or `FASTMOCK_TOKENS_MAX_DAYS` when lower. A token
+  created with a managed token expires no later than that token.
 - After creation the value is shown **once**, with a copy button and a warning; it is kept only in the dialog and
   dropped when the dialog closes. The UI never stores or logs it, and the server never returns it again.
-- **Revoke** (after a confirmation) stops the token on every replica within 10 seconds; revoked and expired tokens
-  stay visible under their status filters.
+- **Revoke** (after a confirmation) stops the token, and the tokens created with it, on every replica within 10
+  seconds; revoked and expired tokens stay visible under their status filters. Tokens created by an SSO user keep
+  working after that user leaves; the creator column shows whose tokens to revoke.
 
 ### Audit log
 

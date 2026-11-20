@@ -84,8 +84,8 @@ admin listener's own origin.
 |---|---|
 | `401 {"error":"unauthorized","details":[]}` + `WWW-Authenticate: Bearer` | token missing, unknown or revoked |
 | `401 {"error":"unauthorized","details":["token expired"]}` | managed token past its expiry |
-| `503 {"error":"token store unavailable","details":[]}` | a managed token could not be checked because the database is unreachable |
-| `401 {"error":"unauthorized","details":["invalid bearer token"]}` + `WWW-Authenticate: Bearer error="invalid_token"` | a JWT with a bad signature, issuer, audience or lifetime |
+| `503 {"error":"token store unavailable","details":[]}` | a managed token could not be checked because the database is unreachable (only while managed tokens exist; otherwise an unknown `fm_` value answers `401` without a database lookup) |
+| `401 {"error":"unauthorized","details":["invalid bearer token"]}` + `WWW-Authenticate: Bearer error="invalid_token"` | a JWT with a bad signature, issuer, audience or lifetime, or an ID token (a JWT with `nonce`) |
 | `401 {"error":"unauthorized","details":["session expired or unknown: sign in again"]}` | session cookie expired, logged out or unknown; the cookie is cleared |
 | `403 {"error":"forbidden","details":["missing X-FastMock-Request: 1 header"]}` | a change authenticated by the session cookie without the CSRF header |
 | `403 {"error":"forbidden","details":["user bob has no access: ..."],"required":"..."}` | an OIDC user without any binding |
@@ -154,11 +154,11 @@ curl -s -X DELETE localhost:9090/__admin/tokens/$ID -H "Authorization: Bearer $A
 
 | Endpoint | Body or parameters | Response |
 |---|---|---|
-| `POST /tokens` | `{name, role, spaces?, global?, expiresInDays?, description?}`; exactly one of `spaces` and `global: true`; `expiresInDays` 1 to `FASTMOCK_TOKENS_MAX_DAYS`, default 90 | `201` with `token` (the value, once) and the metadata; `409` when the name is taken by an active or a static token |
+| `POST /tokens` | `{name, role, spaces?, global?, expiresInDays?, description?}`; exactly one of `spaces` and `global: true`; `expiresInDays` 1 to `FASTMOCK_TOKENS_MAX_DAYS`, default 90 days or `FASTMOCK_TOKENS_MAX_DAYS` when lower; a token created by a managed token expires no later than its creator | `201` with `token` (the value, once) and the metadata; `409` when the name is taken by an active or a static token |
 | `GET /tokens` | `?space=`, `?status=active\|expired\|revoked` | `{"tokens": [...]}`: metadata of the tokens the caller may manage, newest first |
-| `GET /tokens/{id}`, `GET /tokens/self` | | metadata: `id`, `name`, `role`, `spaces`, `global`, `description`, `createdBy`, `createdAt`, `expiresAt`, `lastUsedAt`, `revokedAt`, `status` |
+| `GET /tokens/{id}`, `GET /tokens/self` | | metadata: `id`, `name`, `role`, `spaces`, `global`, `description`, `createdBy`, `createdAt`, `expiresAt`, `lastUsedAt`, `revokedAt`, `status`, and `parentId` for a token created by a managed token |
 | `GET /tokens/options` | | what the caller may choose when creating a token: `maxDays`, `defaultDays` and every role with its `permissions`, `builtin`, and where the caller may grant it (`global`, `spaces`); needs `tokens:write` somewhere |
-| `DELETE /tokens/{id}` | | the metadata with `status: revoked`; every replica rejects the token within 10 seconds |
+| `DELETE /tokens/{id}` | | the metadata with `status: revoked`; every replica rejects the token, and the tokens it created, within 10 seconds |
 
 Who may create, see and revoke which tokens (the escalation rule), expiry, caching and memory-mode behaviour are
 described in [Access control: managed tokens](../operations/access-control.md#managed-tokens).
@@ -181,9 +181,9 @@ server.
 |---|---|
 | 400 | invalid parameter, invalid stub, pattern, tag, file name or document; a request body that is not valid JSON or does not fit the schema (unknown field, wrong type); an import that yields no stub |
 | 401 / 403 | see [Authentication](#authentication) |
-| 404 | the stub, request, file, key or route does not exist |
+| 404 | the stub, request, file, key, space or route does not exist, or the space is not visible to the caller |
 | 405 | method not allowed on this route |
-| 409 | conflict: stub id exists on `POST /stubs`, incompatible gRPC descriptor, too many files |
+| 409 | conflict: stub id exists on `POST /stubs` (or belongs to a stub in another space on import), incompatible gRPC descriptor, too many files |
 | 413 | body larger than the route allows |
 | 415 | `POST /import` cannot detect or convert the format; missing JSON content type |
 | 422 | a verification that failed (`/verify`, `/verify/sequence`), or a journal scan over its work budget |
@@ -348,8 +348,8 @@ curl -s -H "Authorization: Bearer $FASTMOCK_TOKEN" http://localhost:9090/__admin
 # {"version":"0.1.0","gitSha":"3f2c1ab","features":["grpc","kafka","sse","chaos","recording","verification","files","import-openapi","import-wiremock","import-postman","import-har"]}
 ```
 
-`gitSha` is set when the binary was built with the `FASTMOCK_GIT_SHA` environment variable, otherwise `null`.
-`GET /info` returns the version, storage kind, uptime, number of loaded stubs, plugins and the caller's identity:
+`features` lists `tokens` when the server supports [managed tokens](#managed-tokens). `gitSha` is set when the binary was built with the `FASTMOCK_GIT_SHA` environment variable, otherwise `null`.
+`GET /info` returns the version, storage kind, uptime, number of loaded stubs (`stubsLoaded`, only those the caller can see), plugins and the caller's identity:
 `principal` with `name`, `kind`, `role` and `permissions` (`global` and per-space lists). `GET /spaces` lists the
 spaces the caller can see with its permissions in each ([Access control](../operations/access-control.md#inspecting-your-permissions)).
 
@@ -369,7 +369,7 @@ spaces the caller can see with its permissions in each ([Access control](../oper
 | Metric | Labels | Meaning |
 |---|---|---|
 | `fastmock_admin_changes_total` | `action` | audited admin changes |
-| `fastmock_admin_auth_failures_total` | `reason` (`token`, `role`, `permission`, `origin`) | rejected admin requests (`role` for tokens holding only global built-in roles, `permission` otherwise) |
+| `fastmock_admin_auth_failures_total` | `reason` (`token`, `expired`, `role`, `permission`, `origin`, `session`, `jwt`, `csrf`) | rejected admin requests: `token` for missing, unknown or revoked tokens, `expired` for expired managed tokens, `role` for principals holding only global built-in roles and `permission` for others (including OIDC users without a binding), `origin` for refused browser origins, `session` for expired or unknown session cookies, `jwt` for rejected bearer JWTs, `csrf` for cookie-authenticated changes without `X-FastMock-Request` |
 | `fastmock_admin_errors_total` | | internal errors in admin handlers |
 | `fastmock_files_written_total` | | body file uploads |
 | `fastmock_file_size_bytes` | | histogram of uploaded file sizes |

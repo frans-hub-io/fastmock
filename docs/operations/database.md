@@ -16,22 +16,24 @@ upgrade PostgreSQL to a new major version. Connection settings and TLS are in
 
 | Store | Table or keys | Content |
 |---|---|---|
-| PostgreSQL | `fm_stubs`, `fm_revision` | Stubs and the revision counter that tells replicas to reload them. |
+| PostgreSQL | `fm_stubs`, `fm_revision` | Stubs (with their [space](access-control.md#spaces)) and the revision counter that tells replicas to reload them. |
 | PostgreSQL | `fm_data` | Body files, settings, gRPC descriptors, async mocks, the service catalog, specifications and contract-test runs. |
 | PostgreSQL | `fm_journal` | Request journal (kept for `FASTMOCK_JOURNAL_RETENTION`). |
 | PostgreSQL | `fm_outbox` | Callbacks waiting for delivery and their results. |
 | PostgreSQL | `fm_audit` | Audit log of admin actions. |
+| PostgreSQL | `fm_api_tokens` | [Managed tokens](access-control.md#managed-tokens): hashes and metadata, never the values. |
 | PostgreSQL | `_sqlx_migrations` | Applied migrations: version, description, checksum, success. |
-| Valkey | keys under `FASTMOCK_VALKEY_PREFIX` | Scenario states, counters, delayed deliveries and caches. |
+| Valkey | keys under `FASTMOCK_VALKEY_PREFIX` | Scenario states, key-value entries, counters, delayed deliveries, caches, OIDC sessions and pending sign-ins. |
 
 ## How migrations run
 
 Migrations are SQL files compiled into the binary (`crates/fastmock-store/migrations`). With
 `FASTMOCK_DATABASE_MIGRATE=auto` (the default) every replica applies them at start-up, before it opens its ports:
 
-1. It takes a PostgreSQL session advisory lock (`pg_advisory_lock`, the key is derived from the database name),
-   so when several replicas start together only one migrates; the others wait for the lock and then find
-   nothing to do.
+1. It takes a PostgreSQL session advisory lock (polled with `pg_try_advisory_lock`, the key is derived from the
+   database name), so when several replicas start together only one migrates; the others retry until the lock is
+   free and then find nothing to do. Polling instead of blocking keeps waiting replicas from holding a snapshot
+   that a concurrent index build (`create index concurrently`) would have to wait for.
 2. It reads `_sqlx_migrations`. A migration recorded as failed stops start-up; so does an applied migration whose
    checksum differs from the file in the binary (an edited migration).
 3. It applies each pending migration in its own transaction together with its `_sqlx_migrations` row, so a failed
@@ -61,7 +63,11 @@ To keep DDL rights away from the server, or to migrate once per release instead 
    migration it needs is applied and unchanged; otherwise it stops with a message such as
    `the database schema is older than this FastMock version expects (version 4): migration(s) 4 (admin queries)
    not applied; run fastmock migrate from this version before starting it with FASTMOCK_DATABASE_MIGRATE=skip`.
-   The server user then needs only `USAGE` on the schema and `SELECT`, `INSERT`, `UPDATE`, `DELETE` on its tables.
+   The server user then needs only `USAGE` on the schema and `SELECT`, `INSERT`, `UPDATE`, `DELETE` on its tables
+   ([What is stored where](#what-is-stored-where)). When you grant rights per table rather than with
+   `ALTER DEFAULT PRIVILEGES`, grant them on every table a new release adds, for example `fm_api_tokens` with
+   access control ([upgrade notes](access-control.md#upgrade-notes)); otherwise the feature that uses it answers
+   `503`.
 
 With the Helm chart, set `storage.database.migrations.mode: job`: a pre-install/pre-upgrade hook Job runs step 1
 with the image of the release, optionally with the owner's credentials from

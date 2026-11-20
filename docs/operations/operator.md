@@ -111,8 +111,8 @@ bindings:
     spaces: [team-billing]
 ```
 
-The content is part of the pod template checksum, so editing the ConfigMap rolls the pods; the operator re-reads
-it on every change of the `FastMock` and at least every 5 minutes. An invalid access file stops the new pods at
+The content is part of the pod template checksum, so editing the ConfigMap rolls the pods. The operator watches
+labelled ConfigMaps, so an edit applies right away, without waiting for the periodic resync. An invalid access file stops the new pods at
 start-up with a message naming the entry (`Ready=False Progressing`, see the pod log), while the old pods keep
 running. `token:` bindings must name entries of `adminTokensSecret`; the operator's own token
 (`fastmock-operator`) is always a global admin.
@@ -151,19 +151,20 @@ kubectl -n team-payments label secret payments-mock-oidc fastmock.franshub.io/al
 | `clientSecretRef` | required | `{name, key}` of the Secret with the client secret; `key` defaults to `client-secret`. |
 | `redirectUrl` | required | Public https admin URL followed by `/__admin/auth/callback`. |
 | `scopes` | `openid profile email` | `FASTMOCK_OIDC_SCOPES`. |
-| `usernameClaim`, `groupsClaim` | `preferred_username`, `groups` | Claims for `user:` and `group:` bindings. |
-| `apiAudience` | none | Accept the provider's JWTs with this audience on the admin API. |
+| `usernameClaim`, `groupsClaim` | `preferred_username`, `groups` | Claims for `user:` and `group:` bindings; `sub` (or `oid` with Entra ID) is recommended for `user:` bindings ([choosing the username claim](access-control.md#choosing-the-username-claim)). |
+| `apiAudience` | none | Accept the provider's JWTs with this audience on the admin API; must differ from `clientId`. |
 | `sessionTtl`, `sessionIdle` | `8h`, `1h` | Session lifetimes. |
 | `allowedHosts` | `[]` | Hosts besides the issuer's that discovery endpoints may use. |
 | `caConfigMapRef` | none | `{name, key}` of a labelled ConfigMap with extra CA certificates for the provider (`key` defaults to `ca.crt`), mounted at `/etc/fastmock/oidc-ca`. |
 
 An `issuer` or `redirectUrl` that is not https, a missing `clientId` or a redirect URL not ending in
 `/__admin/auth/callback` refuse the spec (`InvalidSpec`); a missing or unlabelled Secret or CA ConfigMap gives
-`SecretNotFound`, `SecretNotAllowed`, `ConfigMapNotFound` or `ConfigMapNotAllowed`. The server checks the rest at
+`SecretNotFound`, `SecretNotAllowed`, `ConfigMapNotFound` or `ConfigMapNotAllowed`, and a client secret Secret
+without the configured key, or with an empty value, gives `SecretKeyNotFound`. The server checks the rest at
 start-up. `FASTMOCK_OIDC_*` cannot be set through `spec.env`. The admin port is not published by `spec.route`,
 which serves the data port; expose the admin Service with your own HTTPRoute on the host of `redirectUrl`. The
-client secret is read when the pods start: after rotating it, restart them
-(`kubectl rollout restart deploy/<name>`). With `storage.mode: memory` sessions live in the single pod.
+client secret is part of the pod template checksum: updating it in the Secret rolls the pods at the next
+reconcile, that is within the 5-minute resync or at once when the `FastMock` changes. With `storage.mode: memory` sessions live in the single pod.
 
 ### Fields
 
@@ -267,8 +268,11 @@ How it is applied:
   server restarted); missing stubs are re-imported.
 - With a space, every import goes to that space (`?space=` on the import calls) and replaces only that space's
   stubs of the tag; the space's [ownership rules](access-control.md#ownership-of-the-data-plane) apply. Changing
-  the space removes the stubs from the previous one first. `status.space` records where the stubs were applied.
-- Deleting a `MockApi` deletes its stubs. The finalizer `fastmock.franshub.io/stubs` keeps the resource until the removal
+  the space moves the stubs to the new space. `status.space` records where the stubs were applied.
+- A `MockApi` whose space is not defined in the server's access file is not synced: `Synced` is `False` with reason
+  `SpaceNotFound`, and the stubs applied before stay on the server until the space exists or
+  `spec.space` is corrected.
+- Deleting a `MockApi` deletes its stubs by tag, in whatever space they are. The finalizer `fastmock.franshub.io/stubs` keeps the resource until the removal
   succeeded, as long as the `FastMock` exists; if the server is gone, the finalizer is released without
   cleanup.
 
@@ -301,12 +305,13 @@ billing   payments   14      True
 | `Ready` | False | `EnvNotAllowed` | `spec.env` sets a variable that is reserved for dedicated fields. |
 | `Ready` | False | `SecretNotAllowed` | A referenced Secret lacks the label `fastmock.franshub.io/allow-mount: "true"`. |
 | `Ready` | False | `SecretNotFound` | A referenced Secret does not exist. |
+| `Ready` | False | `SecretKeyNotFound` | The OIDC client Secret lacks the key named in `oidc.clientSecretRef`, or its value is empty. |
 | `Ready` | False | `ConfigMapNotAllowed` | The access ConfigMap lacks the label `fastmock.franshub.io/allow-mount: "true"`. |
 | `Ready` | False | `ConfigMapNotFound` | The access ConfigMap or its key does not exist. |
 | `RouteReady` | True / False | `Applied` / `ApplyFailed` | Only when `route` is set; `ApplyFailed` usually means Gateway API is not installed. |
 
 When a resource is refused (`InvalidSpec`, `ImageNotAllowed`, `EnvNotAllowed`, `SecretNotAllowed`,
-`SecretNotFound`, `ConfigMapNotAllowed`, `ConfigMapNotFound`) **nothing is applied** and an existing Deployment
+`SecretNotFound`, `SecretKeyNotFound`, `ConfigMapNotAllowed`, `ConfigMapNotFound`) **nothing is applied** and an existing Deployment
 keeps running unchanged. Secret and ConfigMap problems are re-checked every minute, the others when the resource
 changes and every 5 minutes.
 
@@ -334,6 +339,7 @@ Ready=False SecretNotAllowed: referenced Secrets must carry the label fastmock.f
 | `Synced` | True | `Synced` | `14 stubs applied with tag team-payments.billing` |
 | `Synced` | False | `ServerNotReady` | The `FastMock` is missing, being deleted or has no ready replica; retried every 15 s. |
 | `Synced` | False | `SyncFailed` | The import failed: invalid stub, unparsable document, missing ConfigMap or key, admin API error. The message tells which. |
+| `Synced` | False | `SpaceNotFound` | `spec.space` (or the namespace with `spaceFromNamespace`) is not defined in the server's access file; the stubs applied before are left unchanged. |
 
 ## Policies
 
@@ -371,16 +377,27 @@ The chart grants the operator (as a ClusterRole, or a Role in `watchNamespace`):
 | `fastmock.franshub.io` | `mockapis` | list, watch, patch |
 | `fastmock.franshub.io` | `fastmocks/status`, `mockapis/status` | patch |
 | `fastmock.franshub.io` | `fastmocks/finalizers` | update |
-| core | `secrets`, `configmaps` | get, create, patch |
+| core | `secrets` | get, create, patch |
+| core | `configmaps` | get, list, watch, create, patch |
 | core | `services`, `serviceaccounts` | create, patch |
 | `apps` | `deployments` | get, list, watch, create, patch |
 | `policy` | `poddisruptionbudgets` | get, create, patch, delete |
 | `gateway.networking.k8s.io` | `httproutes` | get, create, patch, delete |
 
-It cannot list Secrets or ConfigMaps, only read those it is pointed at, and the label policy limits which of
-those it mounts. Users need RBAC on `fastmocks` and `mockapis` in their namespaces; reading the generated
+It lists and watches ConfigMaps carrying the label `fastmock.franshub.io/allow-mount=true`, reading only their
+metadata, so that changes to them reach the servers that use them at once. Secrets are only read by name: the
+content of those a `FastMock` or `MockApi` points at, and the label policy limits which of those it mounts. Users need RBAC on `fastmocks` and `mockapis` in their namespaces; reading the generated
 `<name>-operator-token` Secret is equivalent to admin access to that FastMock, so do not grant `get secrets` more
 widely than needed.
+
+**Spaces and RBAC.** The operator writes stubs with its own global admin token. With `policy.spaceFromNamespace`
+off (the default) it writes into whatever space `spec.space` names, so Kubernetes RBAC on `mockapis` decides who
+can write into which space of a server: anyone who may create or update a `MockApi` in the server's namespace can
+target every space of that server. Grant `create`, `update` and `patch` on `mockapis` in that namespace only to
+people and pipelines that may change all of its spaces, or turn on `policy.spaceFromNamespace` to pin every
+`MockApi` to the space named like its namespace. Teams that need their own spaces on a shared server without
+access to each other's can use the admin API with [space-bound tokens](access-control.md#bindings) instead of
+`MockApi` resources.
 
 ## Monitoring the operator
 
@@ -406,7 +423,9 @@ kubectl apply --server-side -f deploy/helm/fastmock-operator/crds/fastmock.frans
 The CRD file is generated from the operator code (`fastmock-operator crd`), so it always matches the operator
 version of the same chart. Existing `FastMock`s are re-applied with the new operator's manifests; their pods
 roll only if the generated Deployment changed. Changing the default server image (`server.image.tag`) rolls
-every `FastMock` that does not pin `spec.image`.
+every `FastMock` that does not pin `spec.image`. When the new server image adds access control, read its
+[upgrade notes](access-control.md#upgrade-notes), and set `spec.access` or `spec.oidc` only after every replica
+runs the new image.
 
 Uninstalling the chart leaves the CRDs and therefore all `FastMock`/`MockApi` resources and their objects in
 place. Delete the resources first if you want everything removed; deleting the CRDs deletes all resources of

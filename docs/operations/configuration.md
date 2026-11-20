@@ -115,11 +115,11 @@ start-up error, and so is combining it with `FASTMOCK_AUTH_DISABLED=true`. See
 | `FASTMOCK_OIDC_CLIENT_SECRET_FILE` | path | none | File with the client secret (trailing newline ignored). |
 | `FASTMOCK_OIDC_REDIRECT_URL` | URL | none | Public admin URL plus `/__admin/auth/callback`, no query (required). https except on localhost. |
 | `FASTMOCK_OIDC_SCOPES` | list | `openid profile email` | Space- or comma-separated scopes; must include `openid`. |
-| `FASTMOCK_OIDC_USERNAME_CLAIM` | string | `preferred_username` | Claim with the user name for `user:` bindings; a dotted path reaches into objects. API JWTs without it use `sub`. |
+| `FASTMOCK_OIDC_USERNAME_CLAIM` | string | `preferred_username` | Claim with the user name for `user:` bindings; a dotted path reaches into objects. API JWTs without it use `sub`. `sub` (or `oid` with Entra ID) is recommended ([choosing the username claim](access-control.md#choosing-the-username-claim)); with `email`, sign-in requires `email_verified: true`. |
 | `FASTMOCK_OIDC_GROUPS_CLAIM` | string | `groups` | Claim with the groups for `group:` bindings (array of strings or one string); a dotted path such as `realm_access.roles` reaches into objects. Falls back to userinfo at sign-in when the ID token lacks it. |
-| `FASTMOCK_OIDC_API_AUDIENCE` | string | none | Accept JWTs of the provider with this `aud` as bearer tokens on the admin API. |
+| `FASTMOCK_OIDC_API_AUDIENCE` | string | none | Accept JWTs of the provider with this `aud` as bearer tokens on the admin API. An empty value or the client id stops the start; tokens with a `nonce` claim (ID tokens) are rejected. |
 | `FASTMOCK_OIDC_CA_FILE` | path | none | PEM bundle of extra trusted roots for the provider connections (discovery, JWKS, token, userinfo). |
-| `FASTMOCK_OIDC_SESSION_TTL` | duration | `8h` | Absolute lifetime of a UI session. |
+| `FASTMOCK_OIDC_SESSION_TTL` | duration | `8h` | Absolute lifetime of a UI session. A session keeps the groups captured at sign-in until it ends. |
 | `FASTMOCK_OIDC_SESSION_IDLE` | duration | `1h` | A session unused for this long ends. |
 | `FASTMOCK_OIDC_ALLOWED_HOSTS` | list | none | Host names besides the issuer's that discovery endpoints (token, JWKS, userinfo, authorization, end session) may use; others stop the start. |
 | `FASTMOCK_OIDC_INSECURE_COOKIE` | boolean | `false` | Session and login cookies without `Secure` and without the `__Host-` prefix, for local development over plain http. Accepted only with a `localhost`, `127.0.0.1` or `::1` redirect URL. |

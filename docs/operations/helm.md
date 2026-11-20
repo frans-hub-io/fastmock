@@ -529,8 +529,8 @@ groups in `access.bindings`; without a binding a user cannot sign in.
 | `oidc.clientSecret.key` | `client-secret` | Key inside the Secret. |
 | `oidc.redirectUrl` | `""` | `FASTMOCK_OIDC_REDIRECT_URL`: the public admin URL plus `/__admin/auth/callback` (required with the issuer). |
 | `oidc.scopes` | `[]` | `FASTMOCK_OIDC_SCOPES`; empty means `openid profile email`. |
-| `oidc.claims.username`, `oidc.claims.groups` | `""` | `FASTMOCK_OIDC_USERNAME_CLAIM`, `FASTMOCK_OIDC_GROUPS_CLAIM`; empty means `preferred_username` and `groups`. |
-| `oidc.apiAudience` | `""` | `FASTMOCK_OIDC_API_AUDIENCE`: accept the provider's JWTs with this audience on the admin API. |
+| `oidc.claims.username`, `oidc.claims.groups` | `""` | `FASTMOCK_OIDC_USERNAME_CLAIM`, `FASTMOCK_OIDC_GROUPS_CLAIM`; empty means `preferred_username` and `groups`. For `user:` bindings set `oidc.claims.username: sub` (or `oid` with Entra ID), see [choosing the username claim](access-control.md#choosing-the-username-claim). |
+| `oidc.apiAudience` | `""` | `FASTMOCK_OIDC_API_AUDIENCE`: accept the provider's JWTs with this audience on the admin API; must differ from `oidc.clientId`. |
 | `oidc.trustOutboundCA` | `false` | Trust the CA bundle of `outboundCA.configMap` for the provider connections (`FASTMOCK_OIDC_CA_FILE`). |
 | `oidc.session.ttl`, `oidc.session.idle` | `8h`, `1h` | `FASTMOCK_OIDC_SESSION_TTL`, `FASTMOCK_OIDC_SESSION_IDLE`. |
 | `oidc.allowedHosts` | `[]` | `FASTMOCK_OIDC_ALLOWED_HOSTS`: hosts besides the issuer's that discovery endpoints may use. |
@@ -573,6 +573,11 @@ start-up: after rotating it, `kubectl rollout restart deploy/<fullname>`.
 
 ## Upgrade notes
 
+- **Access control** (spaces, managed tokens, OIDC sign-in): with no `access` and `oidc` values the release
+  behaves as before, but read the [access control upgrade notes](access-control.md#upgrade-notes) first: a new
+  table needs grants when migrations run separately with per-table rights, audit log lines and auth failure
+  metrics changed, and new `/__admin/auth/*` routes must pass a WAF or route allow-list when OIDC is used.
+  Upgrade every replica before setting `access` or `oidc`.
 - **0.1.0**: first release. `FASTMOCK_STUB_SECRETS` (`secrets.stubSecrets`) is required for stub HMAC
   signatures; stubs that reference other secrets produce failed callbacks with
   `secret ... is not configured`.

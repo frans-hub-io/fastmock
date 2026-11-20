@@ -68,7 +68,8 @@ Editors can change everything that tests change, including which callbacks go wh
 Give `editor` to automated test clients and the people who maintain mocks, `viewer` to dashboards and readers,
 `admin` to operators. Teams that share one instance and must not affect each other get [spaces](access-control.md#spaces):
 tokens bound to a space see and change only that space's stubs, journal, state, files, callbacks and contract
-tests, and ownership rules keep their stubs inside their part of the data plane. Teams that need separate
+tests. Give each space the `pathPrefixes` or `hosts` of its traffic ([ownership](access-control.md#ownership-of-the-data-plane)):
+its stubs then stay inside them, and requests there are answered only by its own and global stubs. Teams that need separate
 recordings, chaos rules, gRPC descriptors or Kafka settings still need separate FastMock instances (the
 [operator](operator.md) makes that cheap).
 
@@ -84,13 +85,15 @@ Their life cycle:
 |---|---|
 | Creation | Only a caller holding `tokens:write` and every permission of the requested role in each requested scope can create one; a caller bound to spaces cannot create a global token. The value (`fm_` and 64 random hex digits) is returned once; only its SHA-256 hash is stored. Name, role, scopes and expiry are audited (`token.create`), the value never. |
 | Use | Static tokens are checked first; a value in the managed format is then looked up by hash. Each replica caches lookups for at most 10 seconds. The last use is recorded at most once per minute. |
-| Expiry | Mandatory: 90 days by default, at most `FASTMOCK_TOKENS_MAX_DAYS` (365 by default). Checked on every request; expired tokens get `401` with `"details":["token expired"]` and count as `fastmock_admin_auth_failures_total{reason="expired"}`. |
-| Revocation | `DELETE /__admin/tokens/{id}` by a caller with `tokens:write` in every scope of the token, or by the token itself. Effective at once on the replica that handled it and within 10 seconds on all others. Audited as `token.revoke`; later uses count as `reason="token"`. |
+| Expiry | Mandatory: by default 90 days, or `FASTMOCK_TOKENS_MAX_DAYS` when lower; at most `FASTMOCK_TOKENS_MAX_DAYS` (365 by default). A token created by a managed token never outlives its creator. Checked on every request; expired tokens get `401` with `"details":["token expired"]` and count as `fastmock_admin_auth_failures_total{reason="expired"}`. |
+| Revocation | `DELETE /__admin/tokens/{id}` by a caller with `tokens:write` in every scope of the token, or by the token itself. Effective at once on the replica that handled it and within 10 seconds on all others. Revoking a token also revokes the tokens it created. Audited as `token.revoke`; later uses count as `reason="token"`. |
 | Clean-up | Revoked and expired tokens stay visible for 90 days, then they are deleted. |
 
 Prefer managed tokens with short lifetimes for CI pipelines and people, scoped to the spaces they work in; keep
 static tokens for the few clients that must survive a database loss (the operator, monitoring). In memory mode
-managed tokens are lost on restart. Watch `fastmock_api_tokens_active` for tokens piling up.
+managed tokens are lost on restart. Tokens created by an SSO user keep working after the user leaves or loses
+its groups; the token list shows the creator, so revoke a person's tokens as part of off-boarding. Watch
+`fastmock_api_tokens_active` (a cluster-wide count, read it with `max`) for tokens piling up.
 
 ## OIDC sign-in
 
@@ -107,23 +110,27 @@ account, and their groups decide what they may do. Design points:
 - **Token validation.** Signatures are checked against the provider's JWKS with RS256, PS256, ES256 or EdDSA only;
   `none`, HMAC and `crit` headers are rejected, so a public key can never be used as an HMAC secret. `iss`, `aud`,
   `azp`, `exp`, `nbf`, `iat` and `nonce` are checked with 60 seconds of skew. Unknown key ids trigger at most one
-  JWKS refresh per minute.
+  JWKS refresh per minute. Bearer JWTs on the admin API need their own audience (`FASTMOCK_OIDC_API_AUDIENCE`,
+  different from the client id), and tokens carrying a `nonce` (ID tokens) are not accepted there.
+- **Stable user identifiers.** Bind users by `sub` (or `oid` with Entra ID) rather than by `preferred_username`
+  or `email`; with `email`, sign-in requires `email_verified: true`
+  ([choosing the username claim](access-control.md#choosing-the-username-claim)).
 - **CSRF.** Cookie-authenticated changes need `X-FastMock-Request: 1`, which a cross-site page cannot send without
   a CORS preflight that the admin port never grants, on top of the `Origin` check.
 - **No implicit access.** A user without a binding gets no session (and `403` with a bearer JWT); there is no
   default viewer role.
-- **Mock port isolation.** Cookies are not separated by port, so a browser also sends the session cookie to the
-  mock port of the same host. FastMock removes its session and login cookies from every data-plane request before
-  matching, templating, journaling or proxying, so a stub cannot echo or forward them. Serving the admin UI on its
-  own host name is still recommended.
+- **Separate host names.** Serve the admin UI on its own host name, not on the host name of the mock port:
+  browsers do not separate cookies by port. FastMock also removes its session and login cookies from data-plane
+  requests before matching.
 - **Egress.** Provider calls go only to the issuer host and `FASTMOCK_OIDC_ALLOWED_HOSTS`, through a dedicated
-  client with timeouts, a response size limit and no redirects elsewhere. A discovery document pointing elsewhere
+  client with timeouts, a response size limit, no redirects elsewhere and none at all on the token endpoint call. A discovery document pointing elsewhere
   stops the start.
 - **Logs and audit.** `auth.login`, `auth.login_failed` (with the reason) and `auth.logout` are audit events.
   Authorization codes, tokens, session ids, the client secret and the PKCE verifier are never logged.
-- **Revocation.** Logging out deletes the session on every replica at once. Group changes at the provider apply at
-  the next sign-in; keep `FASTMOCK_OIDC_SESSION_TTL` and `FASTMOCK_OIDC_SESSION_IDLE` short enough for your
-  off-boarding needs. A JWT stays valid until its `exp`.
+- **Session lifetime.** Logging out deletes the session on every replica at once. A session keeps the groups
+  captured at sign-in until its idle or absolute expiry, so set `FASTMOCK_OIDC_SESSION_IDLE` and
+  `FASTMOCK_OIDC_SESSION_TTL` to how quickly group changes at the provider must take effect. Bearer JWTs are
+  accepted until their `exp`; keep the provider's access token lifetime short for clients that call the admin API.
 
 ## Rotating tokens
 
@@ -143,8 +150,8 @@ own token lives in `<name>-operator-token`; delete that Secret to make the opera
 
 ## Browsers, origins and the UI
 
-A browser that visits a malicious page could otherwise be used to call an admin port it can reach (including
-through DNS rebinding). FastMock refuses every admin request with an `Origin` header unless:
+To keep web pages that a browser visits from calling an admin port the browser can reach (including through DNS
+rebinding), FastMock refuses every admin request with an `Origin` header unless:
 
 - the origin is listed in `FASTMOCK_ADMIN_ALLOWED_ORIGINS` (exact `scheme://host[:port]`), or
 - the origin is the admin server itself (`Origin` equals `http(s)://` plus the request's `Host`), which is how
@@ -189,7 +196,7 @@ inline or third-party scripts) and renders data as text, never as HTML. Publish 
 
 - **PostgreSQL:** set `FASTMOCK_DATABASE_SSL_MODE=verify-full` and, for a private CA,
   `FASTMOCK_DATABASE_SSL_ROOT_CERT`. `prefer` and `require` encrypt but do not check the server certificate, so
-  they do not protect against an attacker in the path. For certificate authentication add
+  use `verify-full` wherever the network path is not fully trusted. For certificate authentication add
   `FASTMOCK_DATABASE_SSL_CERT` and `FASTMOCK_DATABASE_SSL_KEY` (the certificate's common name is the database
   user, as with PostgreSQL `cert` authentication).
 - **Valkey:** use a `rediss://` URL; the server certificate and host name are always verified. Set
@@ -358,7 +365,10 @@ FastMock sends no telemetry anywhere unless you configure an OTLP endpoint.
 
 - [ ] One token per client, minimal role, stored in a secret manager; rotation documented.
 - [ ] People sign in through OIDC with group bindings instead of shared tokens; session TTL and idle timeout
-      match your off-boarding needs; the admin UI on its own host name.
+      match your off-boarding needs; `user:` bindings use `sub` (or `oid`); the admin UI on its own host name.
+- [ ] On a shared instance every team's space has `pathPrefixes` or `hosts`; with the operator,
+      `policy.spaceFromNamespace` is on or RBAC on `mockapis` matches who may write into which space.
+- [ ] Managed tokens of people who leave are revoked (the token list shows the creator).
 - [ ] Admin port reachable only from tests, Prometheus and the Gateway (NetworkPolicy `adminFrom`).
 - [ ] UI only over TLS, `FASTMOCK_ADMIN_ALLOWED_ORIGINS` set to its URL; `/metrics` not published.
 - [ ] `FASTMOCK_CALLBACK_ALLOWED_HOSTS` set; egress NetworkPolicy with the same scope.

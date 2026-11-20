@@ -22,6 +22,7 @@ data-plane URL space.
 - [In the web UI](#in-the-web-ui)
 - [Errors](#errors)
 - [Examples](#examples)
+- [Upgrade notes](#upgrade-notes)
 - [Migrating an existing installation](#migrating-an-existing-installation)
 
 ## Without an access file
@@ -132,7 +133,7 @@ one of the two).
 | Subject | Matches |
 |---|---|
 | `token:<name>` | the static token entry with that name in `FASTMOCK_ADMIN_TOKENS` or `FASTMOCK_ADMIN_TOKENS_FILE` (a binding for an unknown token name is a start-up error) |
-| `user:<username>` | an [OIDC user](#oidc-sign-in-and-bearer-jwts) by the value of the username claim |
+| `user:<username>` | an [OIDC user](#oidc-sign-in-and-bearer-jwts) by the value of the username claim (use a stable claim such as `sub`, see [choosing the username claim](#choosing-the-username-claim)) |
 | `group:<group>` | an [OIDC user](#oidc-sign-in-and-bearer-jwts) who has this group in the groups claim |
 
 A token entry with a role is a global binding of that role, as before. To give a token only space bindings,
@@ -169,7 +170,7 @@ response; FastMock stores its SHA-256 hash. Store it in your secret manager righ
 | `name` | `[A-Za-z0-9._@-]`, at most 128 characters. Unique among active tokens and different from every static token name (`409` otherwise); a name becomes free again when its token is revoked or expired. It appears as the principal name in `/info`, logs and the audit log. |
 | `role` | `viewer`, `editor`, `admin` or a custom role of the access file. |
 | `spaces` or `global: true` | Exactly one of them. A token in spaces gets the role's space permissions in each of them (like a space binding). |
-| `expiresInDays` | 1 to `FASTMOCK_TOKENS_MAX_DAYS` (default 365); 90 when omitted. |
+| `expiresInDays` | 1 to `FASTMOCK_TOKENS_MAX_DAYS` (default 365). When omitted: 90 days, or `FASTMOCK_TOKENS_MAX_DAYS` when lower. A token created by a managed token never outlives it (see below). |
 | `description` | Optional, at most 1024 bytes. |
 
 | Endpoint | Permission |
@@ -203,12 +204,21 @@ bindings:
 **Lifecycle.**
 
 - *Use*: static tokens are checked first, in constant time; a value in the managed format is then looked up by
-  its hash. Each replica caches the result of a lookup (including "unknown") for at most 10 seconds.
+  its hash. Each replica caches the result of a lookup (including "unknown") for at most 10 seconds. While the
+  store holds no managed token at all, a replica remembers that for up to 10 seconds and answers unknown values
+  without a lookup; so the first token created on one replica may be rejected (`401`) on the others for up to
+  10 seconds. Later tokens are found at once.
 - *Revocation* (`DELETE /tokens/{id}`) takes effect at once on the replica that handled it and within 10 seconds
   on every other replica of the same storage. Revoking again answers `200` and changes nothing.
 - *Expiry* is checked on every request against the stored time, so an expired token stops working at once
   everywhere (`401 {"error":"unauthorized","details":["token expired"]}`).
 - `lastUsedAt` is written in the background at most once per minute per token; it never delays a request.
+- A token created by another managed token cannot outlive its creator: its `expiresAt` is capped at the
+  creator's, and the metadata of the new token carries the creator's id as `parentId`. Revoking a token also
+  revokes the tokens it created, and a managed token whose own creator token is no longer active cannot create
+  tokens (`401`).
+- Tokens created by an SSO user keep working after the user loses its groups at the provider or leaves. The token
+  list shows the creator (`createdBy`); revoke a person's tokens as part of off-boarding.
 - Revoked and expired tokens stay listed with `status` `revoked` or `expired` for 90 days, then they are deleted.
 - If the role of a token disappears from the access file, the token is rejected until the role is back.
 - In memory mode (`FASTMOCK_STORAGE=memory`) managed tokens live in the process and are lost on restart. With
@@ -261,6 +271,15 @@ The UI signs in through the admin port (backend for frontend): the browser never
 | `failed` | code exchange or ID token validation failed, or the username claim is missing; the log says why |
 | `unavailable` | the provider has not been discovered yet or the session store is unavailable |
 
+### Choosing the username claim
+
+`user:` bindings match the value of `FASTMOCK_OIDC_USERNAME_CLAIM`. Bind users by a claim that is unique per
+user, never reassigned and not editable by the user: `sub`, or `oid` with Microsoft Entra ID. Display names,
+`preferred_username` and `email` can change or be reused at many providers, so use them only where your provider
+guarantees otherwise. When the username claim is `email`, sign-in requires `email_verified: true` in the token.
+The claim value is also the principal name in `/__admin/info`, logs and the audit log. Binding by
+[group](#bindings) avoids per-user entries altogether.
+
 ### Sessions
 
 | Property | Value |
@@ -268,13 +287,14 @@ The UI signs in through the admin port (backend for frontend): the browser never
 | Cookie | `__Host-fastmock_session`, `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, `Max-Age` = `FASTMOCK_OIDC_SESSION_TTL` |
 | Value | 256 random bits (43 base64url characters) |
 | Server side | in the hot store under the SHA-256 of the value: user name, group names, creation and last-seen time |
-| Lifetime | absolute `FASTMOCK_OIDC_SESSION_TTL` (default `8h`) and idle `FASTMOCK_OIDC_SESSION_IDLE` (default `1h`) |
+| Lifetime | absolute `FASTMOCK_OIDC_SESSION_TTL` (default `8h`) and idle `FASTMOCK_OIDC_SESSION_IDLE` (default `1h`); the groups captured at sign-in are kept until one of them expires |
 | Replicas | every replica and every cluster sharing the Valkey sees the same sessions; in memory mode they live in the process |
 
 The last-seen time is written back at most once a minute (and at least four times per idle period), so the idle
 timeout can be exceeded by up to a quarter of it. The bindings are computed from the access file on every request,
-so a changed access file applies to existing sessions after the restart. The groups are those of the sign-in; a
-user removed from a group at the provider keeps it until the session ends.
+so a changed access file applies to existing sessions after the restart. The groups are captured at sign-in and
+kept until the idle or absolute expiry of the session; set `FASTMOCK_OIDC_SESSION_IDLE` and
+`FASTMOCK_OIDC_SESSION_TTL` to how quickly group changes at the provider must take effect.
 
 An expired or unknown session answers `401 {"error":"unauthorized","details":["session expired or unknown: sign in again"]}`
 and clears the cookie.
@@ -309,8 +329,8 @@ With `FASTMOCK_OIDC_API_AUDIENCE` set, a bearer value that looks like a JWT (thr
 like the ID token, but against that audience, without `nonce` and without `azp` (the token may have been issued to
 another client, for example a CI pipeline using client credentials or a CLI using the device flow). `iat` is
 optional. The username claim falls back to `sub` when absent; the groups claim is read from the token (userinfo is
-not called). Use an audience different from the client id, so ID tokens of the UI client are not accepted as API
-tokens.
+not called). Tokens that carry a `nonce` claim (ID tokens) are rejected. The audience must differ from the client
+id: an empty `FASTMOCK_OIDC_API_AUDIENCE`, or one equal to `FASTMOCK_OIDC_CLIENT_ID`, stops the start.
 
 Precedence: a request with an `Authorization` header is decided by that header alone, in this order: static
 tokens, managed `fm_` tokens, JWTs. The session cookie is used only when there is no `Authorization` header. A
@@ -327,9 +347,9 @@ An invalid JWT answers `401` with `WWW-Authenticate: Bearer error="invalid_token
 | `FASTMOCK_OIDC_CLIENT_SECRET` / `_SECRET_FILE` | none | Client secret, one of the two (required). |
 | `FASTMOCK_OIDC_REDIRECT_URL` | none | Public admin URL followed by `/__admin/auth/callback` (required, https except on localhost). Register it at the provider. |
 | `FASTMOCK_OIDC_SCOPES` | `openid profile email` | Space- or comma-separated; must include `openid`. |
-| `FASTMOCK_OIDC_USERNAME_CLAIM` | `preferred_username` | Claim (or dotted path) with the user name for `user:` bindings. |
+| `FASTMOCK_OIDC_USERNAME_CLAIM` | `preferred_username` | Claim (or dotted path) with the user name for `user:` bindings; `sub` (or `oid` with Entra ID) is recommended ([choosing the username claim](#choosing-the-username-claim)). With `email`, sign-in requires `email_verified: true`. |
 | `FASTMOCK_OIDC_GROUPS_CLAIM` | `groups` | Claim (or dotted path such as `realm_access.roles`) with the groups for `group:` bindings: an array of strings or one string. |
-| `FASTMOCK_OIDC_API_AUDIENCE` | none | Enables bearer JWTs on the admin API for this audience. |
+| `FASTMOCK_OIDC_API_AUDIENCE` | none | Enables bearer JWTs on the admin API for this audience. Must not be empty and must differ from the client id. |
 | `FASTMOCK_OIDC_CA_FILE` | none | PEM bundle added to the trusted roots for the provider connections. |
 | `FASTMOCK_OIDC_SESSION_TTL` | `8h` | Absolute session lifetime. |
 | `FASTMOCK_OIDC_SESSION_IDLE` | `1h` | Idle timeout. |
@@ -346,7 +366,8 @@ authentication work) and retries in the background with backoff up to one minute
 must not use stops the start with a clear error: a different `issuer`, an endpoint on a host other than the
 issuer's and not in `FASTMOCK_OIDC_ALLOWED_HOSTS`, plain http outside loopback, or no PKCE S256 support. All
 provider calls (discovery, JWKS, token, userinfo) use a dedicated HTTP client: only to the issuer host and the
-allowed hosts, redirects only to those hosts (at most three), 5 seconds to connect, 10 seconds per request,
+allowed hosts, redirects only to those hosts (at most three; the call to the token endpoint follows no redirects,
+so the discovered `token_endpoint` must answer directly), 5 seconds to connect, 10 seconds per request,
 responses up to 1 MiB, the system roots plus `FASTMOCK_OIDC_CA_FILE`. The client honours `HTTPS_PROXY` and
 `NO_PROXY`. These calls are not subject to the [egress policy](security.md#egress-policy) for stub callbacks, so
 the provider may live on a private network. The client authenticates at the token endpoint with
@@ -371,8 +392,9 @@ cannot fill the hot store with pending logins.
    `FASTMOCK_OIDC_GROUPS_CLAIM=realm_access.roles`.
 5. For API JWTs, add an *Audience* mapper with *Included custom audience* `fastmock-api` to the client scope that
    CI clients request, and set `FASTMOCK_OIDC_API_AUDIENCE=fastmock-api`. A CI pipeline then uses a separate
-   confidential client with *Service accounts* on (client credentials); its user name is
-   `service-account-<client id>`, so bind `user:service-account-ci-payments`, or give the service account groups.
+   confidential client with *Service accounts* on (client credentials). Add its service account user to a group
+   (for example `ci-payments`) and bind `group:ci-payments`; with `FASTMOCK_OIDC_USERNAME_CLAIM=sub` you can
+   instead bind `user:<id of the service account user>`.
 6. `FASTMOCK_OIDC_ISSUER=https://sso.example.com/realms/mocks`.
 
 **LDAP and Active Directory users.** Configure *User federation* → *LDAP* in the realm (vendor *Active Directory*
@@ -396,7 +418,10 @@ SAML provider on the Keycloak login page; FastMock still sees an OIDC sign-in.
    `group:5f1c3f6e-0000-4000-8000-000000000001`. For groups synchronised from Active Directory you can emit
    `sAMAccountName` instead and bind by name.
 4. Settings: `FASTMOCK_OIDC_ISSUER=https://login.microsoftonline.com/<tenant id>/v2.0`,
-   `FASTMOCK_OIDC_CLIENT_ID=<application id>`, `FASTMOCK_OIDC_USERNAME_CLAIM=preferred_username` (the UPN) or `email`.
+   `FASTMOCK_OIDC_CLIENT_ID=<application id>`, `FASTMOCK_OIDC_USERNAME_CLAIM=oid` (the user's object id, which
+   never changes or moves to another user), so `user:` bindings look like
+   `user:3d0f6c1e-0000-4000-8000-000000000002`. Microsoft advises against authorizing by `preferred_username`
+   (the UPN) or `email`; prefer group bindings for teams.
 5. For API JWTs, *Expose an API* with an application id URI such as `api://fastmock` and set
    `FASTMOCK_OIDC_API_AUDIENCE` to the `aud` value of the access tokens (the application id for v2 tokens). App
    roles assigned to service principals arrive in the `roles` claim; set `FASTMOCK_OIDC_GROUPS_CLAIM=roles` if you
@@ -416,6 +441,8 @@ PS256, ES256 or EdDSA signatures works:
 3. Check the issuer: `curl https://<issuer>/.well-known/openid-configuration | jq .issuer` must print exactly
    the value of `FASTMOCK_OIDC_ISSUER`, including a trailing slash if there is one.
 4. If the token or JWKS endpoint lives on another host than the issuer, list it in `FASTMOCK_OIDC_ALLOWED_HOSTS`.
+5. The `token_endpoint` of the discovery document must answer the code exchange itself: FastMock follows no
+   redirects on that call. Behind a proxy or load balancer that redirects, publish the final URL in discovery.
 
 ADFS works as an OIDC provider (*Server application* plus *Web API* in an application group); its groups come
 from a claim issuance rule.
@@ -433,7 +460,7 @@ bindings:
   - subject: group:platform
     role: admin
     global: true
-  - subject: user:service-account-ci-payments
+  - subject: group:ci-payments
     role: editor
     spaces: [payments]
 ```
@@ -474,23 +501,25 @@ What belongs to a space:
   space and reject a different one (move a stub by deleting and creating it, both authorised).
 - **Journal entries** get the space of the stub that matched. Requests that no stub matched, and requests
   matched by global stubs, belong to no space and are visible only with global `journal:read`.
-- **Callback jobs** get the space of the stub that scheduled them.
-- **Scenario states** of stubs in a space are kept under `scenario:<space>/<name>` and **key-value entries**
-  written for a space under `kv:<space>/<key>` (in Valkey: after `FASTMOCK_VALKEY_PREFIX`). Two spaces can use the
-  same scenario name or key independently. Templates of a stub in a space see that space's scenario states.
-  Global keys stay `scenario:<name>` and `kv:<key>`, so existing state needs no migration.
-- **Body files** of a space are stored under `<space>/`. A stub in space `s` resolves `bodyFileName` in `s/`
-  first, then among the global files. Files written by a principal bound to a space go to its space.
+- **Callback jobs** get the space of the stub that scheduled them. Callbacks scheduled by a plugin get the space
+  of the stub being answered or, on a plugin route, the space that owns the request's path or host (when exactly
+  one space does).
+- **Scenario states, key-value entries and body files** of a space are stored apart from global data, in a key
+  namespace of their own. Two spaces can use the same scenario name, key or file name independently, and a global
+  name such as `payments/x` is always global data, even when a space `payments` exists. Entries written by a
+  principal bound to a space go to its space; global principals see and write global data as before, so
+  existing state and files need no migration.
+- **Data used by a stub** comes from the stub's space: its scenario states and key-value entries are those of its
+  space, and `bodyFileName` is resolved among the files of its space first, then among the global files. A stub
+  never resolves a file, scenario or key of another space, also when the name is built by a template.
 - **Contract test runs** carry the space they were started in.
 
 Messages published to Kafka, gRPC descriptors, chaos rules, global settings, recordings, async mocks and the
-service catalog are not scoped. The data plane does not know spaces: every enabled stub competes for every
-request as before; [ownership](#ownership-of-the-data-plane) keeps teams apart.
+service catalog are not scoped. On the data plane every enabled stub competes for a request, except inside the
+paths and hosts that a space owns ([ownership](#ownership-of-the-data-plane)).
 
-A request naming a space that the access file does not define answers 404.
-
-Global scenario names, key-value keys and file names that start with `<space>/` share the storage key of that
-space's entries. Avoid such names in the global area once spaces exist.
+A request naming a space that the access file does not define, or a space the caller cannot see (it has no
+global permission and no binding there), answers 404.
 
 ## Selecting a space in the API
 
@@ -501,12 +530,14 @@ Collection endpoints take a `space` query parameter; stubs also take a `space` f
 | holds the permission globally | everything (global area and every space) | the global area |
 | bound only to spaces | the union of the spaces where it holds the permission | its space when it has exactly one; otherwise 400 |
 
-With `space`, reads and writes apply to that space, and the caller must hold the permission there (403
-otherwise). Deletions that select existing items (`DELETE /requests`, `DELETE /callbacks`, `DELETE /scenarios`,
+With `space`, reads and writes apply to that space, and the caller must hold the permission there: a space the
+caller cannot see answers 404 like an unknown one, a visible space without the permission 403. Deletions that select existing items (`DELETE /requests`, `DELETE /callbacks`, `DELETE /scenarios`,
 `DELETE /stubs?tag=`, `POST /stubs/remove-by-metadata`, `POST /requests/remove`, `DELETE /stubs/counters`) select
 like reads: without `space` they act on everything the caller may change. Single items (`/stubs/{id}`,
 `/requests/{id}`, `/contract-tests/{id}`) are found by id; one in a space the caller cannot read answers 404.
-`/kv/{key}`, `/scenarios/{name}` and `/files/{name}` address one entry and resolve the space like writes.
+`/kv/{key}`, `/scenarios/{name}` and `/files/{name}` address one entry and resolve the space like writes. Stub ids
+are unique across all spaces: `POST /stubs` or an import with an id that belongs to a stub in another space or in
+the global area answers `409` with a generic conflict message.
 
 | Endpoint | How the space is given |
 |---|---|
@@ -518,16 +549,30 @@ Imports into a space are not recorded in the [service catalog](../guide/service-
 
 ## Ownership of the data plane
 
-A space with `pathPrefixes` or `hosts` owns that part of the data plane. Every stub in it must match only
-inside it, checked on create, update and import (`400` with the reason):
+A space with `pathPrefixes` or `hosts` owns that part of the data plane.
+
+**Stubs of the space stay inside it.** Every stub in the space must match only inside its prefixes and hosts,
+checked on create, update and import (`400` with the reason):
 
 - with `pathPrefixes`, the stub's URL matcher must be `url`, `urlPath` or `urlPathTemplate` lying under one of
   the prefixes (`/payments/` and `/payments` both allow `/payments/x`, neither allows `/paymentsx`). Regular
   expression matchers (`urlPattern`, `urlPathPattern`) and stubs without a URL matcher are rejected;
 - with `hosts`, the stub must have a `request.host` matcher with `equalTo` one of the hosts and nothing else.
 
-So one team cannot answer another team's traffic. Stubs in the global area are not restricted; only principals
-with global `stubs:write` can create them.
+**Owned prefixes and hosts do not overlap.** Two spaces may not own overlapping path prefixes (such as
+`/payments/` and `/payments/refunds/`) or the same host; a host without a port overlaps the same host with any
+port. An access file where they do stops the server at start-up, and the error names both spaces and the
+conflicting values:
+``space payments and space refunds overlap: path prefix `/payments/` of space payments and `/payments/refunds/` of space refunds; each path belongs to one space``.
+
+**Requests inside a space go to its stubs.** A data-plane request whose path lies under a prefix owned by a space,
+or whose `Host` is a host owned by a space, is answered only by stubs of that space or by global stubs; stubs of
+other spaces are skipped for it. Requests outside every owned prefix and host are matched against all enabled
+stubs as usual.
+
+Stubs in the global area are not restricted; only principals with global `stubs:write` can create them. When
+several teams share an instance, give each team's space the `pathPrefixes` or `hosts` of the traffic it mocks, so
+that requests there are answered only by that team's stubs and global ones.
 
 ## What is scoped and what is global
 
@@ -550,7 +595,8 @@ with global `stubs:write` can create them.
 (the effective permissions in a space are both lists together). `kind` is `token` for static tokens, `apiToken`
 for [managed tokens](#managed-tokens), `user` for [OIDC users](#oidc-sign-in-and-bearer-jwts) (`anonymous` when
 authentication is disabled). Users also get `groups`, the group names from the provider. `role` is kept for older clients: the highest built-in role whose permissions
-the principal holds everywhere, `viewer` when it holds less.
+the principal holds everywhere, `viewer` when it holds less. `stubsLoaded` in the same response counts only the
+stubs the caller can see.
 
 `GET /__admin/spaces` lists the spaces the caller can see (every space for a principal with a global permission,
 otherwise its bound spaces) with the caller's permissions in each:
@@ -578,7 +624,8 @@ of its own and the server checks every call.
 - **Actions** follow `principal.permissions` from `GET /__admin/info`: controls the principal cannot use are hidden
   or disabled, and a disabled control's tooltip names the missing permission (for example "Requires the
   stubs:write permission in space billing").
-- **Admin tokens** (visible with `tokens:read`) lists managed tokens with role, scope, creator, creation, expiry,
+- **Admin tokens** (visible with `tokens:read` when the server lists `tokens` in the `features` of
+  `GET /__admin/version`) lists managed tokens with role, scope, creator, creation, expiry,
   last use and status, creates tokens limited to the roles and spaces of `GET /__admin/tokens/options` and to
   `FASTMOCK_TOKENS_MAX_DAYS`, shows the new value once with a copy button, and revokes after a confirmation.
 
@@ -590,7 +637,8 @@ of its own and the server checks every call.
 | `403 {"error":"forbidden","details":["requires permission files:read"],"required":"files:read"}` | any other principal lacks the permission |
 | `403 {"error":"requires permission stubs:write in space billing","details":[],"required":"stubs:write"}` | the permission is missing in the selected space |
 | `400 {"error":"several spaces are bound (billing, payments); set space",...}` | a write without `space` by a principal bound to several spaces |
-| `404 {"error":"space nope not found",...}` | unknown space |
+| `404 {"error":"space nope not found",...}` | unknown space, or a space the caller cannot see |
+| `409` with a generic conflict message | a stub id that belongs to a stub in another area |
 | `400 {"error":"space payments owns /payments/, /psp/: ...",...}` | a stub outside the space's ownership |
 | `403 {"error":"requires permission ... to grant role ... there",...}` | a token request that would exceed the caller's permissions ([escalation rule](#managed-tokens)) |
 | `401 {"error":"unauthorized","details":["token expired"]}` | an expired managed token |
@@ -600,10 +648,11 @@ of its own and the server checks every call.
 | `403 {"error":"forbidden","details":["user bob has no access: ..."]}` | an OIDC user without any binding |
 
 Denials count in `fastmock_admin_auth_failures_total` with `reason="role"` for principals holding only global
-built-in roles and `reason="permission"` otherwise; expired managed tokens count as `reason="expired"`, revoked
-ones as `reason="token"`, rejected sessions as `reason="session"`, invalid JWTs as `reason="jwt"` and missing CSRF
-headers as `reason="csrf"`. Audit events record the principal kind (`principalKind`) and
-the space of the change (`space`).
+built-in roles and `reason="permission"` otherwise (including OIDC users without any binding); missing, unknown
+and revoked tokens count as `reason="token"`, expired managed tokens as `reason="expired"`, rejected sessions as
+`reason="session"`, invalid JWTs as `reason="jwt"`, missing CSRF headers as `reason="csrf"` and refused browser
+origins as `reason="origin"`. Audit events record the principal kind (`principalKind`) and the space of the
+change (`space`).
 
 ## Examples
 
@@ -642,15 +691,73 @@ curl -s "localhost:9090/__admin/requests?space=payments" -H "Authorization: Bear
 
 With Helm, put the same document under the `access` value ([Helm: access control](helm.md#access-control)).
 
+## Upgrade notes
+
+These notes apply when upgrading from a release without access control. Without an access file and without OIDC,
+every endpoint keeps its role, response bodies (including the `403` of `GET /audit` and `POST /reset`) are
+unchanged, and existing stubs, journal entries, state and files stay in the global area. Check the points below
+before rolling out.
+
+**Database.** The migrations are additive:
+
+| Change | Tables |
+|---|---|
+| new nullable `space` column | `fm_stubs`, `fm_journal`, `fm_outbox` |
+| new nullable `principal_kind` and `space` columns | `fm_audit` |
+| new table for [managed tokens](#managed-tokens) | `fm_api_tokens` |
+
+The migration that adds the `space` columns only adds them, in a short transaction. The three indexes on these
+columns are built by separate migrations, one index each, with `CREATE INDEX CONCURRENTLY IF NOT EXISTS` outside a
+transaction, so journal, callback and stub writes of running replicas are not blocked while a large journal is
+indexed. Allow for the index build time in `FASTMOCK_DATABASE_MIGRATION_TIMEOUT` and the startup probe, or
+[run migrations separately](database.md#running-migrations-separately). If you run migrations separately and grant the server user rights per table,
+grant them on the new table too, for example
+`GRANT SELECT, INSERT, UPDATE, DELETE ON fm_api_tokens TO fastmock;`. Without it the server starts, but managed
+tokens cannot be created or used (a managed token answers `503 {"error":"token store unavailable",...}`).
+
+**Logs.** Audit log lines (target `audit`) change:
+
+- `role=Admin` becomes `role=admin` (lowercase, the role names of the principal's bindings);
+- the lines carry a new `kind` field (`token`, `apiToken`, `user`, `anonymous`) and, for changes inside a space,
+  `space`;
+- the rejection line `admin request rejected: role too low` now reads `admin request rejected: permission missing`
+  and carries the missing `permission`.
+
+Update log-based alerts and dashboards that match these strings.
+
+**Metrics.** Denials of admin-only routes (`GET /audit`, `POST /reset`, `DELETE /stubs` without `tag`) by a
+non-admin are now counted in `fastmock_admin_auth_failures_total{reason="role"}` and write an audit warning line;
+before, only the response was sent. `fastmock_admin_auth_failures_total` has new `reason` values, and
+`fastmock_store_errors_total` new `store` values, see [Observability](observability.md#admin-api-and-contract-tests). New metrics:
+`fastmock_api_tokens_active`, `fastmock_oidc_logins_total`, `fastmock_oidc_ready`.
+
+**New routes.** `GET /__admin/auth/config`, `GET /__admin/auth/login`, `GET /__admin/auth/callback` and
+`POST /__admin/auth/logout` are reached without an admin token (the sign-in flow needs them). If a WAF, a Gateway
+or a route allow-list sits in front of the admin port, allow them when you use OIDC sign-in; without OIDC they
+answer `404`, except `/auth/config`. The token endpoints `/__admin/tokens*` and `GET /__admin/spaces` need
+authentication like every other admin route.
+
+**Unlisted admin paths.** An admin route without an explicit permission, including an unknown path under
+`/__admin`, now needs `admin`: a non-admin gets `403` there where it got `404` before. Plugin routes under
+`/__admin/plugins/<name>/` keep `viewer` for `GET` and `editor` for other methods.
+
+**Rolling upgrade and rollback.** Upgrade every replica before you add an access file, create spaces or let
+teams create stubs in spaces; while old and new versions run side by side, the old ones do not know spaces. A
+previous version starts against the new schema and ignores the new columns and tables. After a rollback, stubs
+in spaces behave as global stubs, the files, scenario states and key-value entries of spaces are not visible,
+and managed tokens and SSO sign-in are not available. Before rolling back, remove the access file and the OIDC
+settings, and give every entry of `FASTMOCK_ADMIN_TOKENS` / `FASTMOCK_ADMIN_TOKENS_FILE` a built-in role again: the
+previous version refuses to start with an empty or custom role in a token entry.
+
 ## Migrating an existing installation
 
-1. Nothing is needed to upgrade: without an access file the behaviour is unchanged. The database migration only
-   adds nullable `space` columns and indexes; existing rows stay in the global area.
+1. Upgrade as described in the [upgrade notes](#upgrade-notes): without an access file the behaviour is
+   unchanged, and existing rows stay in the global area.
 2. Add spaces and bindings in the access file. Existing global tokens keep their global role, so they keep
    seeing and changing everything.
 3. Give teams new tokens with an empty role and space bindings (`name::<hash>` plus `token:name` bindings),
    create [managed tokens](#managed-tokens) for them, or bind their [OIDC groups](#oidc-sign-in-and-bearer-jwts).
-   The migration that adds the `fm_api_tokens` table is additive as well. Move their stubs into their space by exporting them
+   Move their stubs into their space by exporting them
    (`GET /__admin/export?tag=...`), importing them with `?space=<space>` and deleting the global copies.
 4. Clients that read `principal.role` from `/__admin/info` keep working; use `principal.permissions` for new
    decisions. `403` responses keep `error`, `details` and `required`.
