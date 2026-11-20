@@ -7,7 +7,7 @@ import type { AuditEvent } from '../api/types';
 import { useCan } from '../auth/useAuth';
 import { DiffView } from '../components/DiffView';
 import { PageHeader, Time } from '../components/common';
-import { EmptyState, ErrorState, LoadingState } from '../components/States';
+import { EmptyState, ErrorState, LoadingState, NoAccessState } from '../components/States';
 import { formatAbsolute, pretty } from '../lib/format';
 
 function beforeAfter(detail: unknown): { before: unknown; after: unknown } | null {
@@ -72,7 +72,7 @@ export default function Audit() {
   );
   const actions = useMemo(() => [...new Set((q.data?.events ?? []).map((e) => e.action))].sort(), [q.data]);
 
-  if (!isAdmin) return <ErrorState error={new Error('The audit log needs the audit:read permission.')} />;
+  if (!isAdmin) return <NoAccessState perm="audit:read" global />;
   const ba = selected ? beforeAfter(selected.detail) : null;
   const changes = selected ? changesOf(selected.detail) : null;
 

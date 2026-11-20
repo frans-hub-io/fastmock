@@ -47,10 +47,11 @@ import lockupLight from '../assets/brand/FransHub_FastMock_light.svg';
 import monogramDark from '../assets/brand/FransHub_monogram_dark.svg';
 import monogramLight from '../assets/brand/FransHub_monogram_light.svg';
 import { useTokensApi } from '../api/features';
-import { boundSpaces, can, kindLabel, seesAllSpaces, type Permission } from '../auth/permissions';
+import { boundSpaces, can, kindLabel, seesAllSpaces, spaceScoped, type Permission } from '../auth/permissions';
 import { useAuth, useSpace } from '../auth/useAuth';
 import classes from './Shell.module.css';
 import { SpaceSelect } from './spaces';
+import { NoAccessState } from './States';
 
 interface NavItem {
   to: string;
@@ -106,6 +107,24 @@ const NAV: { group: string; items: NavItem[] }[] = [
 ];
 
 const ROLE_COLOR: Record<string, string> = { viewer: 'gray', editor: 'blue', admin: 'grape' };
+
+/** The navigation entry a path belongs to: the deepest entry that is the path or one of its parents. */
+function navItemOf(pathname: string): NavItem | undefined {
+  return NAV.flatMap((g) => g.items)
+    .filter((i) => i.to !== '/' && (pathname === i.to || pathname.startsWith(`${i.to}/`)))
+    .sort((a, b) => b.to.length - a.to.length)[0];
+}
+
+/** Shows the no-access state instead of a screen whose read permission the principal lacks (opened by URL). */
+function PageGuard({ children }: { children: ReactNode }) {
+  const { permissions } = useAuth();
+  const loc = useLocation();
+  const item = navItemOf(loc.pathname);
+  if (permissions && item?.perm && !can(permissions, item.perm, item.global ? null : undefined)) {
+    return <NoAccessState perm={item.perm} global={item.global || !spaceScoped(item.perm)} />;
+  }
+  return <>{children}</>;
+}
 
 function Nav({ onNavigate }: { onNavigate?: () => void }) {
   const { permissions } = useAuth();
@@ -270,7 +289,7 @@ export function Shell({ children }: { children: ReactNode }) {
           </ScrollArea>
         </Drawer>
         <main id="main" className={classes.main} tabIndex={-1}>
-          {children}
+          <PageGuard>{children}</PageGuard>
         </main>
       </div>
     </div>

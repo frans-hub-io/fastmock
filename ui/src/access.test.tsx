@@ -385,7 +385,66 @@ describe('tokens page', () => {
     tokenStore.set('good');
     server({ principal: { name: 'ci', role: 'editor', kind: 'token', permissions: { global: ['stubs:read', 'stubs:write', 'info:read'], spaces: {} } } });
     renderApp(<AppRoutes />, '/tokens');
-    expect(await screen.findByText(/needs the tokens:read permission/)).toBeInTheDocument();
+    expect(await screen.findByTestId('no-access')).toHaveTextContent(/requires the tokens:read permission/);
     expect(screen.queryByRole('link', { name: 'Admin tokens' })).not.toBeInTheDocument();
+  });
+});
+
+describe('screens and imports outside the principal permissions', () => {
+  const spaceEditor: Principal = {
+    name: 'carol',
+    role: 'editor',
+    kind: 'user',
+    permissions: { global: ['info:read'], spaces: { payments: ['stubs:read', 'stubs:write', 'imports:run'] } },
+  };
+
+  it('shows the no-access state on screens opened by URL without their permission', async () => {
+    tokenStore.set('good');
+    server({ principal: spaceEditor, spaces: SPACES.slice(1) });
+    for (const [path, perm] of [
+      ['/grpc', 'grpc:read'],
+      ['/recordings', 'recordings:read'],
+      ['/services', 'stubs:read'],
+      ['/audit', 'audit:read'],
+    ] as const) {
+      const view = renderApp(<AppRoutes />, path);
+      const state = await screen.findByTestId('no-access');
+      expect(state, path).toHaveTextContent(`requires the ${perm} permission for the whole server`);
+      expect(screen.queryByText('forbidden'), path).not.toBeInTheDocument();
+      view.unmount();
+    }
+  });
+
+  it('turns a 403 answer into the no-access state', async () => {
+    tokenStore.set('good');
+    mockFetch((url) => {
+      if (url.pathname === '/__admin/info') return { body: info({ name: 'ops', role: 'admin', kind: 'token', permissions: ADMIN_PERMS }) };
+      if (url.pathname === '/__admin/version') return { body: { version: '0.1.0', features: [] } };
+      if (url.pathname === '/__admin/spaces') return { body: { spaces: [] } };
+      if (url.pathname === '/__admin/stubs') return { status: 403, body: { error: 'forbidden', details: ['requires stubs:read'], required: 'stubs:read' } };
+      return undefined;
+    });
+    renderApp(<AppRoutes />, '/stubs');
+    expect(await screen.findByTestId('no-access')).toHaveTextContent('requires the stubs:read permission');
+  });
+
+  it('offers global-only import formats only to principals that can import globally', async () => {
+    tokenStore.set('good');
+    server({ principal: spaceEditor, spaces: SPACES.slice(1) });
+    const view = renderApp(<AppRoutes />, '/stubs');
+    await userEvent.click(await screen.findByRole('button', { name: 'Import' }));
+    const dropzone = await screen.findByTestId('import-dropzone');
+    expect(dropzone).not.toHaveTextContent(/AsyncAPI|WSDL/);
+    const input = dropzone.querySelector('input[type="file"]');
+    if (!(input instanceof HTMLInputElement)) throw new Error('no file input');
+    await userEvent.upload(input, new File(['{"asyncapi":"2.6.0","channels":{}}'], 'events.json', { type: 'application/json' }));
+    expect(await screen.findByTestId('import-global-only')).toHaveTextContent(/imports:run permission for\s+the whole server/);
+    expect(screen.getByTestId('import-submit')).toBeDisabled();
+    view.unmount();
+
+    server({ principal: { name: 'ops', role: 'admin', kind: 'token', permissions: ADMIN_PERMS }, spaces: SPACES });
+    renderApp(<AppRoutes />, '/stubs');
+    await userEvent.click(await screen.findByRole('button', { name: 'Import' }));
+    expect(await screen.findByTestId('import-dropzone')).toHaveTextContent(/AsyncAPI, WSDL/);
   });
 });

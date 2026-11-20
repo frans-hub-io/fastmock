@@ -78,9 +78,16 @@ describe('stubs helpers', () => {
     expect(detectImportKind('{"mappings":[]}').kind).toBe('wiremock');
     expect(detectImportKind('{"stubs":[]}').kind).toBe('fastmock');
     expect(detectImportKind('{"log":{"entries":[]}}').kind).toBe('har');
+    expect(detectImportKind('{"asyncapi":"2.6.0","channels":{}}').kind).toBe('asyncapi');
+    expect(detectImportKind('asyncapi: 3.0.0\nchannels: {}').kind).toBe('asyncapi');
+    expect(detectImportKind('<definitions xmlns="http://schemas.xmlsoap.org/wsdl/"/>').kind).toBe('wsdl');
+    expect(detectImportKind('<?xml version="1.0"?><con:soapui-project name="x"/>').kind).toBe('soapui');
+    expect(detectImportKind('type Query { a: Int }').kind).toBe('graphql');
+    expect(detectImportKind('apiVersion: mocks.microcks.io/v1alpha1\nkind: APIExamples').kind).toBe('microcks');
     expect(detectImportKind('{"info":{"schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"}}').kind).toBe('postman');
     expect(detectImportKind('[{"httpRequest":{}}]').kind).toBe('mockserver');
-    expect(detectImportKind('<definitions/>').kind).toBe('unknown');
+    expect(detectImportKind('<definitions/>').kind).toBe('wsdl');
+    expect(detectImportKind('<root/>').kind).toBe('unknown');
   });
 });
 
@@ -142,5 +149,11 @@ describe('format', () => {
     expect(formatDuration(3725)).toBe('1h 2m');
     expect(formatDuration(59)).toBe('59s');
     expect(formatRelative(Date.now() - 120_000)).toBe('2m ago');
+    const now = Date.now();
+    expect(formatRelative(now + 7 * 86_400_000 - 3_000, now)).toBe('7d from now');
+    expect(formatRelative(now + 86_400_000 - 1_000, now)).toBe('1d from now');
+    expect(formatRelative(now - 3_599_000, now)).toBe('1h ago');
+    expect(formatRelative(now - 90 * 60_000, now)).toBe('2h ago');
+    expect(formatRelative(now + 6.4 * 86_400_000, now)).toBe('6d from now');
   });
 });

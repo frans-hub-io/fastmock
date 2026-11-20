@@ -30,7 +30,7 @@ import { useAuth, useCan, useSpace, useSpaceQuery } from '../auth/useAuth';
 import { PageHeader, Time } from '../components/common';
 import { Permitted } from '../components/Permitted';
 import { SpaceBadge } from '../components/spaces';
-import { EmptyState, ErrorState, LoadingState, TokensGate } from '../components/States';
+import { EmptyState, ErrorState, LoadingState, NoAccessState, TokensGate } from '../components/States';
 
 type TokenInfo = components['schemas']['TokenInfo'];
 type TokenOptions = components['schemas']['TokenOptions'];
@@ -299,7 +299,7 @@ function TokensInner() {
     success: (_d, t) => `Revoked ${t.name}`,
   });
 
-  if (!canRead) return <ErrorState error={new Error('Managing tokens needs the tokens:read permission.')} />;
+  if (!canRead) return <NoAccessState perm="tokens:read" />;
 
   const revocable = (t: TokenInfo) => (t.global ? can('tokens:write', null) : t.spaces.every((s) => can('tokens:write', s)));
   const grantable = (options.data?.roles ?? []).some((r) => r.global || r.spaces.length > 0);

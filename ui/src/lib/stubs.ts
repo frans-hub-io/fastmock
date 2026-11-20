@@ -183,20 +183,55 @@ export function stripServerFields(s: Stub): Stub {
   return copy;
 }
 
-export type ImportKind = 'fastmock' | 'wiremock' | 'openapi' | 'postman' | 'har' | 'mockserver' | 'unknown';
+export type ImportKind =
+  | 'fastmock'
+  | 'wiremock'
+  | 'openapi'
+  | 'postman'
+  | 'har'
+  | 'mockserver'
+  | 'asyncapi'
+  | 'wsdl'
+  | 'soapui'
+  | 'graphql'
+  | 'microcks'
+  | 'unknown';
 
+/** Formats the server imports into the global area only: they need `imports:run` for the whole server. */
+export const GLOBAL_ONLY_IMPORTS: ReadonlySet<ImportKind> = new Set<ImportKind>(['asyncapi', 'wsdl', 'soapui', 'graphql', 'microcks']);
+
+const SDL_MARKERS = ['type Query', 'type Mutation', 'schema {', 'schema{', 'type Subscription', 'extend type '];
+
+/** Detects the document format the way the server's `POST /__admin/import` does, as far as the UI needs it. */
 export function detectImportKind(text: string): { kind: ImportKind; json: unknown } {
-  const t = text.trimStart();
+  const t = text.replace(/^\uFEFF/, '').trimStart();
+  if (t.startsWith('<')) {
+    const head = t.slice(0, 4096);
+    if (head.includes('soapui-project')) return { kind: 'soapui', json: undefined };
+    if (['schemas.xmlsoap.org/wsdl', 'www.w3.org/ns/wsdl', ':definitions', '<definitions'].some((m) => head.includes(m))) {
+      return { kind: 'wsdl', json: undefined };
+    }
+    return { kind: 'unknown', json: undefined };
+  }
   let json: unknown;
   try {
     json = JSON.parse(text);
   } catch {
     if (/^(openapi|swagger)\s*:/m.test(t)) return { kind: 'openapi', json: undefined };
+    if (/^asyncapi\s*:/m.test(t)) return { kind: 'asyncapi', json: undefined };
+    if (/^apiVersion\s*:\s*["']?mocks\.microcks\.io/m.test(t) || /^kind\s*:\s*["']?APIExamples\b/m.test(t)) {
+      return { kind: 'microcks', json: undefined };
+    }
+    if (SDL_MARKERS.some((m) => t.includes(m))) return { kind: 'graphql', json: undefined };
     return { kind: 'unknown', json: undefined };
   }
   if (!json || typeof json !== 'object') return { kind: 'unknown', json };
   const o = json as Record<string, unknown>;
   if (typeof o.openapi === 'string' || typeof o.swagger === 'string') return { kind: 'openapi', json };
+  if ('asyncapi' in o) return { kind: 'asyncapi', json };
+  if ((typeof o.apiVersion === 'string' && o.apiVersion.startsWith('mocks.microcks.io')) || o.kind === 'APIExamples') {
+    return { kind: 'microcks', json };
+  }
   const info = o.info as Record<string, unknown> | undefined;
   if (info && typeof info.schema === 'string' && info.schema.includes('postman')) return { kind: 'postman', json };
   if (o.log && typeof o.log === 'object' && Array.isArray((o.log as Record<string, unknown>).entries)) return { kind: 'har', json };
