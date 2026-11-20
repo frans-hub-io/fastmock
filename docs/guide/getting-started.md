@@ -22,8 +22,8 @@ You need Docker (or a Rust toolchain), `curl`, and optionally `jq`.
 Pull the published image and tag it with the name used on this page:
 
 ```sh
-docker pull franshub/fastmock:0.1.0-dev7
-docker tag franshub/fastmock:0.1.0-dev7 fastmock:0.1.0
+docker pull franshub/fastmock:0.1.0-dev10
+docker tag franshub/fastmock:0.1.0-dev10 fastmock:0.1.0
 ```
 
 Or build it from the repository root:
