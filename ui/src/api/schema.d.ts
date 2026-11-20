@@ -148,7 +148,7 @@ export interface paths {
         put?: never;
         /**
          * End the SSO session
-         * @description Deletes the session of the cookie and clears the cookie. Needs the `X-FastMock-Request: 1` header. When the provider has an `end_session_endpoint`, `logoutUrl` tells the UI where to send the browser to end the provider session too.
+         * @description Deletes the session of the cookie and clears the cookie. Needs the `X-FastMock-Request: 1` header. When the provider has an `end_session_endpoint`, `logoutUrl` tells the UI where to send the browser to end the provider session too; it carries `client_id`, `post_logout_redirect_uri` and, when the session holds one, the sign-in's ID token as `id_token_hint`.
          */
         post: operations["logout"];
         delete?: never;
@@ -1770,6 +1770,18 @@ export interface components {
             plugins: components["schemas"]["PluginInfo"][];
             principal: components["schemas"]["Principal"];
             authDisabled: boolean;
+            /**
+             * @description Random id of the answering server process, new on every start. A change tells clients such as the
+             *     operator that an in-memory server lost its stubs.
+             * @example 6f1c0d3a9b8e4f27a1c5d2e3f4a5b6c7
+             */
+            instanceId: string;
+            /**
+             * @description Stored stubs the caller can read that break the rules of their space (outside its path prefixes or
+             *     hosts, or in a space the access file no longer defines), typically after the access file changed.
+             *     They stay stored; fix or delete them.
+             */
+            warnings?: string[];
         };
         JournalEntry: {
             /** Format: int64 */

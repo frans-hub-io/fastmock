@@ -193,6 +193,7 @@ struct IdpState {
     token_requests: u32,
     redirect_token: bool,
     moved_token_requests: u32,
+    issued_id_tokens: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -355,6 +356,7 @@ async fn token(
         claims["groups"] = json!(g);
     }
     let id_token = idp.jwt(&claims);
+    idp.with(|s| s.issued_id_tokens.push(id_token.clone()));
     let access = format!(
         "at.{}.{}",
         URL_SAFE_NO_PAD.encode(code.user.sub.as_bytes()),
@@ -791,7 +793,13 @@ async fn code_flow_session_csrf_and_logout() {
         assert_eq!(l, "/ui/?loginError=invalid_state", "{name}: replayed state");
         assert!(cookie_named(&c, "__Host-fastmock_session").is_none());
 
-        assert_eq!(h.logout(&session, false, None).await.status(), 403);
+        let r = h.logout(&session, false, None).await;
+        assert_eq!(r.status(), 403);
+        assert_eq!(
+            r.json::<Value>().await.unwrap(),
+            json!({"error": "forbidden", "details": ["missing X-FastMock-Request: 1 header"]}),
+            "{name}: the standard error shape"
+        );
         assert_eq!(
             h.logout(&session, true, Some("https://evil.example.com"))
                 .await
@@ -814,6 +822,23 @@ async fn code_flow_session_csrf_and_logout() {
                 idp.issuer()
             )),
             "{lu}"
+        );
+        let lu = reqwest::Url::parse(lu).unwrap();
+        let q: HashMap<String, String> = lu.query_pairs().into_owned().collect();
+        assert_eq!(
+            q["post_logout_redirect_uri"],
+            format!("{}/ui/", h.admin),
+            "{name}"
+        );
+        let id_token = idp.with(|s| s.issued_id_tokens.last().cloned().unwrap());
+        assert_eq!(
+            q.get("id_token_hint"),
+            Some(&id_token),
+            "{name}: the provider ends its session without asking"
+        );
+        assert!(
+            !cleared.iter().any(|c| c.contains(&id_token)),
+            "{name}: the ID token never reaches a cookie"
         );
         let (st, v) = h
             .with_session(Method::GET, "/info", &session, false, None)
@@ -868,6 +893,7 @@ async fn code_flow_session_csrf_and_logout() {
                 .unwrap()
                 .trim_start_matches("code="),
             params["state"].as_str(),
+            id_token.as_str(),
         ] {
             assert!(
                 !logged.contains(secret),

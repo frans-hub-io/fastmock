@@ -6,7 +6,7 @@ use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SubsecRound, Utc};
 use fastmock_core::{ApiToken, ApiTokenStatus, TokenStore};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -190,7 +190,7 @@ impl TokenService {
         }
         let store = self.store.clone();
         tokio::spawn(async move {
-            if let Err(e) = store.touch(id, Utc::now()).await {
+            if let Err(e) = store.touch(id, stored_precision(Utc::now())).await {
                 metrics::counter!("fastmock_store_errors_total", "store" => "tokens").increment(1);
                 tracing::warn!(error = %e, token_id = %id, "recording the last use of a token failed");
             }
@@ -308,6 +308,12 @@ pub struct TokenInfo {
     pub parent_id: Option<Uuid>,
 }
 
+/// Token times as PostgreSQL stores them (microseconds). Times are taken at this precision and
+/// serialised at it, so a create response, later reads and every backend show the same values.
+fn stored_precision(t: DateTime<Utc>) -> DateTime<Utc> {
+    t.trunc_subsecs(6)
+}
+
 impl TokenInfo {
     fn of(t: &ApiToken) -> Self {
         TokenInfo {
@@ -318,12 +324,13 @@ impl TokenInfo {
             global: t.global,
             description: t.description.clone(),
             created_by: t.created_by.clone(),
-            created_at: t.created_at,
-            expires_at: t.expires_at,
-            last_used_at: t.last_used_at,
+            created_at: stored_precision(t.created_at),
+            expires_at: stored_precision(t.expires_at),
+            last_used_at: t.last_used_at.map(stored_precision),
             revoked_at: t
                 .revoked_at
-                .filter(|_| t.status(Utc::now()) == ApiTokenStatus::Revoked),
+                .filter(|_| t.status(Utc::now()) == ApiTokenStatus::Revoked)
+                .map(stored_precision),
             status: t.status(Utc::now()).into(),
             parent_id: t.parent_id,
         }
@@ -428,7 +435,7 @@ fn audit_detail(t: &ApiToken) -> serde_json::Value {
         "role": t.role,
         "global": t.global,
         "spaces": t.spaces,
-        "expiresAt": t.expires_at,
+        "expiresAt": stored_precision(t.expires_at),
     })
 }
 
@@ -521,7 +528,7 @@ pub async fn create_token(
         ));
     }
     let value = generate_token();
-    let now = Utc::now();
+    let now = stored_precision(Utc::now());
     let mut expires_at = now + chrono::Duration::days(i64::from(days));
     if let Some(parent) = p.token_id {
         let pt = app
@@ -714,7 +721,7 @@ pub async fn revoke_token(
             require(&p, Permission::TokensWrite, s)?;
         }
     }
-    let now = Utc::now();
+    let now = stored_precision(Utc::now());
     let revoked = store.revoke(id, now).await?;
     app.tokens.forget(&t.sha256);
     let t = store.get(id).await?.ok_or_else(|| not_found("token"))?;

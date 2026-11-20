@@ -966,6 +966,72 @@ async fn tokens_created_by_tokens_never_outlive_or_survive_their_parent() {
     }
 }
 
+fn fraction_digits(v: &Value) -> usize {
+    let s = v.as_str().unwrap_or_else(|| panic!("not a timestamp: {v}"));
+    s.split_once('.')
+        .map(|(_, f)| f.trim_end_matches('Z').len())
+        .unwrap_or(0)
+}
+
+/// Responses carry the timestamps as stored (microseconds), so a create response, a later read and a
+/// child capped at its parent's expiry show the same values.
+#[tokio::test]
+async fn token_times_in_responses_match_the_stored_values() {
+    for (name, storage) in storages().await {
+        let h = H::start(storage, None).await;
+        let (st, created) = h
+            .call(
+                Method::POST,
+                "/tokens",
+                ADMIN,
+                Some(
+                    json!({"name": "parent", "role": "admin", "global": true, "expiresInDays": 7}),
+                ),
+            )
+            .await;
+        assert_eq!(st, 201, "{name}: {created}");
+        let id = created["id"].as_str().unwrap().to_string();
+        for k in ["createdAt", "expiresAt"] {
+            assert!(
+                fraction_digits(&created[k]) <= 6,
+                "{name}: {k} {}",
+                created[k]
+            );
+        }
+        let read = h
+            .ok(Method::GET, &format!("/tokens/{id}"), ADMIN, None)
+            .await;
+        assert_eq!(read["createdAt"], created["createdAt"], "{name}");
+        assert_eq!(read["expiresAt"], created["expiresAt"], "{name}");
+
+        let parent = created["token"].as_str().unwrap().to_string();
+        let (st, child) = h
+            .call(
+                Method::POST,
+                "/tokens",
+                &parent,
+                Some(
+                    json!({"name": "child", "role": "viewer", "global": true, "expiresInDays": 30}),
+                ),
+            )
+            .await;
+        assert_eq!(st, 201, "{name}: {child}");
+        assert_eq!(child["expiresAt"], created["expiresAt"], "{name}");
+
+        let revoked = h
+            .ok(Method::DELETE, &format!("/tokens/{id}"), ADMIN, None)
+            .await;
+        assert!(
+            fraction_digits(&revoked["revokedAt"]) <= 6,
+            "{name}: {revoked}"
+        );
+        let read = h
+            .ok(Method::GET, &format!("/tokens/{id}"), ADMIN, None)
+            .await;
+        assert_eq!(read["revokedAt"], revoked["revokedAt"], "{name}");
+    }
+}
+
 /// While the store holds no tokens, other replicas answer unknown values without a lookup for up to
 /// the cache TTL; the creating replica accepts its token at once, the others within the TTL.
 #[tokio::test]

@@ -660,14 +660,22 @@ impl Oidc {
     }
 
     /// Where the UI sends the browser after logout, when the provider supports RP-initiated logout.
-    pub fn logout_url(&self) -> Option<String> {
+    /// The provider's RP-initiated logout URL. With the ID token of the session as `id_token_hint` the
+    /// provider ends its session without asking the user to confirm.
+    pub fn logout_url(&self, id_token_hint: Option<&str>) -> Option<String> {
         let p = self.provider()?;
         let mut u = p.end_session.clone()?;
         let mut back = self.settings.redirect_url.clone();
         back.set_path("/ui/");
-        u.query_pairs_mut()
-            .append_pair("client_id", &self.settings.client_id)
-            .append_pair("post_logout_redirect_uri", back.as_str());
+        back.set_query(None);
+        {
+            let mut q = u.query_pairs_mut();
+            q.append_pair("client_id", &self.settings.client_id)
+                .append_pair("post_logout_redirect_uri", back.as_str());
+            if let Some(t) = id_token_hint {
+                q.append_pair("id_token_hint", t);
+            }
+        }
         Some(u.to_string())
     }
 

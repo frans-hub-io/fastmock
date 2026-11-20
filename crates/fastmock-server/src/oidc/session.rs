@@ -35,7 +35,10 @@ pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// Longest ID token kept for the logout hint; a larger one is dropped and logout goes without the hint.
+pub const MAX_ID_TOKEN_BYTES: usize = 16 * 1024;
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionRecord {
     pub name: String,
@@ -43,6 +46,22 @@ pub struct SessionRecord {
     /// Unix milliseconds.
     pub created: i64,
     pub last_seen: i64,
+    /// The ID token of the sign-in, sent back to the provider as `id_token_hint` on logout. It stays in
+    /// the hot store: never in the cookie, a response body other than the logout URL, or a log line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id_token: Option<String>,
+}
+
+impl std::fmt::Debug for SessionRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionRecord")
+            .field("name", &self.name)
+            .field("groups", &self.groups)
+            .field("created", &self.created)
+            .field("last_seen", &self.last_seen)
+            .field("id_token", &self.id_token.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -82,7 +101,12 @@ impl Sessions<'_> {
     }
 
     /// Creates a session and returns its id (the cookie value).
-    pub async fn create(&self, name: &str, groups: Vec<String>) -> anyhow::Result<String> {
+    pub async fn create(
+        &self,
+        name: &str,
+        groups: Vec<String>,
+        id_token: Option<String>,
+    ) -> anyhow::Result<String> {
         let id = random_secret();
         let now = now_ms();
         let r = SessionRecord {
@@ -90,6 +114,7 @@ impl Sessions<'_> {
             groups,
             created: now,
             last_seen: now,
+            id_token: id_token.filter(|t| t.len() <= MAX_ID_TOKEN_BYTES),
         };
         let ttl = self
             .life
@@ -195,7 +220,7 @@ mod tests {
                 idle: Duration::from_millis(400),
             },
         };
-        let id = s.create("alice", vec!["g".into()]).await.unwrap();
+        let id = s.create("alice", vec!["g".into()], None).await.unwrap();
         assert!(looks_like_secret(&id));
         assert!(matches!(s.get(&id).await.unwrap(), Found::Live(r) if r.name == "alice"));
         for _ in 0..5 {
@@ -204,10 +229,10 @@ mod tests {
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(matches!(s.get(&id).await.unwrap(), Found::Missing));
-        let id = s.create("bob", vec![]).await.unwrap();
+        let id = s.create("bob", vec![], None).await.unwrap();
         tokio::time::sleep(Duration::from_millis(450)).await;
         assert!(matches!(s.get(&id).await.unwrap(), Found::Missing));
-        let id = s.create("carol", vec![]).await.unwrap();
+        let id = s.create("carol", vec![], None).await.unwrap();
         assert_eq!(s.delete(&id).await.unwrap().unwrap().name, "carol");
         assert!(matches!(s.get(&id).await.unwrap(), Found::Missing));
         assert!(matches!(s.get("short").await.unwrap(), Found::Missing));

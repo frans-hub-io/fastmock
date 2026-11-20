@@ -354,7 +354,10 @@ pub async fn callback(
         life: oidc.lifetimes(),
     };
     let groups = principal.groups.clone().unwrap_or_default();
-    let id = match sessions.create(&principal.name, groups.clone()).await {
+    let id = match sessions
+        .create(&principal.name, groups.clone(), Some(id_token))
+        .await
+    {
         Ok(id) => id,
         Err(e) => {
             metrics::counter!("fastmock_store_errors_total", "store" => "sessions").increment(1);
@@ -377,7 +380,7 @@ pub async fn callback(
 #[utoipa::path(
     post, path = "/__admin/auth/logout", tag = "auth", operation_id = "logout",
     summary = "End the SSO session",
-    description = "Deletes the session of the cookie and clears the cookie. Needs the `X-FastMock-Request: 1` header. When the provider has an `end_session_endpoint`, `logoutUrl` tells the UI where to send the browser to end the provider session too.",
+    description = "Deletes the session of the cookie and clears the cookie. Needs the `X-FastMock-Request: 1` header. When the provider has an `end_session_endpoint`, `logoutUrl` tells the UI where to send the browser to end the provider session too; it carries `client_id`, `post_logout_redirect_uri` and, when the session holds one, the sign-in's ID token as `id_token_hint`.",
     params(("X-FastMock-Request" = String, Header, description = "Must be `1`")),
     responses(
         (status = 200, description = "Logged out", body = LogoutResponse),
@@ -397,12 +400,16 @@ pub async fn logout(State(app): State<AppState>, headers: HeaderMap) -> Response
     }
     if !csrf_header_ok(&headers) {
         metrics::counter!("fastmock_admin_auth_failures_total", "reason" => "csrf").increment(1);
-        return error(
+        return (
             StatusCode::FORBIDDEN,
-            "missing X-FastMock-Request: 1 header",
-        );
+            Json(
+                json!({"error": "forbidden", "details": ["missing X-FastMock-Request: 1 header"]}),
+            ),
+        )
+            .into_response();
     }
     let mut logged_out = false;
+    let mut id_token_hint = None;
     if let Some(id) = oidc.session_id(&headers) {
         let sessions = Sessions {
             hot: app.stores.hot.as_ref(),
@@ -411,6 +418,7 @@ pub async fn logout(State(app): State<AppState>, headers: HeaderMap) -> Response
         match sessions.delete(id).await {
             Ok(Some(r)) => {
                 logged_out = true;
+                id_token_hint = r.id_token.clone();
                 let p = Principal::from_bindings(&r.name, PrincipalKind::User, &[]);
                 audit_event(&app, &p, "auth.logout", json!({})).await;
             }
@@ -425,7 +433,7 @@ pub async fn logout(State(app): State<AppState>, headers: HeaderMap) -> Response
     }
     let mut r = Json(LogoutResponse {
         logged_out,
-        logout_url: oidc.logout_url(),
+        logout_url: oidc.logout_url(id_token_hint.as_deref()),
     })
     .into_response();
     if let Ok(v) =
