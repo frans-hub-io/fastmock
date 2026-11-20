@@ -263,7 +263,7 @@ response; FastMock stores its SHA-256 hash. Store it in your secret manager righ
 |---|---|
 | `name` | `[A-Za-z0-9._@-]`, at most 128 characters. Unique among active tokens and different from every static token name (`409` otherwise); a name becomes free again when its token is revoked or expired. It appears as the principal name in `/info`, logs and the audit log. |
 | `role` | `viewer`, `editor`, `admin` or a custom role of the access file. |
-| `spaces` or `global: true` | Exactly one of them. A token in spaces gets the role's space permissions in each of them (like a space binding). `spaces: ["*"]` gives them in every space of the access file, including spaces added later, like a binding in [all spaces](#all-spaces); `*` must be the only entry (`400` with `"*" must be the only entry in spaces` otherwise). The token keeps `["*"]` as stored, and the spaces are resolved on every request. |
+| `spaces` or `global: true` | Exactly one of them. A token in spaces gets the role's space permissions in each of them (like a space binding). `spaces: ["*"]` gives them in every space of the access file, including spaces added later, like a binding in [all spaces](#all-spaces); `*` must be the only entry (`400` with `"*" must be the only entry in spaces` otherwise), and the access file must define at least one space (`400` with `spaces: ["*"] needs at least one space in the access file` otherwise). The token keeps `["*"]` as stored, and the spaces are resolved on every request. |
 | `expiresInDays` | 1 to `FASTMOCK_TOKENS_MAX_DAYS` (default 365). When omitted: 90 days, or `FASTMOCK_TOKENS_MAX_DAYS` when lower. A token created by a managed token never outlives it (see below). |
 | `description` | Optional, at most 1024 bytes. |
 
