@@ -322,6 +322,10 @@ pub struct MockApiStatus {
     /// Space the stubs were applied to; absent for the global area.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space: Option<String>,
+    /// Instance id of the in-memory server process the stubs were imported into. A server that reports
+    /// another id has restarted and lost them, so they are imported again.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub server_instance: String,
     #[serde(default)]
     pub conditions: Vec<Condition>,
 }

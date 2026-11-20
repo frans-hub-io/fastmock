@@ -405,6 +405,11 @@ spec:
                 default: 0
                 format: int64
                 type: integer
+              serverInstance:
+                description: |-
+                  Instance id of the in-memory server process the stubs were imported into. A server that reports
+                  another id has restarted and lost them, so they are imported again.
+                type: string
               space:
                 description: Space the stubs were applied to; absent for the global area.
                 nullable: true

@@ -264,8 +264,13 @@ How it is applied:
   [Importing](../guide/importing.md), [WireMock and MockServer import](../guide/import-wiremock-mockserver.md).
 - The operator imports only when the effective input changed: the spec, the content of the referenced
   ConfigMaps, or the server (a re-created `FastMock` gets a new UID). Every 5 minutes it re-reads the
-  ConfigMaps and checks that the server still has the expected number of stubs (for example after a memory-mode
-  server restarted); missing stubs are re-imported.
+  ConfigMaps and checks that the server still has the expected number of stubs; missing stubs are re-imported.
+- With `storage.mode: memory` the stubs live only in the pod, so a new pod (an access ConfigMap edit, a rotated
+  Secret, an image change, a crash) starts empty. The operator follows the server's Deployment: while a rollout
+  is in progress `Synced` is `False` with reason `ServerRestarting`; once only the new, ready pod is left, it
+  imports the stubs again, usually within seconds, and checks the import again 5 seconds later. It recognises a
+  restart by the `instanceId` that the server reports in `GET /__admin/info` and records it in
+  `status.serverInstance`. With `postgres` storage the stubs survive restarts and nothing is re-imported.
 - With a space, every import goes to that space (`?space=` on the import calls) and replaces only that space's
   stubs of the tag; the space's [ownership rules](access-control.md#ownership-of-the-data-plane) apply. Changing
   the space moves the stubs to the new space. `status.space` records where the stubs were applied.
@@ -332,12 +337,14 @@ Ready=False SecretNotAllowed: referenced Secrets must carry the label fastmock.f
 | `status.lastSyncTime` | Time of the last successful import. |
 | `status.appliedHash` | Hash of the applied input (spec, ConfigMap contents, server UID, space). |
 | `status.space` | Space the stubs were applied to; absent for the global area. |
+| `status.serverInstance` | Memory storage only: instance id of the server process the stubs were imported into. |
 | `status.observedGeneration` | |
 
 | Condition | Status | Reason | Meaning |
 |---|---|---|---|
 | `Synced` | True | `Synced` | `14 stubs applied with tag team-payments.billing` |
 | `Synced` | False | `ServerNotReady` | The `FastMock` is missing, being deleted or has no ready replica; retried every 15 s. |
+| `Synced` | False | `ServerRestarting` | Memory storage: the server's Deployment is rolling out, so the new pod may not have the stubs yet; they are imported when the rollout finishes. |
 | `Synced` | False | `SyncFailed` | The import failed: invalid stub, unparsable document, missing ConfigMap or key, admin API error. The message tells which. |
 | `Synced` | False | `SpaceNotFound` | `spec.space` (or the namespace with `spaceFromNamespace`) is not defined in the server's access file; the stubs applied before are left unchanged. |
 
@@ -385,7 +392,9 @@ The chart grants the operator (as a ClusterRole, or a Role in `watchNamespace`):
 | `gateway.networking.k8s.io` | `httproutes` | get, create, patch, delete |
 
 It lists and watches ConfigMaps carrying the label `fastmock.franshub.io/allow-mount=true`, reading only their
-metadata, so that changes to them reach the servers that use them at once. Secrets are only read by name: the
+metadata, so that changes to them reach the servers that use them at once. It watches only the Deployments it
+manages (label `app.kubernetes.io/managed-by=fastmock-operator`), for the `FastMock` status and to re-import the
+stubs of memory-mode servers after a restart. Secrets are only read by name: the
 content of those a `FastMock` or `MockApi` points at, and the label policy limits which of those it mounts. Users need RBAC on `fastmocks` and `mockapis` in their namespaces; reading the generated
 `<name>-operator-token` Secret is equivalent to admin access to that FastMock, so do not grant `get secrets` more
 widely than needed.
