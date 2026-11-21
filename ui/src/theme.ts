@@ -1,4 +1,4 @@
-import { Button, createTheme, rem, type CSSVariablesResolver, type MantineColorsTuple } from '@mantine/core';
+import { Button, createTheme, Drawer, Modal, rem, SegmentedControl, Tooltip, type CSSVariablesResolver, type MantineColorsTuple } from '@mantine/core';
 
 // FransHub brand kit v5.0 palettes (tokens/brand-tokens.json: palettes.purple, palettes.yellow, palettes.graphite).
 const fhPurple: MantineColorsTuple = ['#F6EDFF', '#EAD5FF', '#DBB6FF', '#C78BFF', '#B36CF9', '#9948EA', '#7C2ACB', '#6920AC', '#57158E', '#3F0B69'];
@@ -22,11 +22,19 @@ export const theme = createTheme({
   luminanceThreshold: 0.179,
   defaultRadius: 'md',
   radius: { xs: rem(4), sm: rem(6), md: rem(10), lg: rem(16), xl: rem(16) },
+  // The brand spacing scale (tokens: scale.spacing 8/12/16/24/32).
+  spacing: { xs: rem(8), sm: rem(12), md: rem(16), lg: rem(24), xl: rem(32) },
+  // Shadows follow the scheme: global.css defines --fm-shadow-* for light and dark.
+  shadows: { xs: 'var(--fm-shadow-xs)', sm: 'var(--fm-shadow-sm)', md: 'var(--fm-shadow-md)', lg: 'var(--fm-shadow-lg)', xl: 'var(--fm-shadow-xl)' },
   cursorType: 'pointer',
   fontFamily: SANS,
   fontFamilyMonospace: MONO,
   headings: { fontFamily: SANS, fontWeight: '800' },
   components: {
+    Tooltip: Tooltip.extend({ defaultProps: { withArrow: true } }),
+    Modal: Modal.extend({ defaultProps: { radius: 'lg', overlayProps: { backgroundOpacity: 0.45, blur: 2 } } }),
+    Drawer: Drawer.extend({ defaultProps: { overlayProps: { backgroundOpacity: 0.45, blur: 2 } } }),
+    SegmentedControl: SegmentedControl.extend({ defaultProps: { radius: 'md' } }),
     // Primary actions are gold with dark on-accent text; other variants and explicit colors keep Mantine's rules.
     Button: Button.extend({
       vars: (t, props) => {

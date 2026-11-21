@@ -12,6 +12,13 @@
   --mantine-primary-color-light: var(--mantine-color-fhPurple-light);
   --mantine-primary-color-light-hover: var(--mantine-color-fhPurple-light-hover);
   --mantine-primary-color-light-color: var(--mantine-color-fhPurple-light-color);
+  --mantine-spacing-xs: calc(0.5rem * var(--mantine-scale));
+  --mantine-spacing-lg: calc(1.5rem * var(--mantine-scale));
+  --mantine-shadow-xs: var(--fm-shadow-xs);
+  --mantine-shadow-sm: var(--fm-shadow-sm);
+  --mantine-shadow-md: var(--fm-shadow-md);
+  --mantine-shadow-lg: var(--fm-shadow-lg);
+  --mantine-shadow-xl: var(--fm-shadow-xl);
   --mantine-radius-xs: calc(0.25rem * var(--mantine-scale));
   --mantine-radius-sm: calc(0.375rem * var(--mantine-scale));
   --mantine-radius-md: calc(0.625rem * var(--mantine-scale));

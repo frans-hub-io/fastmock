@@ -1,5 +1,5 @@
-import { ActionIcon, Alert, Badge, Button, Group, NumberInput, Paper, Select, Slider, Stack, Table, Tabs, Text, TextInput } from '@mantine/core';
-import { IconDeviceFloppy, IconPlus, IconTrash } from '@tabler/icons-react';
+import { ActionIcon, Alert, Badge, Button, Group, NumberInput, Select, Slider, Stack, Table, Tabs, Text, TextInput, Tooltip } from '@mantine/core';
+import { IconAlertTriangle, IconBraces, IconDeviceFloppy, IconFlame, IconListDetails, IconPlus, IconRestore, IconTrash } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { useComponentSchema } from '../api/features';
@@ -8,18 +8,59 @@ import { confirmAction, useApiMutation } from '../api/mutations';
 import { FAULTS, type ChaosRule } from '../api/types';
 import { useCan } from '../auth/useAuth';
 import { CodeEditor } from '../components/CodeEditor';
-import { PageHeader } from '../components/common';
+import { DataTable, MethodBadge, Meter, PageHeader, SaveBar, SectionCard, StatusBadge, Time } from '../components/common';
 import { EmptyState, ErrorState, LoadingState } from '../components/States';
+import { docsUrl } from '../lib/docs';
 import { pretty } from '../lib/format';
+import { chaosEffects, chaosRuleIssues } from '../lib/screens';
+import type { Tone } from '../lib/ui';
 
+const MAX_RULES = 100;
+const EMPTY: ChaosRule = { id: '', probability: 0.1, status: 503 };
 
-function describe(r: ChaosRule): string {
-  const parts: string[] = [];
-  if (r.status) parts.push(`status ${r.status}`);
-  if (r.fault) parts.push(r.fault);
-  if (r.delay?.fixedMs) parts.push(`+${r.delay.fixedMs} ms`);
-  if (r.delay?.minMs !== undefined || r.delay?.maxMs !== undefined) parts.push(`+${r.delay.minMs ?? 0}–${r.delay.maxMs ?? 0} ms`);
-  return parts.join(', ') || 'no effect';
+function probabilityTone(p: number): Tone {
+  if (p >= 0.5) return 'danger';
+  if (p >= 0.1) return 'warning';
+  return 'info';
+}
+
+/** Which paths a rule covers: a prefix, or every path. */
+function Scope({ prefix }: { prefix?: string | null }) {
+  if (!prefix)
+    return (
+      <Text size="sm" c="dimmed" component="span" className="fm-nowrap">
+        all paths
+      </Text>
+    );
+  return (
+    <span className="fm-path">
+      <span className="fm-path-kind">prefix</span>
+      {prefix}
+    </span>
+  );
+}
+
+function Effects({ rule }: { rule: ChaosRule }) {
+  const effects = chaosEffects(rule);
+  if (!effects.length)
+    return (
+      <Text size="sm" c="dimmed">
+        no effect
+      </Text>
+    );
+  return (
+    <Group gap={4} wrap="wrap">
+      {effects.map((e, i) =>
+        e.kind === 'status' && e.status ? (
+          <StatusBadge key={i} status={e.status} />
+        ) : (
+          <span key={i} className={e.kind === 'fault' ? 'fm-status' : 'fm-chip'} data-tone={e.kind === 'fault' ? 'danger' : undefined}>
+            {e.text}
+          </span>
+        ),
+      )}
+    </Group>
+  );
 }
 
 export default function Chaos() {
@@ -32,7 +73,8 @@ export default function Chaos() {
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [tab, setTab] = useState<string | null>('rules');
-  const [draft, setDraft] = useState<ChaosRule>({ id: '', probability: 0.1, status: 503 });
+  const [draft, setDraft] = useState<ChaosRule>(EMPTY);
+  const [touched, setTouched] = useState(false);
 
   useEffect(() => {
     if (q.data && !dirty) {
@@ -63,152 +105,212 @@ export default function Chaos() {
   if (q.isLoading) return <LoadingState />;
   if (q.isError) return <ErrorState error={q.error} onRetry={() => void q.refetch()} />;
 
+  const issues = chaosRuleIssues(draft, rules, MAX_RULES);
+  const blocked = Object.keys(issues).length > 0;
+  const shown = touched ? issues : { ...issues, id: draft.id ? issues.id : undefined, effect: undefined };
+  const active = rules.filter((r) => r.probability > 0).length;
+
   return (
     <Stack gap="md">
       <PageHeader
         title="Chaos"
         description="Inject failures into matching data-plane traffic with a probability: extra latency, error statuses or connection faults. At most 100 rules."
-        actions={
-          canEdit && (
+        meta={
+          rules.length > 0 && (
             <>
-              <Button
-                variant="light"
-                color="red"
-                leftSection={<IconTrash size={16} />}
-                disabled={!q.data?.rules.length}
-                onClick={() => confirmAction({ title: 'Remove all chaos rules?', message: 'Traffic stops being disturbed immediately.', confirm: 'Remove all', onConfirm: () => clear.mutate() })}
-              >
-                Remove all
-              </Button>
-              <Button leftSection={<IconDeviceFloppy size={16} />} disabled={!dirty || !!jsonError} loading={save.isPending} onClick={() => save.mutate(rules)}>
-                Save rules
-              </Button>
+              <span className="fm-status" data-tone={active ? 'warning' : 'neutral'} data-testid="chaos-active">
+                {active ? `${String(active)} rule${active === 1 ? '' : 's'} disturbing traffic` : 'no rule fires'}
+              </span>
+              <span className="fm-chip">
+                {rules.length} / {MAX_RULES}
+              </span>
             </>
           )
         }
+        actions={
+          canEdit && (
+            <Button
+              variant="light"
+              color="red"
+              leftSection={<IconTrash size={16} />}
+              disabled={!q.data?.rules.length}
+              onClick={() => confirmAction({ title: 'Remove all chaos rules?', message: 'Traffic stops being disturbed immediately.', confirm: 'Remove all', onConfirm: () => clear.mutate() })}
+            >
+              Remove all
+            </Button>
+          )
+        }
       />
-      {dirty && (
-        <Alert color="yellow" role="status">
-          Unsaved changes.
-        </Alert>
-      )}
       <Tabs
         value={tab}
+        variant="pills"
+        radius="md"
+        classNames={{ list: 'fm-tabs-list' }}
         onChange={(t) => {
           if (tab === 'json' && jsonError) return;
           setTab(t);
         }}
       >
         <Tabs.List>
-          <Tabs.Tab value="rules">Rules</Tabs.Tab>
-          <Tabs.Tab value="json">JSON</Tabs.Tab>
+          <Tabs.Tab value="rules" leftSection={<IconListDetails size={16} />}>
+            Rules <span className="fm-tab-count">{rules.length}</span>
+          </Tabs.Tab>
+          <Tabs.Tab value="json" leftSection={<IconBraces size={16} />}>
+            JSON
+          </Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value="rules" pt="md">
           <Stack gap="md">
             {!rules.length ? (
-              <EmptyState title="No chaos rules">Traffic is served exactly as the stubs say.</EmptyState>
+              <EmptyState title="No chaos rules" icon={<IconFlame size={30} />} docs={{ label: 'Proxying and chaos', href: docsUrl('guide/proxy-and-chaos') }}>
+                Traffic is served exactly as the stubs say. {canEdit ? 'Add a rule below to add latency, errors or dropped connections to a share of requests.' : ''}
+              </EmptyState>
             ) : (
-              <Paper withBorder radius="md">
-                <div className="table-scroll">
-                  <Table fz="sm">
-                    <Table.Thead>
-                      <Table.Tr>
-                        <Table.Th>Id</Table.Th>
-                        <Table.Th>Scope</Table.Th>
-                        <Table.Th>Probability</Table.Th>
-                        <Table.Th>Effect</Table.Th>
-                        <Table.Th>Expires</Table.Th>
-                        {canEdit && <Table.Th />}
-                      </Table.Tr>
-                    </Table.Thead>
-                    <Table.Tbody>
-                      {rules.map((r, i) => (
-                        <Table.Tr key={`${r.id}-${i}`}>
-                          <Table.Td className="mono">{r.id}</Table.Td>
-                          <Table.Td>
-                            <Group gap={4}>
-                              {r.method && <Badge size="sm">{r.method}</Badge>}
-                              <Text size="sm" className="mono">
-                                {r.pathPrefix ?? '/*'}
-                              </Text>
-                              {r.source && (
-                                <Badge size="sm" variant="outline">
-                                  {r.source}
-                                </Badge>
-                              )}
-                            </Group>
-                          </Table.Td>
-                          <Table.Td>{Math.round(r.probability * 100)}%</Table.Td>
-                          <Table.Td>{describe(r)}</Table.Td>
-                          <Table.Td>{r.expiresAt ?? '—'}</Table.Td>
-                          {canEdit && (
-                            <Table.Td>
+              <DataTable testId="chaos-table" miw={900}>
+                <Table.Thead>
+                  <Table.Tr>
+                    <Table.Th>Rule</Table.Th>
+                    <Table.Th>Applies to</Table.Th>
+                    <Table.Th w={170}>Probability</Table.Th>
+                    <Table.Th>Effect</Table.Th>
+                    <Table.Th>Expires</Table.Th>
+                    {canEdit && (
+                      <Table.Th w={56}>
+                        <span className="sr-only">Actions</span>
+                      </Table.Th>
+                    )}
+                  </Table.Tr>
+                </Table.Thead>
+                <Table.Tbody>
+                  {rules.map((r, i) => (
+                    <Table.Tr key={`${r.id}-${String(i)}`} data-testid="chaos-row">
+                      <Table.Td>
+                        <Text size="sm" fw={700} className="mono break-all">
+                          {r.id}
+                        </Text>
+                      </Table.Td>
+                      <Table.Td data-label="Applies to">
+                        <Group gap={6} wrap="nowrap">
+                          <MethodBadge method={r.method} />
+                          <Scope prefix={r.pathPrefix} />
+                          {r.source && <span className="fm-chip">{r.source}</span>}
+                        </Group>
+                      </Table.Td>
+                      <Table.Td data-label="Probability">
+                        <Meter value={r.probability} tone={probabilityTone(r.probability)} label={`Probability of ${r.id}`} />
+                      </Table.Td>
+                      <Table.Td data-label="Effect">
+                        <Effects rule={r} />
+                      </Table.Td>
+                      <Table.Td data-label="Expires">{r.expiresAt ? <Time at={r.expiresAt} /> : <Text size="sm" c="dimmed">never</Text>}</Table.Td>
+                      {canEdit && (
+                        <Table.Td>
+                          <Group justify="flex-end">
+                            <Tooltip label="Remove rule">
                               <ActionIcon variant="subtle" color="red" aria-label={`Remove rule ${r.id}`} onClick={() => change(rules.filter((_, j) => j !== i))}>
                                 <IconTrash size={16} />
                               </ActionIcon>
-                            </Table.Td>
-                          )}
-                        </Table.Tr>
-                      ))}
-                    </Table.Tbody>
-                  </Table>
-                </div>
-              </Paper>
+                            </Tooltip>
+                          </Group>
+                        </Table.Td>
+                      )}
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </DataTable>
             )}
             {canEdit && (
-              <Paper withBorder p="md" radius="md">
-                <Text fw={600} mb="sm">
-                  Add a rule
-                </Text>
-                <Stack gap="sm">
-                  <Group gap="sm" wrap="wrap" align="flex-end">
-                    <TextInput label="Id" value={draft.id} onChange={(e) => setDraft({ ...draft, id: e.currentTarget.value })} required w={160} />
-                    <TextInput label="Path prefix" placeholder="/api" value={draft.pathPrefix ?? ''} onChange={(e) => setDraft({ ...draft, pathPrefix: e.currentTarget.value || undefined })} w={180} />
-                    <Select
-                      label="Method"
-                      data={['GET', 'POST', 'PUT', 'PATCH', 'DELETE']}
-                      value={draft.method ?? null}
-                      onChange={(v) => setDraft({ ...draft, method: v ?? undefined })}
-                      clearable
-                      placeholder="any"
-                      w={120}
-                    />
-                    <TextInput label="Source" placeholder="stubs" value={draft.source ?? ''} onChange={(e) => setDraft({ ...draft, source: e.currentTarget.value || undefined })} w={130} />
-                  </Group>
-                  <div>
-                    <Text size="sm" fw={500}>
-                      Probability: {Math.round(draft.probability * 100)}%
-                    </Text>
-                    <Slider value={draft.probability * 100} onChange={(v) => setDraft({ ...draft, probability: v / 100 })} min={0} max={100} step={1} label={(v) => `${v}%`} maw={420} aria-label="Probability" />
-                  </div>
-                  <Group gap="sm" wrap="wrap" align="flex-end">
-                    <NumberInput label="Status" value={draft.status ?? ''} onChange={(v) => setDraft({ ...draft, status: typeof v === 'number' ? v : undefined })} min={100} max={599} w={110} />
-                    <Select label="Fault" data={FAULTS} value={draft.fault ?? null} onChange={(v) => setDraft({ ...draft, fault: (v) ?? undefined })} clearable placeholder="none" w={240} />
-                    <NumberInput
-                      label="Delay ms"
-                      value={draft.delay?.fixedMs ?? ''}
-                      onChange={(v) => setDraft({ ...draft, delay: typeof v === 'number' ? { fixedMs: v } : undefined })}
-                      min={0}
-                      max={600000}
-                      w={120}
-                    />
-                  </Group>
-                  <Group>
-                    <Button
-                      variant="light"
-                      leftSection={<IconPlus size={16} />}
-                      disabled={!draft.id || rules.some((r) => r.id === draft.id) || rules.length >= 100}
-                      onClick={() => {
-                        const clean = JSON.parse(JSON.stringify(draft)) as ChaosRule;
-                        change([...rules, clean]);
-                        setDraft({ id: '', probability: 0.1, status: 503 });
-                      }}
-                    >
-                      Add rule
-                    </Button>
-                  </Group>
-                </Stack>
-              </Paper>
+              <SectionCard title="Add a rule" description="Rules apply in order; the first matching rule that fires disturbs the request" icon={<IconPlus size={16} />}>
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    setTouched(true);
+                    if (blocked) return;
+                    const clean = JSON.parse(JSON.stringify({ ...draft, id: draft.id.trim() })) as ChaosRule;
+                    change([...rules, clean]);
+                    setDraft(EMPTY);
+                    setTouched(false);
+                  }}
+                >
+                  <Stack gap="md">
+                    <div className="fm-form-grid">
+                      <TextInput label="Id" placeholder="payments-outage" value={draft.id} onChange={(e) => setDraft({ ...draft, id: e.currentTarget.value })} required error={shown.id} classNames={{ input: 'mono' }} />
+                      <TextInput label="Path prefix" placeholder="/api" value={draft.pathPrefix ?? ''} onChange={(e) => setDraft({ ...draft, pathPrefix: e.currentTarget.value || undefined })} classNames={{ input: 'mono' }} />
+                      <Select
+                        label="Method"
+                        data={['GET', 'POST', 'PUT', 'PATCH', 'DELETE']}
+                        value={draft.method ?? null}
+                        onChange={(v) => setDraft({ ...draft, method: v ?? undefined })}
+                        clearable
+                        placeholder="any"
+                      />
+                      <TextInput label="Source" placeholder="stubs" value={draft.source ?? ''} onChange={(e) => setDraft({ ...draft, source: e.currentTarget.value || undefined })} />
+                    </div>
+                    <div>
+                      <Group justify="space-between" mb={4}>
+                        <Text size="sm" fw={500} id="chaos-probability">
+                          Probability
+                        </Text>
+                        <Badge variant="light" tt="none" className="tabular">
+                          {Math.round(draft.probability * 100)}% of matching requests
+                        </Badge>
+                      </Group>
+                      <Slider
+                        value={draft.probability * 100}
+                        onChange={(v) => setDraft({ ...draft, probability: v / 100 })}
+                        min={0}
+                        max={100}
+                        step={1}
+                        label={(v) => `${String(v)}%`}
+                        marks={[{ value: 0 }, { value: 25 }, { value: 50 }, { value: 75 }, { value: 100 }]}
+                        aria-labelledby="chaos-probability"
+                        thumbLabel="Probability"
+                      />
+                    </div>
+                    <div className="fm-form-grid">
+                      <NumberInput label="Status" value={draft.status ?? ''} onChange={(v) => setDraft({ ...draft, status: typeof v === 'number' ? v : undefined })} min={100} max={599} error={shown.status} />
+                      <Select label="Fault" data={FAULTS} value={draft.fault ?? null} onChange={(v) => setDraft({ ...draft, fault: v ?? undefined })} clearable placeholder="none" className="fm-span-2" />
+                      <NumberInput
+                        label="Delay"
+                        suffix=" ms"
+                        value={draft.delay?.fixedMs ?? ''}
+                        onChange={(v) => setDraft({ ...draft, delay: typeof v === 'number' ? { fixedMs: v } : undefined })}
+                        min={0}
+                        max={600000}
+                      />
+                    </div>
+                    {(shown.effect || issues.limit) && (
+                      <Alert color="yellow" icon={<IconAlertTriangle size={18} />} p="xs">
+                        {issues.limit ?? shown.effect}
+                      </Alert>
+                    )}
+                    <Group justify="space-between" wrap="wrap" gap="sm">
+                      <Group gap={6} wrap="wrap">
+                        <Text size="sm" c="dimmed">
+                          Preview
+                        </Text>
+                        <MethodBadge method={draft.method} />
+                        <Scope prefix={draft.pathPrefix} />
+                        <Text size="sm" c="dimmed">
+                          →
+                        </Text>
+                        <Effects rule={draft} />
+                      </Group>
+                      <Group gap="xs">
+                        <Button variant="subtle" color="gray" leftSection={<IconRestore size={16} />} onClick={() => {
+                          setDraft(EMPTY);
+                          setTouched(false);
+                        }}>
+                          Reset
+                        </Button>
+                        <Button type="submit" variant="light" leftSection={<IconPlus size={16} />} disabled={!!issues.limit}>
+                          Add rule
+                        </Button>
+                      </Group>
+                    </Group>
+                  </Stack>
+                </form>
+              </SectionCard>
             )}
           </Stack>
         </Tabs.Panel>
@@ -233,12 +335,49 @@ export default function Chaos() {
             }}
           />
           {jsonError && (
-            <Alert color="red" mt="xs">
+            <Alert color="red" mt="xs" icon={<IconAlertTriangle size={18} />}>
               {jsonError}
             </Alert>
           )}
         </Tabs.Panel>
       </Tabs>
+      {canEdit && (
+        <SaveBar
+          dirty={dirty}
+          testId="chaos-save-bar"
+          status={
+            jsonError ? (
+              <span className="fm-status" data-tone="danger">
+                invalid JSON
+              </span>
+            ) : (
+              <span className="fm-chip">
+                {rules.length} rule{rules.length === 1 ? '' : 's'}
+              </span>
+            )
+          }
+        >
+          {dirty && (
+            <Button
+              variant="subtle"
+              color="gray"
+              onClick={() => {
+                setDirty(false);
+                setJsonError(null);
+                if (q.data) {
+                  setRules(q.data.rules);
+                  setText(pretty(q.data.rules));
+                }
+              }}
+            >
+              Discard
+            </Button>
+          )}
+          <Button leftSection={<IconDeviceFloppy size={16} />} disabled={!dirty || !!jsonError} loading={save.isPending} onClick={() => save.mutate(rules)} data-testid="save-chaos">
+            Save rules
+          </Button>
+        </SaveBar>
+      )}
     </Stack>
   );
 }
