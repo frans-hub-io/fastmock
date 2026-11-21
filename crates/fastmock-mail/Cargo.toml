@@ -12,6 +12,9 @@ bytes.workspace = true
 chrono.workspace = true
 fastmock-core.workspace = true
 hex.workspace = true
+hmac.workspace = true
+imap-codec = { version = "=2.0.0-alpha.10", features = ["starttls", "ext_id", "ext_utf8", "ext_namespace"] }
+imap-types = "=2.0.0-alpha.8"
 mail-builder.workspace = true
 mail-parser.workspace = true
 metrics.workspace = true
@@ -32,4 +35,5 @@ utoipa.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 rcgen = { version = "0.14", features = ["pem"] }

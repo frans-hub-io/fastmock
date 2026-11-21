@@ -40,3 +40,17 @@ path = "fuzz_targets/pop3_session.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "imap_session"
+path = "fuzz_targets/imap_session.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "imap_command"
+path = "fuzz_targets/imap_command.rs"
+test = false
+doc = false
+bench = false
