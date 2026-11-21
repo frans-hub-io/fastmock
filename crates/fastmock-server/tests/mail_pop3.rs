@@ -465,7 +465,7 @@ async fn dele_on_one_replica_is_seen_by_the_other() {
     a.send(ALICE, "one", "first").await;
     b.send(ALICE, "two", "second").await;
     let token = a
-        .token(json!({"name": "pop-replicas", "role": "viewer", "global": true}))
+        .token(json!({"name": "pop-replicas", "role": "editor", "global": true}))
         .await;
     a.set_password(Some("billing"), ALICE, "pw").await;
 
@@ -593,7 +593,7 @@ async fn python_poplib_as_a_client() {
     .await;
     s.send(ALICE, "python two", "second").await;
     let token = s
-        .token(json!({"name": "pop-python", "role": "viewer", "spaces": ["billing"]}))
+        .token(json!({"name": "pop-python", "role": "editor", "spaces": ["billing"]}))
         .await;
     s.set_password(Some("billing"), ALICE, "py-pw").await;
     let py = |mode: &str, s: &Server, pw: &str| {
@@ -633,7 +633,7 @@ async fn python_poplib_as_a_client() {
     let p = Server::start(StorageKind::Memory, |m| m.allow_plaintext_auth = true).await;
     p.send(ALICE, "plain", "plain body").await;
     let token = p
-        .token(json!({"name": "pop-python", "role": "viewer", "global": true}))
+        .token(json!({"name": "pop-python", "role": "editor", "global": true}))
         .await;
     let (ok, out) = run("python3", &py("plain", &p, &token)).await;
     assert!(ok, "{out}");
@@ -656,7 +656,7 @@ async fn curl_as_a_client() {
     s.send(ALICE, "curl one", "first line\r\n.dot line").await;
     s.send(ALICE, "curl two", "second").await;
     let token = s
-        .token(json!({"name": "pop-curl", "role": "viewer", "spaces": ["billing"]}))
+        .token(json!({"name": "pop-curl", "role": "editor", "spaces": ["billing"]}))
         .await;
     let user = format!("{ALICE}:{token}");
     let base = |url: String| -> Vec<String> {

@@ -130,7 +130,7 @@ pub async fn shutting_down(ready: Arc<std::sync::atomic::AtomicBool>) {
 static ACTIVE: LazyLock<Mutex<HashMap<(usize, &'static str), usize>>> =
     LazyLock::new(Default::default);
 
-fn service_key(svc: &MailService) -> usize {
+pub(crate) fn service_key(svc: &MailService) -> usize {
     svc as *const MailService as usize
 }
 

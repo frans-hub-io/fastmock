@@ -20,6 +20,12 @@ use crate::mail_webhooks::{self, InboundMail, MailWebhooksBody, MailWebhooksView
 use crate::spaces::{self, SpaceQuery};
 use crate::state::AppState;
 
+fn sealer(app: &AppState) -> ApiResult<&crate::mail_webhook_secrets::Sealer> {
+    app.mail_sealer
+        .as_deref()
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "mail is not enabled".into()))
+}
+
 fn mail(app: &AppState) -> ApiResult<&std::sync::Arc<MailService>> {
     app.mail.as_ref().ok_or_else(|| {
         ApiError(
@@ -50,13 +56,13 @@ pub async fn get_webhooks(
     mail(&app)?;
     let area = spaces::target(&app, &p, Permission::MailRead, q.space.as_deref())?;
     let stored = mail_webhooks::load(&app.stores, area.as_deref()).await?;
-    Ok(Json(mail_webhooks::view(area, &stored)))
+    Ok(Json(mail_webhooks::view(area, &stored, sealer(&app)?)))
 }
 
 #[utoipa::path(
     put, path = "/__admin/mail/webhooks", tag = "mail", operation_id = "putMailWebhooks",
     summary = "Replace the provider webhooks of a space",
-    description = "Stores the webhooks and expected API keys of one area. Events webhooks receive the provider's delivery events after each message sent through that provider's API in this area (`delivered`, or `bounce`, `complaint`, `deferred`, `dropped` for recipients with that local part); inbound webhooks receive the provider's inbound payload from `POST /__admin/mail/inbound`. Deliveries go through the callbacks outbox (retries, `/__admin/callbacks`). `signingKey` is write-only; a webhook `PUT` again with the same id without it (or with `***` as URL password) keeps the stored value. The first `PUT` creates the space's SendGrid key pair. Needs `mail:write`.",
+    description = "Stores the webhooks and expected API keys of one area. Events webhooks receive the provider's delivery events after each message sent through that provider's API in this area (`delivered`, or `bounce`, `complaint`, `deferred`, `dropped` for recipients with that local part); inbound webhooks receive the provider's inbound payload from `POST /__admin/mail/inbound`. Deliveries go through the callbacks outbox (retries, `/__admin/callbacks`). `signingKey` is write-only; a webhook `PUT` again with the same id without it (or with `***` as URL password) keeps the stored value. Signing keys and URL passwords are stored encrypted with the secret `mail-webhook-key` (required with PostgreSQL storage). The first `PUT` creates the space's SendGrid key pair. Needs `mail:write`.",
     params(SpaceQuery),
     request_body(content = MailWebhooksBody, example = json!({
         "webhooks": [
@@ -85,7 +91,7 @@ pub async fn put_webhooks(
     let body: MailWebhooksBody =
         serde_json::from_value(body).map_err(|e| bad(format!("invalid mail webhooks: {e}")))?;
     let old = mail_webhooks::load(&app.stores, area.as_deref()).await?;
-    let stored = mail_webhooks::merge(&old, body, &app.policy).map_err(bad)?;
+    let stored = mail_webhooks::merge(&old, body, &app.policy, sealer(&app)?).map_err(bad)?;
     mail_webhooks::save(&app.stores, area.as_deref(), &stored).await?;
     audit_event_in(
         &app,
@@ -98,7 +104,7 @@ pub async fn put_webhooks(
         }),
     )
     .await;
-    Ok(Json(mail_webhooks::view(area, &stored)))
+    Ok(Json(mail_webhooks::view(area, &stored, sealer(&app)?)))
 }
 
 #[utoipa::path(
@@ -279,7 +285,9 @@ pub async fn post_inbound(
         mail_from,
         rcpt_to,
     };
-    let hooks = mail_webhooks::load(&app.stores, area.as_deref()).await?;
+    let sealer = sealer(&app)?;
+    let stored = mail_webhooks::load(&app.stores, area.as_deref()).await?;
+    let hooks = mail_webhooks::opened(&stored, sealer);
     let targets: Vec<_> = hooks
         .webhooks
         .iter()
@@ -308,8 +316,15 @@ pub async fn post_inbound(
         else {
             continue;
         };
-        let id =
-            mail_webhooks::enqueue(&app.stores, area.as_deref(), hook, out, &correlation).await?;
+        let id = mail_webhooks::enqueue(
+            &app.stores,
+            sealer,
+            area.as_deref(),
+            hook,
+            out,
+            &correlation,
+        )
+        .await?;
         deliveries.push(InboundDelivery {
             webhook_id: hook.id.clone(),
             callback_id: id,

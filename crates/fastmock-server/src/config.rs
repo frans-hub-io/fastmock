@@ -879,9 +879,12 @@ pub fn mail_settings(
         )?,
         max_auth_failures: number(&val, "MAIL_MAX_AUTH_FAILURES", d.max_auth_failures)?,
         imap_idle_timeout: duration("MAIL_IMAP_IDLE_TIMEOUT", d.imap_idle_timeout)?,
+        login_failure_limit: number(&val, "MAIL_LOGIN_FAILURE_LIMIT", d.login_failure_limit)?,
         retention: fastmock_core::mail::MailRetention {
             max_messages: number(&val, "MAIL_MAX_MESSAGES", d.retention.max_messages)?,
             max_age: duration("MAIL_MAX_AGE", d.retention.max_age)?,
+            max_bytes: number(&val, "MAIL_MAX_BYTES", d.retention.max_bytes)?,
+            max_mailboxes: number(&val, "MAIL_MAX_MAILBOXES", d.retention.max_mailboxes)?,
         },
     };
     cfg.validate().map_err(anyhow::Error::msg)?;
@@ -1525,6 +1528,9 @@ mod tests {
                 ("MAIL_SESSION_TIMEOUT", "2m"),
                 ("MAIL_MAX_MESSAGES", "10"),
                 ("MAIL_MAX_AGE", "1d"),
+                ("MAIL_MAX_BYTES", "1048576"),
+                ("MAIL_MAX_MAILBOXES", "50"),
+                ("MAIL_LOGIN_FAILURE_LIMIT", "0"),
                 ("MAIL_HOSTNAME", "mail.example.test"),
                 ("MAIL_ALLOW_PLAINTEXT_AUTH", "true"),
                 ("MAIL_SMTP_REQUIRE_AUTH", "on"),
@@ -1542,6 +1548,9 @@ mod tests {
         assert_eq!(c.session_timeout, Duration::from_secs(120));
         assert_eq!(c.retention.max_messages, 10);
         assert_eq!(c.retention.max_age, Duration::from_secs(86_400));
+        assert_eq!(c.retention.max_bytes, 1_048_576);
+        assert_eq!(c.retention.max_mailboxes, 50);
+        assert_eq!(c.login_failure_limit, 0);
         assert_eq!(c.hostname, "mail.example.test");
         assert!(c.allow_plaintext_auth && c.smtp_require_auth);
         assert_eq!(c.smtp_users[0].name, "app");
@@ -1583,6 +1592,14 @@ mod tests {
             (
                 vec![on, ("MAIL_MAX_AGE", "0s")],
                 "FASTMOCK_MAIL_MAX_AGE must be greater than zero",
+            ),
+            (
+                vec![on, ("MAIL_MAX_MAILBOXES", "0")],
+                "FASTMOCK_MAIL_MAX_MAILBOXES must be greater than zero",
+            ),
+            (
+                vec![on, ("MAIL_MAX_BYTES", "1000")],
+                "FASTMOCK_MAIL_MAX_BYTES must be at least FASTMOCK_MAIL_MAX_MESSAGE_BYTES",
             ),
             (
                 vec![on, ("MAIL_DATA_TIMEOUT", "soon")],

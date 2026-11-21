@@ -126,13 +126,38 @@ pub struct MailRef {
     pub id: Uuid,
 }
 
-/// Retention (`FASTMOCK_MAIL_MAX_MESSAGES`, `FASTMOCK_MAIL_MAX_AGE`).
+/// Retention and growth limits (`FASTMOCK_MAIL_MAX_MESSAGES`, `FASTMOCK_MAIL_MAX_AGE`,
+/// `FASTMOCK_MAIL_MAX_BYTES`, `FASTMOCK_MAIL_MAX_MAILBOXES`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MailRetention {
     /// Per area (each space and the global area); the oldest messages beyond it are dropped.
     pub max_messages: usize,
     pub max_age: Duration,
+    /// Raw bytes per area; the oldest messages beyond it are dropped (the newest one is kept).
+    pub max_bytes: u64,
+    /// Mailboxes per area. Deliveries to further addresses are stored as messages without a mailbox
+    /// entry; empty mailboxes without a password are removed by the sweep.
+    pub max_mailboxes: usize,
 }
+
+impl Default for MailRetention {
+    fn default() -> Self {
+        Self {
+            max_messages: 1000,
+            max_age: Duration::from_secs(7 * 86_400),
+            max_bytes: 256 * 1024 * 1024,
+            max_mailboxes: 10_000,
+        }
+    }
+}
+
+/// Keywords (flags without a backslash) one entry may carry.
+pub const MAX_KEYWORDS: usize = 32;
+/// Longest keyword in bytes.
+pub const MAX_KEYWORD_BYTES: usize = 64;
+
+/// Where a page of [`MailStore::mailboxes`] continues: after this area and address.
+pub type MailboxAfter = (Option<String>, String);
 
 /// Storage of captured mail and of the IMAP/POP3 mailbox state.
 ///
@@ -169,8 +194,9 @@ pub trait MailStore: Send + Sync {
         labels: &[String],
     ) -> StoreResult<Option<MailEntry>>;
 
-    /// Drops messages older than `now - max_age` and, per area, the oldest beyond `max_messages`.
-    /// Several replicas may call it; implementations make concurrent sweeps harmless.
+    /// Drops messages older than `now - max_age` and, per area, the oldest beyond `max_messages` and
+    /// `max_bytes`, then removes mailboxes without entries and without a password. Several replicas may
+    /// call it; implementations make concurrent sweeps harmless.
     async fn sweep(&self, policy: &MailRetention, now: DateTime<Utc>) -> StoreResult<Vec<MailRef>>;
 
     /// Folders of an address, sorted by name (`INBOX` first); empty when it has no mailbox.
@@ -180,10 +206,17 @@ pub trait MailStore: Send + Sync {
         address: &str,
     ) -> StoreResult<Vec<MailboxInfo>>;
 
-    /// Addresses with a mailbox in `spaces`, sorted by area and address.
-    async fn mailboxes(&self, spaces: &SpaceFilter) -> StoreResult<Vec<MailboxOwner>>;
+    /// At most `limit` addresses with a mailbox in `spaces` after `after`, sorted by area (the global
+    /// area first) and address, bytewise.
+    async fn mailboxes(
+        &self,
+        spaces: &SpaceFilter,
+        after: Option<&MailboxAfter>,
+        limit: usize,
+    ) -> StoreResult<Vec<MailboxOwner>>;
 
-    /// Creates a folder (and the mailbox); false when it exists.
+    /// Creates a folder (and the mailbox); false when it exists. Fails when a new mailbox would exceed
+    /// the store's mailbox limit for the area.
     async fn mailbox_create(&self, key: &MailboxKey) -> StoreResult<bool>;
 
     /// Deletes a folder other than `INBOX` with its entries; false when it does not exist.

@@ -59,8 +59,11 @@ impl ImapServer {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
+        use tracing::Instrument as _;
+        let span = crate::smtp::session_span("imap", peer, implicit_tls);
         let mut s = session::Session::new(self, Box::new(stream), peer, shutdown);
-        let end = s.drive(implicit_tls).await;
+        let end = s.drive(implicit_tls).instrument(span.clone()).await;
+        span.record("fastmock.mail.result", end.as_str());
         metrics::counter!("fastmock_mail_imap_sessions_total", "result" => end.as_str())
             .increment(1);
         tracing::debug!(peer = %peer.ip(), result = end.as_str(), "IMAP session ended");

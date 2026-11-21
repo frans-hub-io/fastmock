@@ -1,6 +1,8 @@
 //! The IMAP view of a stored message: ENVELOPE and BODYSTRUCTURE from mail-parser's tree, and the
 //! bytes of `BODY[...]` sections.
 
+use std::borrow::Cow;
+
 use mail_parser::{Address, AddressList, Headers, Message, MessagePart, MessageRef};
 
 use super::command::{Section, SectionText};
@@ -175,8 +177,8 @@ impl<'a> MessageView<'a> {
         cur.map(Target::Part)
     }
 
-    /// The bytes of a section, `None` when the part does not exist.
-    pub fn section(&self, s: &Section) -> Option<Vec<u8>> {
+    /// The bytes of a section, `None` when the part does not exist; borrowed where no copy is needed.
+    pub fn section(&self, s: &Section) -> Option<Cow<'_, [u8]>> {
         let target = self.target(&s.part)?;
         let whole: &[u8] = match &target {
             Target::Root => self.raw,
@@ -189,17 +191,17 @@ impl<'a> MessageView<'a> {
         };
         Some(match &s.text {
             SectionText::Full => match &target {
-                Target::Root => self.raw.to_vec(),
-                Target::Part(p) => p.raw_body().to_vec(),
+                Target::Root => Cow::Borrowed(self.raw),
+                Target::Part(p) => Cow::Owned(p.raw_body().to_vec()),
             },
-            SectionText::Header if message_like => whole[..header_end(whole)].to_vec(),
+            SectionText::Header if message_like => Cow::Owned(whole[..header_end(whole)].to_vec()),
             SectionText::HeaderFields(f) if message_like => {
-                select_fields(&whole[..header_end(whole)], f, false)
+                Cow::Owned(select_fields(&whole[..header_end(whole)], f, false))
             }
             SectionText::HeaderFieldsNot(f) if message_like => {
-                select_fields(&whole[..header_end(whole)], f, true)
+                Cow::Owned(select_fields(&whole[..header_end(whole)], f, true))
             }
-            SectionText::Text if message_like => whole[header_end(whole)..].to_vec(),
+            SectionText::Text if message_like => Cow::Owned(whole[header_end(whole)..].to_vec()),
             SectionText::Mime => match &target {
                 Target::Part(p) => {
                     let mut h = p.raw_headers().to_vec();
@@ -209,7 +211,7 @@ impl<'a> MessageView<'a> {
                         }
                         h.extend_from_slice(b"\r\n");
                     }
-                    h
+                    Cow::Owned(h)
                 }
                 Target::Root => return None,
             },
@@ -460,7 +462,7 @@ mod tests {
                 part: part.to_vec(),
                 text,
             })
-            .map(|b| String::from_utf8(b).unwrap())
+            .map(|b| String::from_utf8(b.into_owned()).unwrap())
     }
 
     const SIMPLE: &[u8] = b"Date: Mon, 2 Feb 2026 10:00:00 +0000\r\nFrom: Shop <shop@example.com>\r\nTo: a@example.test, \"B, Jr\" <b@example.test>\r\nSubject: =?utf-8?q?Gr=C3=BC=C3=9Fe?=\r\nMessage-ID: <m1@example.com>\r\n\r\nHello\r\nworld\r\n";
@@ -618,7 +620,7 @@ mod tests {
                 .unwrap()
                 .starts_with("(\"TEXT\" \"PLAIN\"")
         );
-        assert_eq!(v.section(&Section::full()).unwrap(), raw);
+        assert_eq!(&*v.section(&Section::full()).unwrap(), &raw[..]);
     }
 
     #[test]

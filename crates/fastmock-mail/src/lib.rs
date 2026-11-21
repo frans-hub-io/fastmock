@@ -4,6 +4,7 @@
 //! crate wires it in. See README.md for the module layout and the seams of the later phases.
 
 pub mod address;
+pub mod auth_guard;
 pub mod chaos;
 pub mod compose;
 pub mod config;

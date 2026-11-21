@@ -414,7 +414,7 @@ pub async fn mailboxes(store: &dyn MailStore) {
     assert!(after.uid_validity > before.uid_validity);
     assert_eq!((after.uid_next, after.exists), (1, 0));
 
-    let owners = store.mailboxes(&only(&s)).await.unwrap();
+    let owners = store.mailboxes(&only(&s), None, 1000).await.unwrap();
     assert_eq!(
         owners
             .iter()
@@ -429,7 +429,7 @@ pub async fn mailboxes(store: &dyn MailStore) {
         Some("h1")
     );
     assert!(store.mailbox_password(None, a).await.unwrap().is_none());
-    assert!(store.mailboxes(&only(&s)).await.unwrap()[0].has_password);
+    assert!(store.mailboxes(&only(&s), None, 1000).await.unwrap()[0].has_password);
     assert!(store.set_mailbox_password(sp, a, None).await.unwrap());
     assert!(!store.set_mailbox_password(sp, a, None).await.unwrap());
     let c = "c@example.test";
@@ -466,6 +466,7 @@ pub async fn retention(store: &dyn MailStore) {
     let policy = MailRetention {
         max_messages: 3,
         max_age: Duration::from_secs(7 * 86_400),
+        ..Default::default()
     };
     let ours = |refs: Vec<MailRef>| -> Vec<(String, Uuid)> {
         let mut v: Vec<(String, Uuid)> = refs
@@ -491,4 +492,68 @@ pub async fn retention(store: &dyn MailStore) {
     assert_eq!(ids_of(store, &q).await.0, r1_ids[2..].to_vec());
     let inbox = MailboxKey::inbox(Some(&r1), "rcpt@example.test");
     assert_eq!(uids(store, &inbox).await, vec![3, 4, 5]);
+}
+
+/// Retention by bytes, removal of empty mailboxes without a password, and mailbox pages. Sweeps every
+/// area of the store.
+pub async fn growth(store: &dyn MailStore) {
+    let s = space();
+    let sp = Some(s.as_str());
+    let ids = fill(store, sp, 4).await;
+    let mut sizes = Vec::new();
+    for id in &ids {
+        sizes.push(
+            store
+                .get(*id, &SpaceFilter::Any)
+                .await
+                .unwrap()
+                .unwrap()
+                .raw
+                .len() as u64,
+        );
+    }
+    let empty = MailboxKey::inbox(sp, "empty@example.test");
+    assert!(store.mailbox_create(&empty).await.unwrap());
+    assert!(
+        store
+            .set_mailbox_password(sp, "kept@example.test", Some("h"))
+            .await
+            .unwrap()
+    );
+    let page = store.mailboxes(&only(&s), None, 2).await.unwrap();
+    let names: Vec<&str> = page.iter().map(|o| o.address.as_str()).collect();
+    assert_eq!(names, vec!["empty@example.test", "kept@example.test"]);
+    let after = (page[1].space.clone(), page[1].address.clone());
+    let rest = store.mailboxes(&only(&s), Some(&after), 10).await.unwrap();
+    let names: Vec<&str> = rest.iter().map(|o| o.address.as_str()).collect();
+    assert_eq!(names, vec!["rcpt@example.test"]);
+
+    let policy = MailRetention {
+        max_bytes: sizes[2] + sizes[3],
+        ..Default::default()
+    };
+    let mut gone: Vec<Uuid> = store
+        .sweep(&policy, Utc::now())
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.space.as_deref() == sp)
+        .map(|r| r.id)
+        .collect();
+    gone.sort();
+    let mut want = ids[..2].to_vec();
+    want.sort();
+    assert_eq!(gone, want, "the oldest beyond the byte limit");
+    let left: Vec<String> = store
+        .mailboxes(&only(&s), None, 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|o| o.address)
+        .collect();
+    assert_eq!(
+        left,
+        vec!["kept@example.test", "rcpt@example.test"],
+        "the empty mailbox without a password is removed"
+    );
 }

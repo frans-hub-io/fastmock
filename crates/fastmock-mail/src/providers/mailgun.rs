@@ -5,7 +5,7 @@
 use fastmock_core::mail::ProviderExtras;
 use serde_json::{Map, Value, json};
 
-use super::build::{Attachment, Spec, check_fanout, raw_message, split_list};
+use super::build::{Attachment, Fanout, Spec, raw_message, split_list, substitute_all};
 use super::{Fail, FormPart, Parsed, Reply, Request, norm};
 
 /// All `o:`, `h:`, `v:` and `t:` values together.
@@ -162,18 +162,31 @@ fn custom_headers(form: &[FormPart]) -> (Vec<(String, String)>, Vec<String>) {
     (headers, reply_to)
 }
 
-fn substitute(s: &Option<String>, vars: &Value) -> Option<String> {
-    let mut out = s.clone()?;
-    if let Value::Object(m) = vars {
-        for (k, v) in m {
-            let val = match v {
-                Value::String(x) => x.clone(),
-                other => other.to_string(),
-            };
-            out = out.replace(&format!("%recipient.{k}%"), &val);
-        }
+/// `%recipient.<key>%` pairs of one recipient's variables.
+fn recipient_pairs(vars: &Value) -> Vec<(String, String)> {
+    match vars {
+        Value::Object(m) => m
+            .iter()
+            .map(|(k, v)| {
+                let val = match v {
+                    Value::String(x) => x.clone(),
+                    other => other.to_string(),
+                };
+                (format!("%recipient.{k}%"), val)
+            })
+            .collect(),
+        _ => vec![],
     }
-    Some(out)
+}
+
+fn substitute(
+    s: &Option<String>,
+    pairs: &[(String, String)],
+    max: usize,
+) -> Result<Option<String>, Fail> {
+    s.as_deref()
+        .map(|v| substitute_all(v, pairs, max))
+        .transpose()
 }
 
 /// `POST /v3/{domain}/messages` and `/messages.mime`.
@@ -186,6 +199,11 @@ pub fn parse(req: &Request<'_>, domain: &str, mime: bool) -> Result<Parsed, Fail
         return Err(missing("to"));
     }
     if mime {
+        if to.len() > MAX_RECIPIENTS {
+            return Err(Fail::invalid(format!(
+                "Too many recipients: at most {MAX_RECIPIENTS}"
+            )));
+        }
         let part = form
             .iter()
             .find(|p| p.name == "message")
@@ -226,20 +244,32 @@ pub fn parse(req: &Request<'_>, domain: &str, mime: bool) -> Result<Parsed, Fail
     attachments.extend(files(form, "inline"));
     let msg_id = id.trim_matches(['<', '>']).to_string();
     let batch = json_field(form, &["recipient-variables"])?;
-    let spec = |to: Vec<String>, vars: &Value| Spec {
-        from: from.clone(),
-        display_to: to.join(", "),
-        to,
-        cc: cc.clone(),
-        bcc: bcc.clone(),
-        reply_to: reply_to.clone(),
-        subject: substitute(&first(form, "subject"), vars),
-        text: substitute(&text, vars),
-        html: substitute(&html, vars),
-        headers: headers.clone(),
-        attachments: attachments.clone(),
-        message_id: Some(msg_id.clone()),
-        extras: ex.clone(),
+    let subject = first(form, "subject");
+    let spec = |to: Vec<String>, vars: &Value, fan: &Fanout| -> Result<Spec, Fail> {
+        let pairs = recipient_pairs(vars);
+        let subject = substitute(&subject, &pairs, req.max_bytes)?;
+        let text = substitute(&text, &pairs, req.max_bytes)?;
+        let html = substitute(&html, &pairs, req.max_bytes)?;
+        fan.check(
+            subject.as_ref().map_or(0, String::len)
+                + text.as_ref().map_or(0, String::len)
+                + html.as_ref().map_or(0, String::len),
+        )?;
+        Ok(Spec {
+            from: from.clone(),
+            display_to: to.join(", "),
+            to,
+            cc: cc.clone(),
+            bcc: bcc.clone(),
+            reply_to: reply_to.clone(),
+            subject,
+            text,
+            html,
+            headers: headers.clone(),
+            attachments: attachments.clone(),
+            message_id: Some(msg_id.clone()),
+            extras: ex.clone(),
+        })
     };
     let wrap = |e: Fail| match e {
         Fail::Invalid { message, .. } => Fail::invalid(message),
@@ -256,18 +286,21 @@ pub fn parse(req: &Request<'_>, domain: &str, mime: bool) -> Result<Parsed, Fail
             let shared = text.as_ref().map_or(0, String::len)
                 + html.as_ref().map_or(0, String::len)
                 + attachments.iter().map(|a| a.data.len()).sum::<usize>();
-            check_fanout(shared, to.len())?;
+            let mut fan = Fanout::new(shared, to.len())?;
+            let lower: Map<String, Value> = vars
+                .iter()
+                .map(|(k, v)| (k.to_ascii_lowercase(), v.clone()))
+                .collect();
             let mut items = Vec::with_capacity(to.len());
             for r in &to {
-                let addr = super::build::address_of(r).unwrap_or_default();
-                let v = vars
-                    .iter()
-                    .find(|(k, _)| k.eq_ignore_ascii_case(&addr))
-                    .map(|(_, v)| v.clone())
-                    .unwrap_or(Value::Null);
-                items.push(Ok(spec(vec![r.clone()], &v)
+                let addr = super::build::address_of(r)
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                let v = lower.get(&addr).unwrap_or(&Value::Null);
+                let m = spec(vec![r.clone()], v, &fan)?
                     .build(req.max_bytes)
-                    .map_err(wrap)?));
+                    .map_err(wrap)?;
+                items.push(Ok(fan.message(m)?));
             }
             items
         }
@@ -276,7 +309,7 @@ pub fn parse(req: &Request<'_>, domain: &str, mime: bool) -> Result<Parsed, Fail
                 "recipient-variables must be a JSON object keyed by recipient address",
             ));
         }
-        None => vec![Ok(spec(to.clone(), &Value::Null)
+        None => vec![Ok(spec(to.clone(), &Value::Null, &Fanout::default())?
             .build(req.max_bytes)
             .map_err(wrap)?)],
     };

@@ -61,7 +61,7 @@ export const mailApi = {
       contentType: 'message/rfc822',
       query: { space: q.space ?? undefined, mailFrom: q.mailFrom || undefined, rcptTo: q.rcptTo || undefined },
     }),
-  mailboxes: (space?: string) => api.get<S['MailboxList']>(`${BASE}/mailboxes`, { query: { space } }),
+  mailboxes: (space?: string) => api.get<S['MailboxList']>(`${BASE}/mailboxes`, { query: { space, limit: 1000 } }),
   setPassword: (address: string, password: string, space?: string | null) =>
     api.put<undefined>(`${BASE}/mailboxes/${encodeURIComponent(address)}/password`, { password }, { query: { space: space ?? undefined } }),
   clearPassword: (address: string, space?: string | null) =>

@@ -14,6 +14,7 @@ use uuid::Uuid;
 use super::command::{self, Command};
 use super::{MAX_BAD_COMMANDS, MAX_COMMANDS, Pop3Server, SessionEnd, render};
 use crate::config::MailConfig;
+use crate::mailbox_login::MailboxAccess;
 use crate::smtp::sasl::{self, SaslError};
 
 const READ_CHUNK: usize = 16 * 1024;
@@ -63,7 +64,10 @@ enum Line {
 struct Msg {
     uid: u32,
     id: Uuid,
+    /// The stored size until the size as sent ([`render::wire_size`]) is known.
     size: u64,
+    /// `size` is the size as sent.
+    exact: bool,
     deleted: bool,
     retrieved: bool,
 }
@@ -71,6 +75,7 @@ struct Msg {
 /// The INBOX as it was at login.
 struct Maildrop {
     key: MailboxKey,
+    access: MailboxAccess,
     uid_validity: u32,
     msgs: Vec<Msg>,
 }
@@ -325,6 +330,16 @@ impl<'a> Session<'a> {
             Command::Quit => return self.quit().await,
             _ => {}
         }
+        if matches!(
+            cmd,
+            Command::Stat | Command::List(_) | Command::Rset | Command::Retr(_)
+        ) {
+            self.exact_sizes(match cmd {
+                Command::List(Some(n)) | Command::Retr(n) => Some(n),
+                _ => None,
+            })
+            .await;
+        }
         if matches!(self.state, State::Authorization { .. }) {
             return match cmd {
                 Command::User(u) => Ok(self.user(u)),
@@ -377,6 +392,12 @@ impl<'a> Session<'a> {
                 Ok(u) => self.ok(&format!("{n} {u}")),
                 Err(e) => self.err(&e),
             },
+            Command::Dele(_) if !md.access.can_expunge() => {
+                rejected("permission");
+                self.err(
+                    "[AUTH] The token does not allow deleting messages (mail:write or mail:delete)",
+                );
+            }
             Command::Dele(n) => match md.get(n) {
                 Ok(_) => {
                     md.msgs[n as usize - 1].deleted = true;
@@ -506,7 +527,7 @@ impl<'a> Session<'a> {
 
     async fn login(&mut self, creds: Option<(String, String)>) -> Step<bool> {
         let ok = match &creds {
-            Some((user, password)) => self.srv.login.check(user, password).await,
+            Some((user, password)) => self.srv.login.check(self.peer.ip(), user, password).await,
             None => None,
         };
         let Some(ok) = ok else {
@@ -522,6 +543,7 @@ impl<'a> Session<'a> {
             self.err("[AUTH] Invalid credentials");
             return Ok(false);
         };
+        tracing::Span::current().record("fastmock.space", ok.area.as_deref().unwrap_or("_global"));
         let key = MailboxKey::inbox(ok.area.as_deref(), &ok.address);
         let store = &self.srv.service.store;
         let opened = async {
@@ -540,6 +562,7 @@ impl<'a> Session<'a> {
         };
         let md = Maildrop {
             key,
+            access: ok.access,
             uid_validity: info.map_or(0, |i| i.uid_validity),
             msgs: entries
                 .into_iter()
@@ -547,12 +570,13 @@ impl<'a> Session<'a> {
                     uid: e.uid,
                     id: e.message_id,
                     size: e.size,
+                    exact: false,
                     deleted: false,
                     retrieved: false,
                 })
                 .collect(),
         };
-        let (n, size) = md.stat();
+        let n = md.live().count();
         tracing::debug!(
             peer = %self.peer.ip(),
             mailbox = %ok.address,
@@ -561,8 +585,31 @@ impl<'a> Session<'a> {
             "POP3 login"
         );
         self.state = State::Transaction(Box::new(md));
-        self.ok(&format!("Logged in, {n} messages ({size} octets)"));
+        self.ok(&format!("Logged in, {n} messages"));
         Ok(true)
+    }
+
+    /// Replaces stored sizes by the sizes as sent for message `only` (every message when `None`); a
+    /// message that cannot be read keeps its stored size.
+    async fn exact_sizes(&mut self, only: Option<u32>) {
+        let State::Transaction(md) = &mut self.state else {
+            return;
+        };
+        let area = SpaceFilter::area(md.key.space.as_deref());
+        let store = self.srv.service.store.clone();
+        for (i, m) in md.msgs.iter_mut().enumerate() {
+            if m.exact || only.is_some_and(|n| n as usize != i + 1) {
+                continue;
+            }
+            match store.get(m.id, &area).await {
+                Ok(Some(msg)) => {
+                    m.size = render::wire_size(&msg.raw);
+                    m.exact = true;
+                }
+                Ok(None) => m.exact = true,
+                Err(e) => tracing::warn!(error = %e, "reading a message for POP3 failed"),
+            }
+        }
     }
 
     async fn send_message(&mut self, n: u32, top: Option<u32>) {
@@ -736,11 +783,13 @@ mod tests {
             uid,
             id: Uuid::nil(),
             size,
+            exact: true,
             deleted: false,
             retrieved: false,
         };
         let mut d = Maildrop {
             key: MailboxKey::inbox(None, "a@example.test"),
+            access: MailboxAccess::FULL,
             uid_validity: 7,
             msgs: vec![msg(3, 10), msg(5, 20)],
         };

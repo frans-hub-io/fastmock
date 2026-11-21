@@ -7,12 +7,13 @@ use std::sync::Arc;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use fastmock_core::mail::{
-    Envelope, MailEntry, MailEvent, MailEvents, MailMessage, MailRef, MailSource, MailStore,
-    MailboxDelivery, ProviderExtras, TranscriptLine, micros,
+    Envelope, LoginFailures, MailEntry, MailEvent, MailEvents, MailMessage, MailRef, MailSource,
+    MailStore, MailboxDelivery, ProviderExtras, TranscriptLine, micros,
 };
 use uuid::Uuid;
 
 use crate::address::mailbox_of;
+use crate::auth_guard::AuthGuard;
 use crate::config::MailConfig;
 use crate::labels::{LABELS_HEADER, auto_labels};
 use crate::parse::ParsedMail;
@@ -77,6 +78,8 @@ pub struct MailService {
     pub domains: MailDomains,
     /// Names of the configured spaces (for AUTH-user routing).
     pub spaces: BTreeSet<String>,
+    /// Failed-login counters of SMTP AUTH, IMAP and POP3.
+    pub auth: AuthGuard,
 }
 
 impl MailService {
@@ -87,13 +90,21 @@ impl MailService {
         domains: MailDomains,
         spaces: BTreeSet<String>,
     ) -> Self {
+        let auth = AuthGuard::memory(config.login_throttle());
         Self {
             config,
             store,
             events,
             domains,
             spaces,
+            auth,
         }
+    }
+
+    /// Shares the failed-login counters through `failures` (Valkey with several replicas).
+    pub fn with_login_failures(mut self, failures: Arc<dyn LoginFailures>) -> Self {
+        self.auth = self.auth.with_failures(failures);
+        self
     }
 
     /// The stored copies a message would make (see [`route`]).
@@ -104,8 +115,43 @@ impl MailService {
     }
 
     /// Parses, routes, labels and stores a message, then publishes `message.received` for each copy.
-    /// Returns the stored copies.
+    /// Returns the stored copies. Runs in a `fastmock.mail.message` span (source, provider, the spaces
+    /// and ids of the copies).
     pub async fn accept(&self, inc: Incoming) -> Result<Vec<MailEntry>, AcceptError> {
+        use tracing::Instrument as _;
+        let span = tracing::info_span!(
+            "fastmock.mail.message",
+            otel.name = "mail message",
+            fastmock.mail.source = inc.source.as_str(),
+            fastmock.mail.provider = inc.provider.as_deref().unwrap_or(""),
+            fastmock.mail.size = inc.raw.len(),
+            fastmock.space = tracing::field::Empty,
+            fastmock.mail.ids = tracing::field::Empty,
+            fastmock.mail.result = tracing::field::Empty,
+        );
+        let r = self.accept_inner(inc).instrument(span.clone()).await;
+        match &r {
+            Ok(entries) => {
+                let spaces: Vec<&str> = entries
+                    .iter()
+                    .map(|e| e.space.as_deref().unwrap_or("_global"))
+                    .collect();
+                let ids: Vec<String> = entries.iter().map(|e| e.id.to_string()).collect();
+                span.record("fastmock.space", spaces.join(",").as_str());
+                span.record("fastmock.mail.ids", ids.join(",").as_str());
+                span.record("fastmock.mail.result", "stored");
+            }
+            Err(AcceptError::TooLarge(_)) => {
+                span.record("fastmock.mail.result", "too_large");
+            }
+            Err(AcceptError::Store(_)) => {
+                span.record("fastmock.mail.result", "error");
+            }
+        }
+        r
+    }
+
+    async fn accept_inner(&self, inc: Incoming) -> Result<Vec<MailEntry>, AcceptError> {
         let max = self.config.max_message_bytes;
         if inc.raw.len() > max {
             return Err(AcceptError::TooLarge(max));

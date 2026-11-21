@@ -112,9 +112,53 @@ fn printable(s: &str) -> String {
         .collect::<String>()
 }
 
+/// Longest BDAT chunk size in digits.
+pub const MAX_BDAT_DIGITS: usize = 20;
+
+/// `BDAT <size> [LAST]`, parsed here because the size must be checked digit by digit; `None` for other
+/// commands.
+fn bdat(line: &[u8]) -> Option<Result<Command, CommandError>> {
+    let verb = line.get(..4)?;
+    if !verb.eq_ignore_ascii_case(b"BDAT")
+        || !matches!(line.get(4), Some(b' ' | b'\r' | b'\n') | None)
+    {
+        return None;
+    }
+    let bad = || Err(CommandError::Syntax("BDAT chunk-size [LAST]"));
+    let Ok(text) = std::str::from_utf8(line) else {
+        return Some(bad());
+    };
+    let mut words = text.trim_end_matches(['\r', '\n']).split(' ').skip(1);
+    let size = match words.next() {
+        Some(d)
+            if !d.is_empty()
+                && d.len() <= MAX_BDAT_DIGITS
+                && d.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            match d.parse::<u64>().ok().and_then(|n| usize::try_from(n).ok()) {
+                Some(n) => n,
+                None => return Some(bad()),
+            }
+        }
+        _ => return Some(bad()),
+    };
+    let last = match words.next() {
+        None => false,
+        Some(w) if w.eq_ignore_ascii_case("LAST") => true,
+        Some(_) => return Some(bad()),
+    };
+    if words.next().is_some() {
+        return Some(bad());
+    }
+    Some(Ok(Command::Bdat { size, last }))
+}
+
 impl SmtpCodec for ProtoCodec {
     fn command(&self, line: &[u8]) -> Result<Command, CommandError> {
         use smtp_proto::{Error, Request};
+        if let Some(r) = bdat(line) {
+            return r;
+        }
         let mut it = line.iter();
         let req = match Request::parse(&mut it) {
             Ok(r) => r,
@@ -207,24 +251,72 @@ impl SmtpCodec for ProtoCodec {
     }
 
     fn body_decoder(&self) -> Box<dyn BodyDecoder> {
-        let mut inner = smtp_proto::request::receiver::DataReceiver::new();
-        let mut scratch = Vec::new();
-        // The body starts after the CRLF of the DATA line: prime the decoder with it so that a first
-        // line `.` ends an empty body and a leading dot is unstuffed.
-        inner.ingest(&mut b"\r\n".iter(), &mut scratch);
-        Box::new(ProtoBody { inner })
+        Box::new(DotBody {
+            state: BodyState::LineStart,
+        })
     }
 }
 
-struct ProtoBody {
-    inner: smtp_proto::request::receiver::DataReceiver,
+/// Where [`DotBody`] is within a line. The body starts at a line start (right after the CRLF of the
+/// DATA line).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BodyState {
+    /// After CRLF.
+    LineStart,
+    /// Inside a line, the last byte was not CR.
+    Text,
+    /// Inside a line, the last byte was CR.
+    Cr,
+    /// A `.` at a line start, not written yet.
+    Dot,
+    /// `.` CR at a line start, not written yet.
+    DotCr,
 }
 
-impl BodyDecoder for ProtoBody {
+/// RFC 5321 DATA decoding: only `<CRLF>.<CRLF>` ends the body; a leading dot followed by more
+/// characters on a CRLF-terminated line is removed (dot-stuffing), a dot followed by a bare LF is kept.
+struct DotBody {
+    state: BodyState,
+}
+
+impl BodyDecoder for DotBody {
     fn feed(&mut self, input: &[u8], out: &mut Vec<u8>) -> (usize, bool) {
-        let mut it = input.iter();
-        let done = self.inner.ingest(&mut it, out);
-        (input.len() - it.as_slice().len(), done)
+        use BodyState::*;
+        for (i, &b) in input.iter().enumerate() {
+            self.state = match (self.state, b) {
+                (LineStart, b'.') => Dot,
+                (Dot, b'\r') => DotCr,
+                (Dot, b'\n') => {
+                    out.extend_from_slice(b".\n");
+                    Text
+                }
+                (DotCr, b'\n') => {
+                    self.state = LineStart;
+                    return (i + 1, true);
+                }
+                (DotCr, b) => {
+                    out.push(b'\r');
+                    out.push(b);
+                    match b {
+                        b'\r' => Cr,
+                        _ => Text,
+                    }
+                }
+                (Cr, b'\n') => {
+                    out.push(b);
+                    LineStart
+                }
+                (_, b'\r') => {
+                    out.push(b);
+                    Cr
+                }
+                (_, b) => {
+                    out.push(b);
+                    Text
+                }
+            };
+        }
+        (input.len(), false)
     }
 }
 
@@ -348,10 +440,58 @@ mod tests {
         assert_eq!(out, b"a\n.\nb\r.\rc\r\n");
         let (out, done, _) = body(&[b"a\r\n.\nb\n.\r\nc\r\n.\r\n"]);
         assert!(done);
-        assert_eq!(out, b"a\r\n\nb\n.\r\nc\r\n");
+        assert_eq!(out, b"a\r\n.\nb\n.\r\nc\r\n");
         let (out, done, _) = body(&[b"a\r", b"\n", b".", b"\r", b"\n"]);
         assert!(done);
         assert_eq!(out, b"a\r\n");
+    }
+
+    #[test]
+    fn bdat_sizes_are_checked_digit_by_digit() {
+        assert_eq!(
+            cmd("BDAT 99999999999999999999999 LAST\r\n"),
+            Err(CommandError::Syntax("BDAT chunk-size [LAST]"))
+        );
+        assert_eq!(
+            cmd("BDAT 18446744073709551616\r\n"),
+            Err(CommandError::Syntax("BDAT chunk-size [LAST]"))
+        );
+        assert_eq!(
+            cmd("bdat 12 last\r\n"),
+            Ok(Command::Bdat {
+                size: 12,
+                last: true
+            })
+        );
+        assert_eq!(
+            cmd("BDAT 0\r\n"),
+            Ok(Command::Bdat {
+                size: 0,
+                last: false
+            })
+        );
+        for bad in [
+            "BDAT\r\n",
+            "BDAT -1\r\n",
+            "BDAT 1x\r\n",
+            "BDAT 1 LAST x\r\n",
+            "BDAT 1 FIRST\r\n",
+        ] {
+            assert!(cmd(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_dot_before_a_bare_lf_is_kept() {
+        let (out, done, _) = body(&[b"a\r\n.\nb\r\n..c\r\n.\r\n"]);
+        assert!(done);
+        assert_eq!(out, b"a\r\n.\nb\r\n.c\r\n");
+        let (out, done, _) = body(&[b"a\r\n", b".", b"\n", b"b\r\n.", b"\r", b"\n"]);
+        assert!(done);
+        assert_eq!(out, b"a\r\n.\nb\r\n");
+        let (out, done, _) = body(&[b"a\r\n.\rb\r\n.\r\n"]);
+        assert!(done);
+        assert_eq!(out, b"a\r\n\rb\r\n");
     }
 
     #[test]

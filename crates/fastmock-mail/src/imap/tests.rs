@@ -11,7 +11,7 @@ use tokio::sync::watch;
 
 use super::*;
 use crate::config::MailConfig;
-use crate::mailbox_login::{MailboxTokenCheck, hash_password_with};
+use crate::mailbox_login::{MailboxAccess, MailboxTokenCheck, hash_password_with};
 use crate::routing::MailDomains;
 use crate::service::{Incoming, MailService};
 
@@ -53,13 +53,21 @@ fn tls() -> Tls {
     }
 }
 
-/// Tokens `tok-<space>` (`tok-global` for the global area) allow `mail:read` there.
+/// Tokens `tok-<space>` (`tok-global` for the global area) allow `mail:read`, `mail:write` and
+/// `mail:delete` there; `ro-<space>` only `mail:read`.
 struct Tokens;
 
 #[async_trait]
 impl MailboxTokenCheck for Tokens {
-    async fn can_read(&self, area: Option<&str>, token: &str) -> bool {
-        token == format!("tok-{}", area.unwrap_or("global"))
+    async fn access(&self, area: Option<&str>, token: &str) -> Option<MailboxAccess> {
+        let area = area.unwrap_or("global");
+        if token == format!("tok-{area}") {
+            Some(MailboxAccess::FULL)
+        } else if token == format!("ro-{area}") {
+            Some(MailboxAccess::READ_ONLY)
+        } else {
+            None
+        }
     }
 }
 
@@ -799,4 +807,217 @@ async fn a_new_address_gets_an_empty_inbox() {
     assert!(u.is_empty());
     let u = c.ok("c", "SEARCH ALL").await;
     assert_eq!(u, vec!["* SEARCH"]);
+}
+
+// ----- literal and FETCH limits -----
+
+#[tokio::test]
+async fn literals_before_login_are_limited_to_login() {
+    let srv = Fixture::new().server();
+    let (mut c, h) = connect(&srv).await;
+    c.send(b"a APPEND INBOX {1000}\r\n").await;
+    assert_eq!(
+        c.line().await,
+        "a BAD Literals are accepted only for LOGIN before login"
+    );
+    c.send(b"b LOGIN {2000}\r\n").await;
+    assert_eq!(c.line().await, "b BAD Literal too large");
+    c.send(format!("c LOGIN {{{}}}\r\n", BOX.len()).as_bytes())
+        .await;
+    assert_eq!(c.line().await, "+ Ready for literal data");
+    c.send(format!("{BOX} {{11}}\r\n").as_bytes()).await;
+    assert_eq!(c.line().await, "+ Ready for literal data");
+    c.send(b"tok-billing\r\n").await;
+    let (_, t) = c.until("c").await;
+    assert!(t.starts_with("c OK"), "{t}");
+    drop(c);
+    let _ = h.await;
+
+    let (mut c, h) = connect(&srv).await;
+    c.send(b"d LOGIN {5+}\r\nalice tok\r\n").await;
+    assert_eq!(
+        c.line().await,
+        "* BYE Non-synchronizing literals are not accepted before login"
+    );
+    assert!(c.closed().await);
+    assert_eq!(h.await.unwrap(), SessionEnd::Rejected);
+
+    let (mut c, _h) = connect(&srv).await;
+    c.send(b"e APPEND INBOX {1048576+}\r\n").await;
+    assert_eq!(
+        c.line().await,
+        "* BYE Non-synchronizing literals are not accepted before login"
+    );
+    assert!(c.closed().await);
+}
+
+#[tokio::test]
+async fn literal_bytes_per_command_are_capped_after_login() {
+    let mut f = Fixture::new();
+    f.cfg.max_line_bytes = 4096;
+    f.cfg.max_message_bytes = 100_000;
+    let srv = f.server();
+    let mut c = logged_in(&srv).await;
+    c.send(b"a SEARCH TEXT {3000}\r\n").await;
+    assert_eq!(c.line().await, "+ Ready for literal data");
+    c.send(format!("{} TEXT {{3000}}\r\n", "x".repeat(3000)).as_bytes())
+        .await;
+    assert_eq!(c.line().await, "a BAD Literal too large");
+
+    c.send(b"b APPEND INBOX {60000}\r\n").await;
+    assert_eq!(c.line().await, "+ Ready for literal data");
+    let mut first = b"From: a@example.com\r\n\r\n".to_vec();
+    first.resize(60_000, b'x');
+    c.send(&first).await;
+    c.send(b" {50000}\r\n").await;
+    assert_eq!(c.line().await, "b NO [TOOBIG] Message too large");
+}
+
+async fn deliver_sized(srv: &ImapServer, size: usize) {
+    let mut raw = format!("From: a@example.com\r\nTo: {BOX}\r\nSubject: big\r\n\r\n").into_bytes();
+    raw.resize(size, b'y');
+    srv.service
+        .accept(Incoming::new(
+            MailSource::Smtp,
+            Envelope {
+                mail_from: "a@example.com".into(),
+                rcpt_to: vec![BOX.into()],
+                ..Default::default()
+            },
+            raw,
+        ))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn fetch_sections_and_response_size_are_capped() {
+    let mut f = Fixture::new();
+    f.cfg.max_message_bytes = 32 * 1024;
+    let srv = f.server();
+    deliver_sized(&srv, 20 * 1024).await;
+    let mut c = logged_in(&srv).await;
+    c.ok("a", "SELECT INBOX").await;
+    let items = ["BODY.PEEK[]"; 17].join(" ");
+    let (u, t) = c.cmd("b", &format!("FETCH 1 ({items})")).await;
+    assert!(u.is_empty(), "{u:?}");
+    assert_eq!(t, "b BAD At most 16 body sections in one FETCH");
+    let items = ["BODY.PEEK[]"; 8].join(" ");
+    let (u, t) = c.cmd("c", &format!("FETCH 1 ({items})")).await;
+    assert!(u.is_empty(), "{}", u.len());
+    assert_eq!(
+        t,
+        "c NO [LIMIT] FETCH response too large; fetch fewer messages or sections"
+    );
+    let u = c
+        .ok("d", "FETCH 1 (BODY.PEEK[] BODY.PEEK[HEADER] RFC822.SIZE)")
+        .await;
+    assert_eq!(u.len(), 1);
+    assert!(u[0].contains("BODY[] {20480}"), "{}", &u[0][..80]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_time_does_not_count_towards_the_session_limit() {
+    let mut f = Fixture::new();
+    f.cfg.session_timeout = Duration::from_secs(60);
+    f.cfg.imap_idle_timeout = Duration::from_secs(1800);
+    let srv = f.server();
+    let mut c = logged_in(&srv).await;
+    c.ok("s", "SELECT INBOX").await;
+    c.wait = Duration::from_secs(7200);
+    c.send(b"a IDLE\r\n").await;
+    assert_eq!(c.line().await, "+ idling");
+    tokio::time::sleep(Duration::from_secs(300)).await;
+    c.send(b"DONE\r\n").await;
+    assert_eq!(c.line().await, "a OK IDLE terminated");
+    c.ok("b", "NOOP").await;
+}
+
+#[tokio::test]
+async fn read_only_tokens_cannot_change_the_mailbox() {
+    let srv = Fixture::new().server();
+    deliver(&srv, BOX, "one").await;
+    let (mut c, _h) = connect(&srv).await;
+    c.ok("l", &format!("LOGIN {BOX} ro-billing")).await;
+    c.ok("a", "SELECT INBOX").await;
+    let nope = "NO [NOPERM] The token does not allow changing this mailbox (mail:write)";
+    let (_, t) = c.cmd("b", "STORE 1 +FLAGS (\\Deleted)").await;
+    assert_eq!(t, format!("b {nope}"));
+    c.ok("c", "STORE 1 +FLAGS (\\Seen)").await;
+    let (_, t) = c.cmd("d", "EXPUNGE").await;
+    assert_eq!(
+        t,
+        "d NO [NOPERM] The token does not allow expunging messages (mail:write or mail:delete)"
+    );
+    let (_, t) = c.cmd("e", "CREATE Archive").await;
+    assert_eq!(t, format!("e {nope}"));
+    let (_, t) = c.cmd("f", "COPY 1 INBOX").await;
+    assert_eq!(t, format!("f {nope}"));
+    let (_, t) = c.cmd("g", "MOVE 1 INBOX").await;
+    assert_eq!(t, format!("g {nope}"));
+    c.send(b"h APPEND INBOX {24}\r\n").await;
+    assert_eq!(c.line().await, "+ Ready for literal data");
+    c.send(b"From: a@example.com\r\n\r\nx\r\n").await;
+    let (_, t) = c.until("h").await;
+    assert_eq!(t, format!("h {nope}"));
+    c.ok("i", "FETCH 1 (FLAGS BODY.PEEK[])").await;
+    c.ok("j", "CLOSE").await;
+    assert_eq!(
+        srv.service
+            .store
+            .mailbox_entries(&inbox())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn failed_logins_are_throttled_across_connections() {
+    let srv = Fixture::new().server();
+    for i in 0..5 {
+        let (mut c, _h) = connect(&srv).await;
+        let (_, t) = c.cmd(&format!("a{i}"), &format!("LOGIN {BOX} wrong")).await;
+        assert!(t.contains("NO"), "{t}");
+    }
+    let (mut c, _h) = connect(&srv).await;
+    let (_, t) = c.cmd("b", &format!("LOGIN {BOX} tok-billing")).await;
+    assert_eq!(t, "b NO [AUTHENTICATIONFAILED] Authentication failed");
+}
+
+#[tokio::test]
+async fn keywords_per_message_are_bounded() {
+    let srv = Fixture::new().server();
+    deliver(&srv, BOX, "one").await;
+    let mut c = logged_in(&srv).await;
+    c.ok("a", "SELECT INBOX").await;
+    let many: Vec<String> = (0..33).map(|i| format!("k{i}")).collect();
+    let (_, t) = c
+        .cmd("b", &format!("STORE 1 +FLAGS ({})", many.join(" ")))
+        .await;
+    assert_eq!(t, "b NO [LIMIT] At most 32 keywords per message");
+    let (_, t) = c
+        .cmd("c", &format!("STORE 1 +FLAGS ({})", "x".repeat(65)))
+        .await;
+    assert_eq!(t, "c BAD Keywords are at most 64 bytes");
+    c.ok("d", &format!("STORE 1 +FLAGS ({})", many[..30].join(" ")))
+        .await;
+    let (_, t) = c
+        .cmd("e", &format!("STORE 1 +FLAGS ({})", many[30..].join(" ")))
+        .await;
+    assert_eq!(t, "e NO [LIMIT] At most 32 keywords per message");
+    c.ok("f", &format!("STORE 1 FLAGS ({})", many[..32].join(" ")))
+        .await;
+}
+
+#[tokio::test]
+async fn list_patterns_are_capped() {
+    let srv = Fixture::new().server();
+    let mut c = logged_in(&srv).await;
+    let long = "*".repeat(1100);
+    let (_, t) = c.cmd("a", &format!("LIST \"\" \"{long}\"")).await;
+    assert_eq!(t, "a BAD Pattern too long");
+    let u = c.ok("b", "LIST \"\" \"*\"").await;
+    assert_eq!(u.len(), 1, "{u:?}");
 }

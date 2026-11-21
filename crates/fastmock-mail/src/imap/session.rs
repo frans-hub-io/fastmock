@@ -9,8 +9,8 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use fastmock_core::mail::{
-    Envelope, FlagOp, INBOX, MailEventKind, MailMessage, MailSource, MailSubscriptionError,
-    MailboxDelivery, MailboxEntry, MailboxKey, folder_name,
+    Envelope, FlagOp, INBOX, MAX_KEYWORD_BYTES, MAX_KEYWORDS, MailEventKind, MailMessage,
+    MailSource, MailSubscriptionError, MailboxDelivery, MailboxEntry, MailboxKey, folder_name,
 };
 use fastmock_core::model::SpaceFilter;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -39,6 +39,10 @@ pub const AUTH_FAILURE_DELAY: Duration = Duration::from_millis(300);
 pub const IDLE_POLL: Duration = Duration::from_secs(5);
 /// Literals in one command.
 const MAX_LITERALS: usize = 64;
+/// Body sections (`BODY[...]`, `RFC822*`) in one FETCH.
+pub const MAX_FETCH_SECTIONS: usize = 16;
+/// Largest literal before login (user name, password or SASL response).
+pub const MAX_PRELOGIN_LITERAL: usize = 1024;
 /// Longest folder name in bytes.
 const MAX_FOLDER_NAME: usize = 255;
 const READ_CHUNK: usize = 16 * 1024;
@@ -135,21 +139,121 @@ fn command_name(msg: &[u8]) -> String {
         .unwrap_or_default()
 }
 
-/// Matches a LIST pattern: `*` is anything, `%` anything but the delimiter `/`.
-pub(crate) fn list_match(pattern: &[u8], name: &[u8]) -> bool {
-    let (p, n) = (pattern, name);
-    let mut dp = vec![vec![false; n.len() + 1]; p.len() + 1];
-    dp[p.len()][n.len()] = true;
-    for i in (0..p.len()).rev() {
-        for j in (0..=n.len()).rev() {
-            dp[i][j] = match p[i] {
-                b'*' => dp[i + 1][j] || (j < n.len() && dp[i][j + 1]),
-                b'%' => dp[i + 1][j] || (j < n.len() && n[j] != b'/' && dp[i][j + 1]),
-                c => j < n.len() && n[j] == c && dp[i + 1][j + 1],
-            };
+/// Longest LIST reference plus pattern in bytes.
+pub const MAX_LIST_PATTERN: usize = 1024;
+
+/// A compiled LIST pattern: `*` is anything, `%` anything but the delimiter `/`. Runs of wildcards are
+/// collapsed and the states are bit sets (one mask per byte value), so a name is matched in one pass
+/// over its bytes with a few word operations per byte.
+pub(crate) struct ListPattern {
+    len: usize,
+    words: usize,
+    star: Vec<u64>,
+    pct: Vec<u64>,
+    /// `words` masks per byte value: the positions holding that byte.
+    lit: Vec<u64>,
+}
+
+impl ListPattern {
+    pub(crate) fn new(pattern: &[u8]) -> Self {
+        let mut p: Vec<u8> = Vec::with_capacity(pattern.len());
+        for &c in pattern {
+            match (p.last().copied(), c) {
+                (Some(b'*'), b'*' | b'%') | (Some(b'%'), b'%') => {}
+                (Some(b'%'), b'*') => {
+                    p.pop();
+                    p.push(b'*');
+                }
+                _ => p.push(c),
+            }
+        }
+        let words = (p.len() + 1).div_ceil(64);
+        let mut star = vec![0u64; words];
+        let mut pct = vec![0u64; words];
+        let mut lit = vec![0u64; words * 256];
+        for (i, &c) in p.iter().enumerate() {
+            let bit = 1u64 << (i % 64);
+            match c {
+                b'*' => star[i / 64] |= bit,
+                b'%' => pct[i / 64] |= bit,
+                _ => lit[c as usize * words + i / 64] |= bit,
+            }
+        }
+        Self {
+            len: p.len(),
+            words,
+            star,
+            pct,
+            lit,
         }
     }
-    dp[0][0]
+
+    fn close(&self, s: &mut [u64]) {
+        let mut carry = 0u64;
+        for w in 0..self.words {
+            let wild = s[w] & (self.star[w] | self.pct[w]);
+            s[w] |= (wild << 1) | carry;
+            carry = wild >> 63;
+        }
+    }
+
+    pub(crate) fn matches(&self, name: &[u8]) -> bool {
+        let words = self.words;
+        let mut cur = vec![0u64; words];
+        cur[0] = 1;
+        self.close(&mut cur);
+        let mut next = vec![0u64; words];
+        for &c in name {
+            let masks = &self.lit[c as usize * words..(c as usize + 1) * words];
+            let mut carry = 0u64;
+            for w in 0..words {
+                let lit = cur[w] & masks[w];
+                let mut n = (lit << 1) | carry | (cur[w] & self.star[w]);
+                carry = lit >> 63;
+                if c != b'/' {
+                    n |= cur[w] & self.pct[w];
+                }
+                next[w] = n;
+            }
+            self.close(&mut next);
+            std::mem::swap(&mut cur, &mut next);
+            if cur.iter().all(|w| *w == 0) {
+                return false;
+            }
+        }
+        cur[self.len / 64] & (1 << (self.len % 64)) != 0
+    }
+}
+
+/// Matches a LIST pattern (see [`ListPattern`]).
+#[cfg(test)]
+pub(crate) fn list_match(pattern: &[u8], name: &[u8]) -> bool {
+    ListPattern::new(pattern).matches(name)
+}
+
+const KEYWORD_LIMIT: &str = "[LIMIT] At most 32 keywords per message";
+
+/// A keyword: a flag without a backslash.
+fn is_keyword(f: &str) -> bool {
+    !f.starts_with('\\')
+}
+
+/// Why flags given to STORE or APPEND are refused: a keyword above [`MAX_KEYWORD_BYTES`] (BAD) or more
+/// than [`MAX_KEYWORDS`] keywords (NO).
+fn keyword_problem(flags: &[String]) -> Option<(&'static str, &'static str)> {
+    if flags
+        .iter()
+        .any(|f| is_keyword(f) && f.len() > MAX_KEYWORD_BYTES)
+    {
+        return Some(("BAD", "Keywords are at most 64 bytes"));
+    }
+    let n = flags
+        .iter()
+        .filter(|f| is_keyword(f))
+        .map(|f| f.to_ascii_lowercase())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    (n > MAX_KEYWORDS).then_some(("NO", KEYWORD_LIMIT))
 }
 
 /// `1:3,5` from ascending numbers.
@@ -337,34 +441,64 @@ impl<'a> Session<'a> {
         Close::Rejected
     }
 
-    /// Reads one command with its literals. Synchronizing literals get a continuation request; a
-    /// literal over the limit (the message size for APPEND, the line size otherwise) is refused.
+    /// Reads one command with its literals. Synchronizing literals get a continuation request.
+    ///
+    /// Before login only LOGIN and AUTHENTICATE may carry literals, each synchronizing and at most
+    /// [`MAX_PRELOGIN_LITERAL`] bytes, the whole command within the line limit; a non-synchronizing
+    /// literal closes the connection. After login the literals of a command may hold the message size
+    /// in total for APPEND (one literal above the line limit: the message) and the line size otherwise.
     async fn read_command(&mut self) -> Step<Framed> {
         let mut msg = self.next_line(true).await?;
         let mut literals = 0;
+        let mut literal_bytes = 0usize;
+        let mut large = 0usize;
         while let Some((len, sync)) = literal_announcement(&msg) {
             literals += 1;
-            let append = command_name(&msg) == "APPEND";
-            let limit = if append {
-                self.cfg.max_message_bytes
-            } else {
-                self.cfg.max_line_bytes
-            };
+            let name = command_name(&msg);
+            let append = name == "APPEND";
             let len = len as usize;
-            if len > limit || literals > MAX_LITERALS {
+            let line_cap = self.cfg.max_line_bytes;
+            let refused = if self.user.is_none() {
+                if !sync {
+                    return Err(self.bye_rejected(
+                        "literal_before_login",
+                        "Non-synchronizing literals are not accepted before login",
+                    ));
+                }
+                let login = name == "LOGIN" || name == "AUTHENTICATE";
+                (!login)
+                    .then_some("Literals are accepted only for LOGIN before login")
+                    .or(
+                        (len > MAX_PRELOGIN_LITERAL || msg.len().saturating_add(len) > line_cap)
+                            .then_some("Literal too large"),
+                    )
+            } else if append {
+                let message = len > line_cap;
+                let over = literal_bytes.saturating_add(len) > self.cfg.max_message_bytes
+                    || (message && large >= 1);
+                over.then_some("[TOOBIG] Message too large")
+            } else {
+                (msg.len().saturating_add(len) > line_cap).then_some("Literal too large")
+            };
+            let refused = refused.or((literals > MAX_LITERALS).then_some("Too many literals"));
+            if let Some(text) = refused {
                 if !sync {
                     return Err(self.bye_rejected("literal_too_large", "Literal too large"));
                 }
                 rejected("literal_too_large");
                 let tag = guess_tag(&msg).unwrap_or_else(|| "*".into());
-                if append {
-                    self.tagged(&tag, "NO", "[TOOBIG] Message too large");
+                if append && self.user.is_some() {
+                    self.tagged(&tag, "NO", text);
                 } else {
-                    self.tagged(&tag, "BAD", "Literal too large");
+                    self.tagged(&tag, "BAD", text);
                 }
                 self.bad_command()?;
                 return Ok(Framed::Answered);
             }
+            if append && len > line_cap {
+                large += 1;
+            }
+            literal_bytes += len;
             if sync {
                 self.line("+ Ready for literal data");
             }
@@ -491,6 +625,11 @@ impl<'a> Session<'a> {
             }
             _ => {}
         }
+        if authed && let Some(text) = self.denied(&cmd) {
+            rejected("permission");
+            self.tagged(&tag, "NO", text);
+            return Ok(true);
+        }
         match cmd {
             Cmd::Capability => {
                 let caps = self.capabilities();
@@ -562,8 +701,10 @@ impl<'a> Session<'a> {
                 message,
             } => self.append(&tag, &mailbox, flags, message).await,
             Cmd::Close => {
+                let expunge = self.user().access.can_expunge();
                 if let Some(s) = self.selected.take()
                     && !s.read_only
+                    && expunge
                     && let Err(e) = self.srv.service.store.mailbox_expunge(&s.key, None).await
                 {
                     tracing::warn!(error = %e, "IMAP CLOSE expunge failed");
@@ -599,6 +740,30 @@ impl<'a> Session<'a> {
             }
         }
         Ok(true)
+    }
+
+    /// Why a session logged in with a read-only token may not run `cmd`.
+    fn denied(&self, cmd: &Cmd) -> Option<&'static str> {
+        let access = self.user.as_ref()?.access;
+        const WRITE: &str = "[NOPERM] The token does not allow changing this mailbox (mail:write)";
+        match cmd {
+            Cmd::Append { .. } | Cmd::Create(_) | Cmd::Delete(_) | Cmd::Copy { .. }
+                if !access.write =>
+            {
+                Some(WRITE)
+            }
+            Cmd::Store { op, flags, .. }
+                if !access.write
+                    && *op != StoreOp::Remove
+                    && flags.iter().any(|f| f.eq_ignore_ascii_case("\\Deleted")) =>
+            {
+                Some(WRITE)
+            }
+            Cmd::Expunge(_) if !access.can_expunge() => Some(
+                "[NOPERM] The token does not allow expunging messages (mail:write or mail:delete)",
+            ),
+            _ => None,
+        }
     }
 
     // ----- not authenticated -----
@@ -702,12 +867,13 @@ impl<'a> Session<'a> {
     async fn login(&mut self, tag: &str, user: &[u8], password: &[u8]) -> Step<bool> {
         let svc = &self.srv.service;
         let found = match (std::str::from_utf8(user), std::str::from_utf8(password)) {
-            (Ok(user), Ok(password)) => self.srv.login.check(user, password).await,
+            (Ok(user), Ok(password)) => self.srv.login.check(self.peer.ip(), user, password).await,
             _ => None,
         };
         let Some(u) = found else {
             return self.login_failed(tag).await;
         };
+        tracing::Span::current().record("fastmock.space", u.area.as_deref().unwrap_or("_global"));
         if let Err(e) = svc
             .store
             .mailbox_create(&MailboxKey::inbox(u.area.as_deref(), &u.address))
@@ -882,10 +1048,15 @@ impl<'a> Session<'a> {
             Err(e) => return self.store_failed(tag, e),
         };
         let full = format!("{reference}{pattern}");
+        if full.len() > MAX_LIST_PATTERN {
+            self.tagged(tag, "BAD", "Pattern too long");
+            return;
+        }
+        let pat = ListPattern::new(full.as_bytes());
+        let upper = ListPattern::new(full.to_ascii_uppercase().as_bytes());
         for f in folders {
             let name = f.folder;
-            let hit = list_match(full.as_bytes(), name.as_bytes())
-                || (name == INBOX && list_match(full.to_ascii_uppercase().as_bytes(), b"INBOX"));
+            let hit = pat.matches(name.as_bytes()) || (name == INBOX && upper.matches(b"INBOX"));
             if hit {
                 let mut l = format!("* {cmd} () \"/\" ").into_bytes();
                 l.extend_from_slice(&self.name_bytes(&name));
@@ -961,6 +1132,10 @@ impl<'a> Session<'a> {
             .into_iter()
             .filter(|f| !f.eq_ignore_ascii_case("\\Recent"))
             .collect();
+        if let Some((status, text)) = keyword_problem(&flags) {
+            self.tagged(tag, status, text);
+            return;
+        }
         let mut inc = Incoming::new(
             MailSource::Inject,
             Envelope {
@@ -1212,6 +1387,14 @@ impl<'a> Session<'a> {
             self.tagged(tag, "BAD", "Invalid message sequence number");
             return Ok(false);
         }
+        if items.iter().filter(|i| i.is_section()).count() > MAX_FETCH_SECTIONS {
+            self.tagged(
+                tag,
+                "BAD",
+                &format!("At most {MAX_FETCH_SECTIONS} body sections in one FETCH"),
+            );
+            return Ok(false);
+        }
         let mut current = self.sync(uid).await;
         let targets = self.targets(set, uid);
         let key = self.selected_key();
@@ -1249,6 +1432,8 @@ impl<'a> Session<'a> {
         let space = self.user().area.clone();
         let limits = self.cfg.parse_limits();
         let utf8 = self.utf8;
+        let max_response = self.cfg.max_message_bytes.saturating_mul(4);
+        let mut sent = 0usize;
         for (seq, u) in targets {
             let Some(entry) = current.get(&u) else {
                 continue;
@@ -1262,23 +1447,36 @@ impl<'a> Session<'a> {
                 None
             };
             let view = msg.as_ref().map(|m| MessageView::parse(&m.raw, &limits));
-            let mut parts: Vec<Vec<u8>> = Vec::new();
-            if uid && !items.contains(&FetchItem::Uid) {
-                parts.push(format!("UID {u}").into_bytes());
-            }
-            for item in items {
-                parts.push(render_item(item, entry, view.as_ref(), utf8));
-            }
-            if seen_set.contains(&u) && !items.contains(&FetchItem::Flags) {
-                parts.push(format!("FLAGS {}", flag_list(&entry.flags)).into_bytes());
-            }
+            let start = self.wbuf.len();
             self.wbuf
                 .extend_from_slice(format!("* {seq} FETCH (").as_bytes());
-            for (i, p) in parts.iter().enumerate() {
-                if i > 0 {
+            let mut first = true;
+            if uid && !items.contains(&FetchItem::Uid) {
+                self.wbuf.extend_from_slice(format!("UID {u}").as_bytes());
+                first = false;
+            }
+            for item in items {
+                if !first {
                     self.wbuf.push(b' ');
                 }
-                self.wbuf.extend_from_slice(p);
+                first = false;
+                let before = self.wbuf.len();
+                render_item(&mut self.wbuf, item, entry, view.as_ref(), utf8);
+                sent = sent.saturating_add(self.wbuf.len() - before);
+                if sent > max_response {
+                    self.wbuf.truncate(start);
+                    rejected("fetch_too_large");
+                    self.tagged(
+                        tag,
+                        "NO",
+                        "[LIMIT] FETCH response too large; fetch fewer messages or sections",
+                    );
+                    return Ok(true);
+                }
+            }
+            if seen_set.contains(&u) && !items.contains(&FetchItem::Flags) {
+                self.wbuf
+                    .extend_from_slice(format!(" FLAGS {}", flag_list(&entry.flags)).as_bytes());
             }
             self.wbuf.extend_from_slice(b")\r\n");
             self.flush_if_large().await?;
@@ -1326,6 +1524,33 @@ impl<'a> Session<'a> {
             .into_iter()
             .filter(|f| !f.eq_ignore_ascii_case("\\Recent"))
             .collect();
+        if let Some(e) = keyword_problem(&flags) {
+            self.tagged(tag, e.0, e.1);
+            return Ok(e.0 == "NO");
+        }
+        if op == StoreOp::Add
+            && let Some(sel) = &self.selected
+        {
+            let wanted = flags.iter().filter(|f| is_keyword(f));
+            let over = sel
+                .known
+                .iter()
+                .filter(|k| seq_of.contains_key(&k.uid))
+                .any(|k| {
+                    let mut all: std::collections::BTreeSet<String> = k
+                        .flags
+                        .iter()
+                        .filter(|f| is_keyword(f))
+                        .map(|f| f.to_ascii_lowercase())
+                        .collect();
+                    all.extend(wanted.clone().map(|f| f.to_ascii_lowercase()));
+                    all.len() > MAX_KEYWORDS
+                });
+            if over {
+                self.tagged(tag, "NO", KEYWORD_LIMIT);
+                return Ok(true);
+            }
+        }
         let op = match op {
             StoreOp::Add => FlagOp::Add,
             StoreOp::Remove => FlagOp::Remove,
@@ -1472,9 +1697,8 @@ impl<'a> Session<'a> {
         let events = self.srv.service.events.clone();
         let mut sub = Some(events.subscribe(SpaceFilter::area(u.area.as_deref())));
         let tick = events.poll_interval().unwrap_or(IDLE_POLL);
-        let now = Instant::now();
-        let session_left = self.deadline.saturating_duration_since(now);
-        let idle_until = now + self.cfg.imap_idle_timeout.min(session_left);
+        let started = Instant::now();
+        let idle_until = started + self.cfg.imap_idle_timeout;
         self.line("+ idling");
         self.sync(true).await;
         loop {
@@ -1483,6 +1707,7 @@ impl<'a> Session<'a> {
                 let line: Vec<u8> = self.rbuf.drain(..=pos).collect();
                 let text = String::from_utf8_lossy(&line);
                 if text.trim().eq_ignore_ascii_case("DONE") {
+                    self.deadline += started.elapsed();
                     self.tagged(tag, "OK", "IDLE terminated");
                     return Ok(true);
                 }
@@ -1590,14 +1815,14 @@ async fn load(svc: &MailService, space: Option<&str>, entry: &MailboxEntry) -> O
     }
 }
 
-/// One FETCH data item.
+/// One FETCH data item, appended to `o`.
 fn render_item(
+    o: &mut Vec<u8>,
     item: &FetchItem,
     entry: &MailboxEntry,
     view: Option<&MessageView<'_>>,
     utf8: bool,
-) -> Vec<u8> {
-    let mut o = Vec::new();
+) {
     match item {
         FetchItem::Flags => {
             o.extend_from_slice(format!("FLAGS {}", flag_list(&entry.flags)).as_bytes())
@@ -1612,14 +1837,14 @@ fn render_item(
         FetchItem::Envelope => {
             o.extend_from_slice(b"ENVELOPE ");
             if let Some(v) = view {
-                v.envelope(&mut o, utf8);
+                v.envelope(o, utf8);
             }
         }
         FetchItem::BodyStructure | FetchItem::Body => {
             let ext = *item == FetchItem::BodyStructure;
             o.extend_from_slice(if ext { b"BODYSTRUCTURE " } else { b"BODY " });
             if let Some(v) = view {
-                v.body_structure(&mut o, ext, utf8);
+                v.body_structure(o, ext, utf8);
             }
         }
         FetchItem::BodySection {
@@ -1632,36 +1857,35 @@ fn render_item(
                     let start = (*origin as usize).min(d.len());
                     let end = start.saturating_add(*len as usize).min(d.len());
                     o.extend_from_slice(format!("<{origin}> ").as_bytes());
-                    literal(&mut o, &d[start..end]);
+                    literal(o, &d[start..end]);
                 }
                 (Some(d), None) => {
                     o.push(b' ');
-                    literal(&mut o, &d);
+                    literal(o, &d);
                 }
                 (None, Some((origin, _))) => {
                     o.extend_from_slice(format!("<{origin}> ").as_bytes());
-                    nstring(&mut o, None, utf8);
+                    nstring(o, None, utf8);
                 }
                 (None, None) => {
                     o.push(b' ');
-                    nstring(&mut o, None, utf8);
+                    nstring(o, None, utf8);
                 }
             }
         }
         FetchItem::Rfc822 => {
             o.extend_from_slice(b"RFC822 ");
-            literal(&mut o, view.map_or(&[][..], |v| v.raw()));
+            literal(o, view.map_or(&[][..], |v| v.raw()));
         }
         FetchItem::Rfc822Header => {
             o.extend_from_slice(b"RFC822.HEADER ");
-            literal(&mut o, view.map_or(&[][..], |v| v.header()));
+            literal(o, view.map_or(&[][..], |v| v.header()));
         }
         FetchItem::Rfc822Text => {
             o.extend_from_slice(b"RFC822.TEXT ");
-            literal(&mut o, view.map_or(&[][..], |v| v.text()));
+            literal(o, view.map_or(&[][..], |v| v.text()));
         }
     }
-    o
 }
 
 #[cfg(test)]
@@ -1694,6 +1918,35 @@ mod tests {
         assert!(list_match(b"", b""));
         let long = vec![b'*'; 2000];
         assert!(list_match(&long, b"abc"));
+        assert!(list_match(b"%*%", b"a/b"));
+        assert!(list_match(b"*%", b"a/b"));
+        assert!(!list_match(b"%%/%", b"a"));
+        assert!(list_match(b"a*b*c", b"axxbyyc"));
+        assert!(!list_match(b"a*b*c", b"axxbyy"));
+        assert!(list_match(b"a%b", b"aXb"));
+        assert!(!list_match(b"a%b", b"a/b"));
+        let p = format!("{}x", "a*".repeat(30));
+        assert!(list_match(
+            p.as_bytes(),
+            format!("{}x", "a".repeat(30)).as_bytes()
+        ));
+        assert!(!list_match(p.as_bytes(), "a".repeat(80).as_bytes()));
+    }
+
+    #[test]
+    fn list_matching_is_fast_for_long_patterns() {
+        let pattern = "*a".repeat(512);
+        let pat = ListPattern::new(pattern.as_bytes());
+        let name = "a".repeat(250);
+        let t = std::time::Instant::now();
+        for _ in 0..100 {
+            assert!(!pat.matches(name.as_bytes()));
+        }
+        assert!(
+            t.elapsed() < std::time::Duration::from_millis(200),
+            "{:?}",
+            t.elapsed()
+        );
     }
 
     #[test]

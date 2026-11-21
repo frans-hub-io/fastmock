@@ -5,7 +5,7 @@ use fastmock_core::mail::ProviderExtras;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use super::build::{Attachment, Spec, address_of, check_fanout, decode_base64};
+use super::build::{Attachment, Fanout, Spec, address_of, decode_base64};
 use super::{Fail, OutMessage, Parsed, Reply, Request, json_body, norm};
 
 pub const MAX_RECIPIENTS: usize = 99;
@@ -231,7 +231,7 @@ pub fn parse(req: &Request<'_>) -> Result<Parsed, Fail> {
     let shared = body.html_content.as_ref().map_or(0, String::len)
         + body.text_content.as_ref().map_or(0, String::len)
         + attachments.iter().map(|a| a.data.len()).sum::<usize>();
-    check_fanout(shared, base_versions.len())?;
+    let mut fan = Fanout::new(shared, base_versions.len())?;
     let scheduled = body.scheduled_at.is_some();
     let mut items = Vec::with_capacity(base_versions.len());
     for v in base_versions {
@@ -283,7 +283,7 @@ pub fn parse(req: &Request<'_>) -> Result<Parsed, Fail> {
             Fail::Invalid { message, .. } => code("invalid_parameter", message),
             other => other,
         })?;
-        items.push(Ok(m));
+        items.push(Ok(fan.message(m)?));
     }
     let versions = items.len() > 1;
     Ok(Parsed {

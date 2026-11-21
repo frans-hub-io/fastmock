@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
+use crate::mail_webhook_secrets::{SEALED_AUTH_HEADER, Sealer};
 use crate::outbox::{BODY_BASE64_HEADER, EgressPolicy};
 
 /// Data-store namespace of the configuration; the key is the space name or `_global`.
@@ -138,7 +139,12 @@ pub struct StoredWebhook {
     pub id: String,
     pub provider: String,
     pub kind: WebhookKind,
+    /// Without a password (a user name may stay).
     pub url: String,
+    /// The URL password, sealed ([`Sealer`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    /// Sealed ([`Sealer`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signing_key: Option<String>,
     #[serde(default)]
@@ -168,7 +174,8 @@ pub struct StoredMailHooks {
     /// Provider name to SHA-256 hex digests of the accepted API keys.
     #[serde(default)]
     pub api_keys: BTreeMap<String, Vec<String>>,
-    /// The space's SendGrid signing key (PKCS#8, base64), generated on the first `PUT`.
+    /// The space's SendGrid signing key (PKCS#8, base64), generated on the first `PUT`; sealed when a
+    /// key is available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sendgrid_key: Option<String>,
 }
@@ -247,16 +254,14 @@ pub fn key_digest(key: &str) -> String {
     hex::encode(Sha256::digest(key.as_bytes()))
 }
 
-/// Whether `key` passes the expected keys of `provider` in every area that lists some.
+/// Whether `key` passes the expected keys of `provider` in every area that lists some (Postmark's
+/// `POSTMARK_API_TEST` too: it is a key like any other there).
 pub async fn key_allowed(
     stores: &Stores,
     areas: &[Option<String>],
     provider: Provider,
     key: &str,
 ) -> anyhow::Result<bool> {
-    if fastmock_mail::providers::always_accepted(provider, key) {
-        return Ok(true);
-    }
     let digest = key_digest(key);
     for a in areas {
         let h = load(stores, a.as_deref()).await?;
@@ -342,18 +347,30 @@ pub fn mailgun_signature(key: &str, timestamp: &str, token: &str) -> String {
     hex::encode(ctx.sign().as_ref())
 }
 
-fn masked(url: &str) -> String {
-    match reqwest::Url::parse(url) {
-        Ok(mut u) if u.password().is_some() => {
+fn masked(w: &StoredWebhook) -> String {
+    match reqwest::Url::parse(&w.url) {
+        Ok(mut u) if u.password().is_some() || w.password.is_some() => {
             let _ = u.set_password(Some(MASK));
             u.to_string()
         }
-        _ => url.to_string(),
+        _ => w.url.clone(),
     }
 }
 
+/// The stored configuration with signing keys and the space's SendGrid key opened (URL passwords stay
+/// sealed until a request is sent). Keys that cannot be opened are left out.
+pub fn opened(h: &StoredMailHooks, sealer: &Sealer) -> StoredMailHooks {
+    let mut o = h.clone();
+    o.sendgrid_key = h.sendgrid_key.as_deref().and_then(|k| sealer.open(k));
+    for w in &mut o.webhooks {
+        w.signing_key = w.signing_key.as_deref().and_then(|k| sealer.open(k));
+    }
+    o
+}
+
 /// The view `GET` returns: no signing keys, URL passwords masked.
-pub fn view(area: Option<String>, h: &StoredMailHooks) -> MailWebhooksView {
+pub fn view(area: Option<String>, stored: &StoredMailHooks, sealer: &Sealer) -> MailWebhooksView {
+    let h = &opened(stored, sealer);
     let space_key = h
         .sendgrid_key
         .as_deref()
@@ -368,9 +385,12 @@ pub fn view(area: Option<String>, h: &StoredMailHooks) -> MailWebhooksView {
                 id: w.id.clone(),
                 provider: w.provider.clone(),
                 kind: w.kind,
-                url: masked(&w.url),
+                url: masked(w),
                 events: w.events.clone(),
-                has_signing_key: w.signing_key.is_some(),
+                has_signing_key: stored
+                    .webhooks
+                    .iter()
+                    .any(|x| x.id == w.id && x.signing_key.is_some()),
                 public_key: (w.provider == "sendgrid")
                     .then(|| {
                         w.signing_key
@@ -391,11 +411,12 @@ pub fn view(area: Option<String>, h: &StoredMailHooks) -> MailWebhooksView {
 
 /// Validates a new configuration against the stored one: ids, URLs (egress policy), keys; keeps
 /// stored signing keys and URL passwords where the input omits them; keeps (or creates) the space's
-/// SendGrid key pair.
+/// SendGrid key pair. Signing keys and URL passwords are sealed with `sealer`.
 pub fn merge(
     old: &StoredMailHooks,
     body: MailWebhooksBody,
     policy: &EgressPolicy,
+    sealer: &Sealer,
 ) -> Result<StoredMailHooks, String> {
     if body.webhooks.len() > MAX_WEBHOOKS {
         return Err(format!("at most {MAX_WEBHOOKS} webhooks per space"));
@@ -462,17 +483,25 @@ pub fn merge(
             return Err(at(format!("url is longer than {MAX_URL} characters")));
         }
         let mut url = reqwest::Url::parse(w.url.trim()).map_err(|e| at(format!("url: {e}")))?;
-        if url.password() == Some(MASK) || url.password() == Some("%2A%2A%2A") {
-            let old_password = previous
-                .and_then(|p| reqwest::Url::parse(&p.url).ok())
-                .and_then(|u| u.password().map(String::from));
-            match old_password {
-                Some(pw) => {
-                    let _ = url.set_password(Some(&pw));
-                }
+        let password = if url.password() == Some(MASK) || url.password() == Some("%2A%2A%2A") {
+            let kept = previous.and_then(|p| {
+                p.password.clone().or_else(|| {
+                    reqwest::Url::parse(&p.url)
+                        .ok()
+                        .and_then(|u| u.password().map(percent_decode))
+                })
+            });
+            match kept {
+                Some(pw) => Some(sealer.seal_once(&pw).map_err(at)?),
                 None => return Err(at("url: no stored password to keep".into())),
             }
-        }
+        } else {
+            match url.password() {
+                Some(pw) => Some(sealer.seal(&percent_decode(pw)).map_err(at)?),
+                None => None,
+            }
+        };
+        let _ = url.set_password(None);
         let mut bare = url.clone();
         let _ = bare.set_username("");
         let _ = bare.set_password(None);
@@ -482,14 +511,18 @@ pub fn merge(
         let signing_key = match w.signing_key.as_deref() {
             Some("") => None,
             Some(k) => match provider {
-                Provider::Sendgrid => Some(B64.encode(pkcs8_from_text(k).map_err(at)?)),
+                Provider::Sendgrid => Some(
+                    sealer
+                        .seal(&B64.encode(pkcs8_from_text(k).map_err(at)?))
+                        .map_err(at)?,
+                ),
                 Provider::Mailgun => {
                     if k.len() > 256 || k.chars().any(char::is_control) {
                         return Err(at(
                             "signingKey must be at most 256 printable characters".into()
                         ));
                     }
-                    Some(k.to_string())
+                    Some(sealer.seal(k).map_err(at)?)
                 }
                 _ => {
                     return Err(at(
@@ -497,9 +530,13 @@ pub fn merge(
                     ));
                 }
             },
-            None => previous
+            None => match previous
                 .filter(|p| p.provider == provider.name())
-                .and_then(|p| p.signing_key.clone()),
+                .and_then(|p| p.signing_key.clone())
+            {
+                Some(k) => Some(sealer.seal_once(&k).map_err(at)?),
+                None => None,
+            },
         };
         if w.kind == WebhookKind::Inbound && !w.events.is_empty() {
             return Err(at("events apply to kind events only".into()));
@@ -525,19 +562,26 @@ pub fn merge(
             provider: provider.name().to_string(),
             kind: w.kind,
             url: url.to_string(),
+            password,
             signing_key,
             events,
             raw: w.raw,
             topic_arn: w.topic_arn,
         });
     }
+    let sendgrid_key = old
+        .sendgrid_key
+        .clone()
+        .unwrap_or_else(generate_sendgrid_key);
+    let sendgrid_key = if sealer.available() {
+        sealer.seal_once(&sendgrid_key)?
+    } else {
+        sendgrid_key
+    };
     Ok(StoredMailHooks {
         webhooks,
         api_keys,
-        sendgrid_key: old
-            .sendgrid_key
-            .clone()
-            .or_else(|| Some(generate_sendgrid_key())),
+        sendgrid_key: Some(sendgrid_key),
     })
 }
 
@@ -577,19 +621,45 @@ fn percent_decode(s: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Queues a request for a webhook through the callbacks outbox.
+/// The basic authentication of a webhook (URL user and stored password), sealed for the outbox.
+fn sealed_auth(hook: &StoredWebhook, sealer: &Sealer) -> anyhow::Result<Option<String>> {
+    let Some((_, in_url)) = target(&hook.url) else {
+        return Ok(None);
+    };
+    let header = match &hook.password {
+        Some(sealed) => {
+            let u = reqwest::Url::parse(&hook.url)?;
+            let pw = sealer.open(sealed).ok_or_else(|| {
+                anyhow::anyhow!("the password of webhook {} cannot be opened", hook.id)
+            })?;
+            Some(format!(
+                "Basic {}",
+                B64.encode(format!("{}:{pw}", percent_decode(u.username())))
+            ))
+        }
+        None => in_url,
+    };
+    match header {
+        Some(h) => Ok(Some(sealer.seal(&h).map_err(anyhow::Error::msg)?)),
+        None => Ok(None),
+    }
+}
+
+/// Queues a request for a webhook through the callbacks outbox; the basic authentication travels sealed
+/// and is opened when the request is sent.
 pub async fn enqueue(
     stores: &Stores,
+    sealer: &Sealer,
     area: Option<&str>,
     hook: &StoredWebhook,
     out: Outgoing,
     correlation: &str,
 ) -> anyhow::Result<uuid::Uuid> {
-    let (url, auth) =
+    let (url, _) =
         target(&hook.url).ok_or_else(|| anyhow::anyhow!("webhook {} has no valid url", hook.id))?;
     let mut headers = out.headers;
-    if let Some(a) = auth {
-        headers.insert("authorization".into(), a);
+    if let Some(a) = sealed_auth(hook, sealer)? {
+        headers.insert(SEALED_AUTH_HEADER.into(), a);
     }
     let body = match String::from_utf8(out.body) {
         Ok(s) => s,
@@ -734,12 +804,13 @@ pub fn sendgrid_events(
         .collect()
 }
 
-/// Mailgun event webhook: `{"signature": {...}, "event-data": {...}}` for one recipient.
+/// Mailgun event webhook: `{"signature": {...}, "event-data": {...}}` for one recipient; without a
+/// signing key only `event-data`.
 pub fn mailgun_event(
     sent: &Sent<'_>,
     rcpt: &str,
     e: MailEventName,
-    key: &str,
+    key: Option<&str>,
     at: DateTime<Utc>,
 ) -> Value {
     let ex = sent.extras();
@@ -807,10 +878,13 @@ pub fn mailgun_event(
             "generic"
         });
     }
-    json!({
-        "signature": {"timestamp": ts, "token": tok, "signature": mailgun_signature(key, &ts, &tok)},
-        "event-data": data,
-    })
+    match key {
+        Some(key) => json!({
+            "signature": {"timestamp": ts, "token": tok, "signature": mailgun_signature(key, &ts, &tok)},
+            "event-data": data,
+        }),
+        None => json!({"event-data": data}),
+    }
 }
 
 /// Postmark Delivery, Bounce or SpamComplaint webhook for one recipient.
@@ -950,6 +1024,9 @@ pub fn ses_notifications(
         .collect()
 }
 
+/// `SigningCertURL` of SNS notifications: FastMock cannot sign for AWS, so the URL names no AWS host.
+pub const UNSIGNED_CERT_URL: &str = "https://fastmock.invalid/sns-unsigned.pem";
+
 /// An SNS `Notification` carrying `message` (unsigned: FastMock cannot sign for AWS).
 pub fn sns_envelope(topic: &str, message: &Value, at: DateTime<Utc>) -> Outgoing {
     let id = uuid::Uuid::new_v4().to_string();
@@ -963,7 +1040,7 @@ pub fn sns_envelope(topic: &str, message: &Value, at: DateTime<Utc>) -> Outgoing
         "Timestamp": iso(at),
         "SignatureVersion": "1",
         "Signature": "FASTMOCK-UNSIGNED",
-        "SigningCertURL": format!("https://sns.{region}.amazonaws.com/SimpleNotificationService-fastmock-unsigned.pem"),
+        "SigningCertURL": UNSIGNED_CERT_URL,
         "UnsubscribeURL": format!("https://sns.{region}.amazonaws.com/?Action=Unsubscribe&SubscriptionArn={subscription}"),
     });
     let mut out = Outgoing::json(&body, "text/plain; charset=UTF-8");
@@ -1032,7 +1109,7 @@ pub fn event_requests(
             .iter()
             .map(|(r, e)| {
                 Outgoing::json(
-                    &mailgun_event(sent, r, *e, hook.signing_key.as_deref().unwrap_or(""), at),
+                    &mailgun_event(sent, r, *e, hook.signing_key.as_deref(), at),
                     "application/json",
                 )
             })
@@ -1052,9 +1129,14 @@ pub fn event_requests(
     }
 }
 
-/// Queues the delivery events of a stored provider message for the events webhooks of its space.
-/// Messages sent in test mode get none. Failures are logged; they never fail the API call.
-pub async fn emit_events(stores: &Stores, entry: &MailEntry) {
+/// Webhook requests one provider call may queue; further events are dropped and counted in
+/// `fastmock_mail_webhook_events_dropped_total`.
+pub const MAX_JOBS_PER_REQUEST: usize = 1000;
+
+/// Queues the delivery events of a stored provider message for the events webhooks of its space, at
+/// most `budget` requests (the rest of [`MAX_JOBS_PER_REQUEST`] for the call; decreased here). Messages
+/// sent in test mode get none. Failures are logged; they never fail the API call.
+pub async fn emit_events(stores: &Stores, sealer: &Sealer, entry: &MailEntry, budget: &mut usize) {
     let Some(provider) = entry.provider.as_deref() else {
         return;
     };
@@ -1070,6 +1152,14 @@ pub async fn emit_events(stores: &Stores, entry: &MailEntry) {
             return;
         }
     };
+    if !hooks
+        .webhooks
+        .iter()
+        .any(|h| h.kind == WebhookKind::Events && h.provider == provider)
+    {
+        return;
+    }
+    let hooks = opened(&hooks, sealer);
     let sent = Sent::new(entry);
     let now = Utc::now();
     for hook in hooks
@@ -1078,8 +1168,15 @@ pub async fn emit_events(stores: &Stores, entry: &MailEntry) {
         .filter(|h| h.kind == WebhookKind::Events && h.provider == provider)
     {
         for out in event_requests(hook, hooks.sendgrid_key.as_deref(), &sent, now) {
+            if *budget == 0 {
+                metrics::counter!("fastmock_mail_webhook_events_dropped_total", "provider" => provider.to_string())
+                    .increment(1);
+                continue;
+            }
+            *budget -= 1;
             if let Err(e) = enqueue(
                 stores,
+                sealer,
                 entry.space.as_deref(),
                 hook,
                 out,
@@ -1321,7 +1418,10 @@ pub fn mailgun_inbound(
     let p = inbound_parts(&mail.raw, max_bytes);
     let ts = at.timestamp().to_string();
     let tok = token();
-    let sig = mailgun_signature(hook.signing_key.as_deref().unwrap_or(""), &ts, &tok);
+    let sig = hook
+        .signing_key
+        .as_deref()
+        .map(|k| mailgun_signature(k, &ts, &tok));
     let path = reqwest::Url::parse(&hook.url)
         .map(|u| u.path().trim_end_matches('/').to_ascii_lowercase())
         .unwrap_or_default();
@@ -1339,9 +1439,11 @@ pub fn mailgun_inbound(
             m.text(k, v);
         }
         m.text("body-mime", &String::from_utf8_lossy(&mail.raw));
-        m.text("timestamp", &ts);
-        m.text("token", &tok);
-        m.text("signature", &sig);
+        if let Some(sig) = &sig {
+            m.text("timestamp", &ts);
+            m.text("token", &tok);
+            m.text("signature", sig);
+        }
         return m.finish();
     }
     let text = p.text.clone().unwrap_or_default();
@@ -1375,19 +1477,25 @@ pub fn mailgun_inbound(
                     .collect(),
             ),
         );
-        v.insert("timestamp".into(), json!(ts));
-        v.insert("token".into(), json!(tok));
+        if sig.is_some() {
+            v.insert("timestamp".into(), json!(ts));
+            v.insert("token".into(), json!(tok));
+        }
         let mut out = Outgoing::json(&Value::Object(v), "application/json");
-        out.headers.insert("x-mailgun-signature".into(), sig);
-        out.headers.insert("x-mailgun-timestamp".into(), ts);
-        out.headers.insert("x-mailgun-token".into(), tok);
+        if let Some(sig) = sig {
+            out.headers.insert("x-mailgun-signature".into(), sig);
+            out.headers.insert("x-mailgun-timestamp".into(), ts);
+            out.headers.insert("x-mailgun-token".into(), tok);
+        }
         return out;
     }
-    fields.extend([
-        ("timestamp".into(), ts),
-        ("token".into(), tok),
-        ("signature".into(), sig),
-    ]);
+    if let Some(sig) = sig {
+        fields.extend([
+            ("timestamp".into(), ts),
+            ("token".into(), tok),
+            ("signature".into(), sig),
+        ]);
+    }
     if p.attachments.is_empty() {
         let body = url::form_urlencoded::Serializer::new(String::new())
             .extend_pairs(fields.iter())
@@ -1524,8 +1632,13 @@ mod tests {
         serde_json::from_value(v).unwrap()
     }
 
+    fn sealer() -> Sealer {
+        Sealer::with_key(Some([3; 32]))
+    }
+
     #[test]
     fn merge_validates_and_keeps_secrets() {
+        let sealer = sealer();
         let first = merge(
             &StoredMailHooks::default(),
             input(json!({"webhooks": [
@@ -1533,6 +1646,7 @@ mod tests {
                 {"provider": "postmark", "kind": "events", "url": "https://user:secret@hooks.example.com/pm"}
             ], "apiKeys": {"SendGrid": [key_digest("SG.x").to_uppercase()]}})),
             &policy(),
+            &sealer,
         )
         .unwrap();
         assert_eq!(
@@ -1542,9 +1656,10 @@ mod tests {
         assert_eq!(first.webhooks[1].id, "webhook-2");
         assert_eq!(first.api_keys["sendgrid"], vec![key_digest("SG.x")]);
         assert!(first.sendgrid_key.is_some());
-        let v = serde_json::to_string(&view(None, &first)).unwrap();
+        let v = serde_json::to_string(&view(None, &first, &sealer)).unwrap();
         assert!(!v.contains("key-1") && !v.contains("secret"), "{v}");
         assert!(v.contains("user:***@hooks.example.com"));
+        assert!(v.contains("\"hasSigningKey\":true"), "{v}");
         let second = merge(
             &first,
             input(json!({"webhooks": [
@@ -1552,12 +1667,25 @@ mod tests {
                 {"id": "webhook-2", "provider": "postmark", "kind": "events", "url": "https://user:***@hooks.example.com/pm"}
             ]})),
             &policy(),
+            &sealer,
         )
         .unwrap();
-        assert_eq!(second.webhooks[0].signing_key.as_deref(), Some("key-1"));
-        assert!(second.webhooks[1].url.contains("user:secret@"));
-        assert_eq!(second.sendgrid_key, first.sendgrid_key);
-        let bad = |v: Value| merge(&StoredMailHooks::default(), input(v), &policy()).unwrap_err();
+        let open = opened(&second, &sealer);
+        assert_eq!(open.webhooks[0].signing_key.as_deref(), Some("key-1"));
+        assert_eq!(
+            sealer
+                .open(second.webhooks[1].password.as_deref().unwrap())
+                .as_deref(),
+            Some("secret")
+        );
+        assert_eq!(second.webhooks[1].url, "https://user@hooks.example.com/pm");
+        assert_eq!(
+            opened(&second, &sealer).sendgrid_key,
+            opened(&first, &sealer).sendgrid_key
+        );
+        let bad = |v: Value| {
+            merge(&StoredMailHooks::default(), input(v), &policy(), &sealer).unwrap_err()
+        };
         assert!(bad(json!({"webhooks": [{"provider": "resend", "kind": "events", "url": "https://x.example.com/"}]})).contains("no webhooks"));
         assert!(bad(json!({"webhooks": [{"provider": "ses", "kind": "events", "url": "http://169.254.169.254/"}]})).contains("url"));
         assert!(bad(json!({"webhooks": [{"provider": "ses", "kind": "events", "url": "https://x.example.com/", "signingKey": "k"}]})).contains("signingKey"));
@@ -1565,6 +1693,54 @@ mod tests {
         assert!(bad(json!({"apiKeys": {"sendgrid": ["abc"]}})).contains("SHA-256"));
         assert!(bad(json!({"webhooks": [{"provider": "sendgrid", "kind": "inbound", "url": "https://x.example.com/", "events": ["bounce"]}]})).contains("events"));
         assert!(bad(json!({"webhooks": [{"provider": "postmark", "kind": "events", "url": "https://u:***@x.example.com/"}]})).contains("password"));
+    }
+
+    #[test]
+    fn webhook_secrets_are_stored_sealed() {
+        let sealer = sealer();
+        let stored = merge(
+            &StoredMailHooks::default(),
+            input(json!({"webhooks": [
+                {"id": "mg", "provider": "mailgun", "kind": "events", "url": "https://hooks.example.com/mg", "signingKey": "mailgun-signing-secret"},
+                {"id": "pm", "provider": "postmark", "kind": "events", "url": "https://user:url-password-secret@hooks.example.com/pm"}
+            ]})),
+            &policy(),
+            &sealer,
+        )
+        .unwrap();
+        let at_rest = serde_json::to_string(&stored).unwrap();
+        assert!(!at_rest.contains("mailgun-signing-secret"), "{at_rest}");
+        assert!(!at_rest.contains("url-password-secret"), "{at_rest}");
+        let auth = sealed_auth(&stored.webhooks[1], &sealer).unwrap().unwrap();
+        assert!(
+            auth.starts_with(crate::mail_webhook_secrets::SEALED),
+            "{auth}"
+        );
+        assert_eq!(
+            sealer.open(&auth).unwrap(),
+            format!("Basic {}", B64.encode("user:url-password-secret"))
+        );
+        let none = Sealer::with_key(None);
+        let err = merge(
+            &StoredMailHooks::default(),
+            input(json!({"webhooks": [
+                {"provider": "mailgun", "kind": "events", "url": "https://hooks.example.com/mg", "signingKey": "k"}
+            ]})),
+            &policy(),
+            &none,
+        )
+        .unwrap_err();
+        assert!(err.contains("mail-webhook-key"), "{err}");
+        assert!(
+            merge(
+                &StoredMailHooks::default(),
+                input(json!({"webhooks": [{"provider": "ses", "kind": "events", "url": "https://hooks.example.com/ses"}]})),
+                &policy(),
+                &none,
+            )
+            .is_ok(),
+            "webhooks without secrets need no key"
+        );
     }
 
     #[test]

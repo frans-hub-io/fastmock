@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::build::{
-    Attachment, Spec, check_fanout, decode_base64, merge_data, raw_message, render, template_data,
+    Attachment, Fanout, Spec, decode_base64, merge_data, raw_message, render, template_data,
 };
 use super::{Fail, FormPart, OutMessage, Parsed, Reply, Request, header, norm};
 
@@ -337,7 +337,7 @@ fn from_required(from: Option<String>) -> Result<String, Fail> {
         .ok_or_else(|| Fail::field("FromEmailAddress", "FromEmailAddress is required"))
 }
 
-fn template_spec(t: &Template, data: &Value, spec: &mut Spec) -> Result<(), Fail> {
+fn template_spec(t: &Template, data: &Value, spec: &mut Spec, max: usize) -> Result<(), Fail> {
     spec.extras.template_id = t.template_name.clone().or_else(|| t.template_arn.clone());
     if spec.extras.template_id.is_none() && t.template_content.is_none() {
         return Err(Fail::field(
@@ -350,13 +350,13 @@ fn template_spec(t: &Template, data: &Value, spec: &mut Spec) -> Result<(), Fail
     }
     if let Some(c) = &t.template_content {
         if let Some(s) = &c.subject {
-            spec.subject = Some(render(s, data, false)?);
+            spec.subject = Some(render(s, data, false, max)?);
         }
         if let Some(s) = &c.text {
-            spec.text = Some(render(s, data, false)?);
+            spec.text = Some(render(s, data, false, max)?);
         }
         if let Some(s) = &c.html {
-            spec.html = Some(render(s, data, true)?);
+            spec.html = Some(render(s, data, true, max)?);
         }
     }
     spec.headers
@@ -445,7 +445,7 @@ pub fn parse_v2_send(req: &Request<'_>) -> Result<Parsed, Fail> {
             Some(d) => template_data("TemplateData", d)?,
             None => Value::Null,
         };
-        template_spec(&t, &data, &mut spec)?;
+        template_spec(&t, &data, &mut spec, req.max_bytes)?;
         spec.attachments = attachments(t.attachments)?;
     }
     Ok(Parsed::one(spec.build(req.max_bytes)?))
@@ -480,7 +480,7 @@ pub fn parse_v2_bulk(req: &Request<'_>) -> Result<Parsed, Fail> {
                 + c.text.as_ref().map_or(0, String::len)
                 + c.html.as_ref().map_or(0, String::len)
         });
-    check_fanout(shared, body.bulk_email_entries.len())?;
+    let mut fan = Fanout::new(shared, body.bulk_email_entries.len())?;
     let mut items = Vec::with_capacity(body.bulk_email_entries.len());
     for e in body.bulk_email_entries {
         let item = (|| -> Result<OutMessage, Fail> {
@@ -514,7 +514,7 @@ pub fn parse_v2_bulk(req: &Request<'_>) -> Result<Parsed, Fail> {
                 },
                 ..Default::default()
             };
-            template_spec(&template, &data, &mut spec)?;
+            template_spec(&template, &data, &mut spec, req.max_bytes)?;
             spec.attachments = template_attachments.clone();
             for h in e.replacement_headers {
                 spec.headers
@@ -523,6 +523,10 @@ pub fn parse_v2_bulk(req: &Request<'_>) -> Result<Parsed, Fail> {
             }
             spec.build(req.max_bytes)
         })();
+        let item = match item {
+            Ok(m) => Ok(fan.message(m)?),
+            Err(e) => Err(e),
+        };
         items.push(item);
     }
     Ok(Parsed {

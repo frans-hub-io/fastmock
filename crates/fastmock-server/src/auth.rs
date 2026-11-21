@@ -469,6 +469,19 @@ async fn principal_of(
     }
 }
 
+/// Authenticates the credentials of an earlier GET request again (long-lived responses such as event
+/// streams); `None` when they are no longer valid or cannot be checked now.
+pub(crate) async fn revalidate(app: &AppState, headers: &HeaderMap) -> Option<Principal> {
+    principal_of(
+        app,
+        headers,
+        &axum::http::Method::GET,
+        "/__admin/mail/stream",
+    )
+    .await
+    .ok()
+}
+
 async fn session_principal(
     app: &AppState,
     oidc: &crate::oidc::Oidc,

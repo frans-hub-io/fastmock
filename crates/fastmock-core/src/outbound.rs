@@ -16,6 +16,8 @@ const BLOCKED: &[&str] = &[
     "x-rewrite-url",
     "x-host",
     "x-http-host-override",
+    "x-fastmock-body-base64",
+    "x-fastmock-sealed-authorization",
 ];
 
 const BLOCKED_PREFIXES: &[&str] = &["proxy-", "x-forwarded-", "x-envoy-", ":"];
@@ -57,6 +59,8 @@ mod tests {
             "Forwarded",
             "X-Original-URL",
             "x-envoy-upstream-alt-stat-name",
+            "X-FastMock-Body-Base64",
+            "x-fastmock-sealed-authorization",
         ] {
             assert!(blocked_outbound_header(h), "{h}");
         }

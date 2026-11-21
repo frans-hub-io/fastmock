@@ -11,7 +11,7 @@ use tokio::task::JoinHandle;
 
 use super::*;
 use crate::config::MailConfig;
-use crate::mailbox_login::hash_password_with;
+use crate::mailbox_login::{MailboxAccess, hash_password_with};
 use crate::routing::MailDomains;
 use crate::service::Incoming;
 
@@ -19,16 +19,18 @@ const PEER: &str = "198.51.100.7:40000";
 const ALICE: &str = "alice@billing.example.test";
 const BILLING_TOKEN: &str = "fm_billing_reader";
 const GLOBAL_TOKEN: &str = "fm_global_reader";
+const BILLING_READ_ONLY: &str = "fm_billing_read_only";
 
 struct Tokens;
 
 #[async_trait]
 impl MailboxTokenCheck for Tokens {
-    async fn can_read(&self, area: Option<&str>, token: &str) -> bool {
+    async fn access(&self, area: Option<&str>, token: &str) -> Option<MailboxAccess> {
         match token {
-            GLOBAL_TOKEN => true,
-            BILLING_TOKEN => area == Some("billing"),
-            _ => false,
+            GLOBAL_TOKEN => Some(MailboxAccess::FULL),
+            BILLING_TOKEN if area == Some("billing") => Some(MailboxAccess::FULL),
+            BILLING_READ_ONLY if area == Some("billing") => Some(MailboxAccess::READ_ONLY),
+            _ => None,
         }
     }
 }
@@ -338,10 +340,7 @@ async fn user_pass_with_the_mailbox_password_stat_list_uidl() {
     );
     let size1 = msg("one").len();
     let size2 = msg("two").len();
-    assert_eq!(
-        c.cmd("pass s3cret pw").await,
-        format!("+OK Logged in, 2 messages ({} octets)", size1 + size2)
-    );
+    assert_eq!(c.cmd("pass s3cret pw").await, "+OK Logged in, 2 messages");
     assert_eq!(c.cmd("STAT").await, format!("+OK 2 {}", size1 + size2));
     c.ok("LIST").await;
     assert_eq!(
@@ -426,7 +425,8 @@ async fn retr_normalises_line_breaks_and_dot_stuffs() {
     f.deliver(ALICE, raw).await;
     let srv = f.server();
     let (mut c, _) = logged_in(&srv, ALICE, GLOBAL_TOKEN).await;
-    assert_eq!(c.cmd("RETR 1").await, format!("+OK {} octets", raw.len()));
+    let sent = "Subject: dots\r\n\r\n..\r\n...two\r\n..three\r\nend\r\n".len();
+    assert_eq!(c.cmd("RETR 1").await, format!("+OK {sent} octets"));
     let got = c.raw_body().await;
     assert_eq!(
         got,
@@ -864,4 +864,42 @@ async fn large_messages_are_streamed_whole() {
     let got = c.raw_body().await;
     assert_eq!(render::unstuff(&got).unwrap(), raw.as_bytes());
     c.ok("NOOP").await;
+}
+
+// ----- octet counts and read-only tokens -----
+
+#[tokio::test]
+async fn octet_counts_match_what_retr_sends() {
+    let mut f = Fixture::new();
+    let raw = "Subject: lf\n\n.dot\nline\n";
+    f.deliver(ALICE, raw).await;
+    let srv = f.server();
+    let (mut c, _) = logged_in(&srv, ALICE, GLOBAL_TOKEN).await;
+    let sent = "Subject: lf\r\n\r\n..dot\r\nline\r\n".len();
+    assert_eq!(c.cmd("STAT").await, format!("+OK 1 {sent}"));
+    assert_eq!(c.cmd("LIST 1").await, format!("+OK 1 {sent}"));
+    let r = c.cmd("RETR 1").await;
+    let body = c.raw_body().await;
+    assert_eq!(body.len() - 3, sent);
+    assert_eq!(r, format!("+OK {sent} octets"));
+}
+
+#[tokio::test]
+async fn read_only_tokens_cannot_delete() {
+    let mut f = Fixture::new();
+    f.deliver(ALICE, &msg("one")).await;
+    let srv = f.server();
+    let (mut c, t) = logged_in(&srv, ALICE, BILLING_READ_ONLY).await;
+    let r = c.fails("DELE 1").await;
+    assert_eq!(
+        r,
+        "-ERR [AUTH] The token does not allow deleting messages (mail:write or mail:delete)"
+    );
+    c.ok("RETR 1").await;
+    c.body().await;
+    c.ok("QUIT").await;
+    assert_eq!(report(t).await.deleted, 0);
+    assert_eq!(f.inbox(Some("billing"), ALICE).await.len(), 1);
+    let (mut c, _) = logged_in(&srv, ALICE, BILLING_TOKEN).await;
+    c.ok("DELE 1").await;
 }

@@ -261,10 +261,14 @@ pub fn parse_batch(req: &Request<'_>, template: bool) -> Result<Parsed, Fail> {
         ));
     }
     let test = test_token(req);
-    let items = list
-        .into_iter()
-        .map(|m| message(m, template, test, req.max_bytes))
-        .collect();
+    let mut fan = super::build::Fanout::default();
+    let mut items = Vec::with_capacity(list.len());
+    for m in list {
+        items.push(match message(m, template, test, req.max_bytes) {
+            Ok(m) => Ok(fan.message(m)?),
+            Err(e) => Err(e),
+        });
+    }
     Ok(Parsed {
         items,
         test_mode: test,

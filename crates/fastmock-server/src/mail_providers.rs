@@ -28,6 +28,9 @@ pub const PREFIX: &str = "/__mail";
 const MAX_FORM_PARTS: usize = 10_000;
 /// How long Resend idempotency keys are remembered.
 const IDEMPOTENCY_TTL: Duration = Duration::from_secs(24 * 3600);
+/// How long a key is reserved while its first request is processed.
+const IDEMPOTENCY_PENDING: Duration = Duration::from_secs(120);
+const PENDING: &str = "pending";
 
 /// The space a provider request stored into, for the request journal.
 #[derive(Clone, Debug)]
@@ -165,9 +168,19 @@ async fn read_form(
             let mut req = Request::new(Body::from(body.to_vec()));
             *req.headers_mut() = parts.headers.clone();
             req.headers_mut().remove("content-encoding");
-            let mut mp = axum::extract::Multipart::from_request(req, &())
-                .await
-                .map_err(|e| Fail::invalid(format!("invalid multipart body: {}", e.body_text())))?;
+            let extract = tower::Layer::layer(
+                &axum::extract::DefaultBodyLimit::disable(),
+                tower::service_fn(|req: Request| async move {
+                    Ok::<_, std::convert::Infallible>(
+                        axum::extract::Multipart::from_request(req, &()).await,
+                    )
+                }),
+            );
+            let mut mp = match tower::ServiceExt::oneshot(extract, req).await {
+                Ok(r) => r,
+                Err(e) => match e {},
+            }
+            .map_err(|e| Fail::invalid(format!("invalid multipart body: {}", e.body_text())))?;
             let mut out = Vec::new();
             loop {
                 let field = match mp.next_field().await {
@@ -245,7 +258,23 @@ async fn handle(
         Err(f) => return to_response(path_failure(provider, &path, &f), area),
     };
     let (parts, body) = req.into_parts();
-    let reply = call(&app, &mail, &op, area.as_deref(), &parts, body).await;
+    let span = tracing::info_span!(
+        "fastmock.mail.provider",
+        otel.name = %format!("{} {}", provider.name(), path),
+        otel.kind = "server",
+        fastmock.mail.provider = provider.name(),
+        url.path = %full,
+        fastmock.space = area.as_deref().unwrap_or(""),
+        http.response.status_code = tracing::field::Empty,
+    );
+    crate::telemetry::attach_parent(&span, &parts.headers);
+    let reply = {
+        use tracing::Instrument as _;
+        call(&app, &mail, &op, area.as_deref(), &parts, body)
+            .instrument(span.clone())
+            .await
+    };
+    span.record("http.response.status_code", reply.0.status().as_u16());
     metrics::counter!(
         "fastmock_mail_provider_requests_total",
         "provider" => provider.name(),
@@ -378,8 +407,9 @@ async fn call(
         Op::ResendSend => providers::header(&headers, "idempotency-key").map(|k| {
             (
                 format!(
-                    "mail:idem:resend:{}:{}",
+                    "mail:idem:resend:{}:{}:{}",
                     area_key(area),
+                    &hex::encode(Sha256::digest(key.as_bytes()))[..32],
                     hex::encode(Sha256::digest(k.as_bytes()))
                 ),
                 hex::encode(Sha256::digest(&body)),
@@ -388,18 +418,31 @@ async fn call(
         _ => None,
     };
     if let Some((k, digest)) = &idem {
-        match app.stores.hot.get(k).await {
-            Ok(Some(v)) => {
-                let (d, reply) = v.split_once('|').unwrap_or_default();
-                let r = if d == digest {
-                    Reply::json(200, &serde_json::from_str(reply).unwrap_or_default())
-                } else {
-                    failure(op, &Fail::Named("invalid_idempotent_request".into()))
+        let pending = format!("{PENDING}|{digest}");
+        match app
+            .stores
+            .hot
+            .compare_and_set(k, None, &pending, Some(IDEMPOTENCY_PENDING))
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                let r = match app.stores.hot.get(k).await {
+                    Ok(Some(v)) => {
+                        let (d, reply) = v.split_once('|').unwrap_or_default();
+                        if d == PENDING {
+                            failure(op, &Fail::Named("concurrent_idempotent_requests".into()))
+                        } else if d == digest {
+                            Reply::json(200, &serde_json::from_str(reply).unwrap_or_default())
+                        } else {
+                            failure(op, &Fail::Named("invalid_idempotent_request".into()))
+                        }
+                    }
+                    _ => failure(op, &Fail::Named("concurrent_idempotent_requests".into())),
                 };
                 return Answer(to_response(r, space.clone()));
             }
-            Ok(None) => {}
-            Err(e) => tracing::warn!(error = %e, "reading an idempotency key failed"),
+            Err(e) => tracing::warn!(error = %e, "reserving an idempotency key failed"),
         }
     }
     let destination = match area {
@@ -407,6 +450,7 @@ async fn call(
         None => Destination::Route,
     };
     let mut stored_spaces: BTreeSet<Option<String>> = BTreeSet::new();
+    let mut webhook_budget = mail_webhooks::MAX_JOBS_PER_REQUEST;
     for item in parsed.items.iter_mut() {
         let Ok(m) = item else {
             continue;
@@ -427,7 +471,10 @@ async fn call(
             Ok(entries) => {
                 for e in &entries {
                     stored_spaces.insert(e.space.clone());
-                    mail_webhooks::emit_events(&app.stores, e).await;
+                    if let Some(sealer) = &app.mail_sealer {
+                        mail_webhooks::emit_events(&app.stores, sealer, e, &mut webhook_budget)
+                            .await;
+                    }
                 }
             }
             Err(AcceptError::TooLarge(_)) => *item = Err(Fail::TooLarge),
@@ -439,11 +486,14 @@ async fn call(
         }
     }
     let reply = providers::success(op, &parsed);
-    if let Some((k, digest)) = &idem
-        && reply.status == 200
-    {
-        let v = format!("{digest}|{}", String::from_utf8_lossy(&reply.body));
-        if let Err(e) = app.stores.hot.set(k, &v, Some(IDEMPOTENCY_TTL)).await {
+    if let Some((k, digest)) = &idem {
+        let r = if reply.status == 200 {
+            let v = format!("{digest}|{}", String::from_utf8_lossy(&reply.body));
+            app.stores.hot.set(k, &v, Some(IDEMPOTENCY_TTL)).await
+        } else {
+            app.stores.hot.delete(k).await.map(|_| ())
+        };
+        if let Err(e) = r {
             tracing::warn!(error = %e, "storing an idempotency key failed");
         }
     }

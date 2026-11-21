@@ -9,6 +9,7 @@ mod memory;
 mod model;
 mod query;
 mod store;
+mod throttle;
 
 pub use events::{
     LocalMailEvents, MailEvent, MailEventHub, MailEventKind, MailEvents, MailSubscription,
@@ -21,6 +22,8 @@ pub use model::{
 };
 pub use query::{MAX_PAGE, MailCursor, MailFilter, MailPage, MailQuery, MailTerm};
 pub use store::{
-    FlagOp, INBOX, MailRef, MailRetention, MailStore, MailboxDelivery, MailboxEntry, MailboxInfo,
-    MailboxKey, MailboxOwner, flag_name, folder_name,
+    FlagOp, INBOX, MAX_KEYWORD_BYTES, MAX_KEYWORDS, MailRef, MailRetention, MailStore,
+    MailboxAfter, MailboxDelivery, MailboxEntry, MailboxInfo, MailboxKey, MailboxOwner, flag_name,
+    folder_name,
 };
+pub use throttle::{LoginFailures, MemoryLoginFailures, ThrottlePolicy};

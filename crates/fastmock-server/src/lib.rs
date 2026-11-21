@@ -17,6 +17,7 @@ pub mod mail_chaos_api;
 pub mod mail_listeners;
 pub mod mail_providers;
 pub mod mail_setup;
+pub mod mail_webhook_secrets;
 pub mod mail_webhooks;
 pub mod mail_webhooks_api;
 pub mod oidc;
@@ -254,6 +255,9 @@ pub async fn build(
         tokens: Arc::new(tokens::TokenService::new(token_store, cfg.token_cache_ttl)),
         oidc,
         mail_chaos: mail.as_ref().map(|_| mail_chaos_api::build(&stores)),
+        mail_sealer: mail
+            .as_ref()
+            .map(|_| Arc::new(mail_webhook_secrets::Sealer::from_config(&cfg))),
         mail,
     };
     if let Err(e) = app.grpc.reload(&app).await {

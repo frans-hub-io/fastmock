@@ -590,10 +590,22 @@ async fn implicit_tls_session() {
 
 struct Tokens;
 
+struct Scope(Vec<Option<String>>);
+
+impl WriteScope for Scope {
+    fn can_write(&self, area: Option<&str>) -> bool {
+        self.0.iter().any(|a| a.is_none() || a.as_deref() == area)
+    }
+}
+
 #[async_trait]
 impl TokenCheck for Tokens {
-    async fn allows(&self, user: &str, token: &str) -> bool {
-        token == "fm_good" && user == "billing"
+    async fn allows(&self, user: &str, token: &str) -> Option<Arc<dyn WriteScope>> {
+        match (token, user) {
+            ("fm_good", "billing") => Some(Arc::new(Scope(vec![Some("billing".into())]))),
+            ("fm_global", _) => Some(Arc::new(Scope(vec![None]))),
+            _ => None,
+        }
     }
 }
 
@@ -607,7 +619,7 @@ async fn required_auth_with_users_and_tokens() {
     f.cfg.smtp_require_auth = true;
     f.cfg.smtp_users = vec![SmtpUser {
         name: "app".into(),
-        sha256: sha("app-pass"),
+        hash: sha("app-pass"),
     }];
     f.tokens = Some(Arc::new(Tokens));
     let srv = f.server();
@@ -861,4 +873,180 @@ async fn chaos_at_each_stage() {
     let (mut c, h) = start(&srv, true, None);
     assert!(c.closed().await);
     assert_eq!(h.await.unwrap().end, SessionEnd::Chaos);
+}
+
+// ----- AUTH scope, throttling, RSET and BDAT -----
+
+#[tokio::test]
+async fn token_logins_deliver_only_where_the_token_may_write() {
+    let mut f = Fixture::new();
+    f.cfg.smtp_require_auth = true;
+    f.tokens = Some(Arc::new(Tokens));
+    let srv = f.server();
+    let (mut c, _h) = connect(&srv).await;
+    c.expect("EHLO a.example", 250).await;
+    c.expect(&format!("AUTH PLAIN {}", b64(b"\0billing\0fm_good")), 235)
+        .await;
+    c.expect("MAIL FROM:<app@example.com>", 250).await;
+    let l = c.expect("RCPT TO:<x@crm.example.test>", 550).await;
+    assert_eq!(
+        l[0],
+        "550 5.7.1 Not authorized to deliver to this recipient"
+    );
+    c.expect("RCPT TO:<x@billing.example.test>", 250).await;
+    c.expect("RCPT TO:<x@other.example>", 250).await;
+
+    let (mut c, _h) = connect(&srv).await;
+    c.expect("EHLO a.example", 250).await;
+    c.expect(&format!("AUTH PLAIN {}", b64(b"\0crm\0fm_global")), 235)
+        .await;
+    c.expect("MAIL FROM:<app@example.com>", 250).await;
+    c.expect("RCPT TO:<x@billing.example.test>", 250).await;
+    c.expect("RCPT TO:<x@crm.example.test>", 250).await;
+}
+
+#[tokio::test]
+async fn failed_auth_is_throttled_across_connections() {
+    let mut f = Fixture::new();
+    f.cfg.smtp_require_auth = true;
+    f.cfg.smtp_users = vec![SmtpUser {
+        name: "app".into(),
+        hash: sha("app-pass"),
+    }];
+    let srv = f.server();
+    for _ in 0..5 {
+        let (mut c, _h) = connect(&srv).await;
+        c.expect("EHLO a.example", 250).await;
+        c.expect(&format!("AUTH PLAIN {}", b64(b"\0app\0wrong")), 535)
+            .await;
+    }
+    let (mut c, _h) = connect(&srv).await;
+    c.expect("EHLO a.example", 250).await;
+    c.expect(&format!("AUTH PLAIN {}", b64(b"\0app\0app-pass")), 535)
+        .await;
+}
+
+#[tokio::test]
+async fn smtp_users_may_have_pbkdf2_hashes() {
+    let mut f = Fixture::new();
+    f.cfg.smtp_require_auth = true;
+    f.cfg.smtp_users = vec![SmtpUser {
+        name: "app".into(),
+        hash: crate::mailbox_login::hash_password_with("app-pass", 1000),
+    }];
+    let srv = f.server();
+    let (mut c, _h) = connect(&srv).await;
+    c.expect("EHLO a.example", 250).await;
+    c.expect(&format!("AUTH PLAIN {}", b64(b"\0app\0wrong")), 535)
+        .await;
+    c.expect(&format!("AUTH PLAIN {}", b64(b"\0app\0app-pass")), 235)
+        .await;
+}
+
+#[tokio::test]
+async fn rset_drops_the_transcript_of_the_aborted_transaction() {
+    let srv = Fixture::new().server();
+    let (mut c, _h) = connect(&srv).await;
+    c.expect("EHLO a.example", 250).await;
+    c.expect("MAIL FROM:<aborted@example.com>", 250).await;
+    c.expect("RCPT TO:<gone@example.test>", 250).await;
+    c.expect("RSET", 250).await;
+    send_one(&mut c, "kept@example.test").await;
+    let m = messages(&srv).await;
+    let all = serde_json::to_string(&m[0].transcript).unwrap();
+    assert!(!all.contains("aborted@") && !all.contains("gone@"), "{all}");
+    assert!(all.contains("kept@"), "{all}");
+}
+
+#[tokio::test]
+async fn bdat_sizes_are_validated() {
+    let mut f = Fixture::new();
+    f.cfg.max_message_bytes = 1000;
+    let srv = f.server();
+    let (mut c, _h) = connect(&srv).await;
+    c.expect("EHLO a.example", 250).await;
+    c.expect("MAIL FROM:<app@example.com>", 250).await;
+    c.expect("RCPT TO:<a@example.test>", 250).await;
+    let l = c.expect("BDAT 99999999999999999999999 LAST", 501).await;
+    assert!(l[0].contains("BDAT"), "{l:?}");
+    let (mut c, h) = connect(&srv).await;
+    c.expect("EHLO a.example", 250).await;
+    c.expect("MAIL FROM:<app@example.com>", 250).await;
+    c.expect("RCPT TO:<a@example.test>", 250).await;
+    c.expect("BDAT 2000 LAST", 552).await;
+    assert!(c.closed().await);
+    assert_eq!(h.await.unwrap().end, SessionEnd::Rejected);
+}
+
+/// A span name with its fields as `name=value`.
+type SpanRecord = (String, Vec<String>);
+
+/// Spans recorded by a minimal subscriber.
+#[derive(Clone, Default)]
+struct Spans(Arc<std::sync::Mutex<Vec<SpanRecord>>>);
+
+struct Fields<'a>(&'a mut Vec<String>);
+
+impl tracing::field::Visit for Fields<'_> {
+    fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+        self.0.push(format!("{}={v:?}", f.name()));
+    }
+
+    fn record_str(&mut self, f: &tracing::field::Field, v: &str) {
+        self.0.push(format!("{}={v}", f.name()));
+    }
+}
+
+impl tracing::Subscriber for Spans {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn new_span(&self, a: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        let mut v = self.0.lock().unwrap();
+        let mut fields = vec![];
+        a.record(&mut Fields(&mut fields));
+        v.push((a.metadata().name().to_string(), fields));
+        tracing::span::Id::from_u64(v.len() as u64)
+    }
+
+    fn record(&self, id: &tracing::span::Id, r: &tracing::span::Record<'_>) {
+        let mut v = self.0.lock().unwrap();
+        if let Some((_, fields)) = v.get_mut(id.into_u64() as usize - 1) {
+            r.record(&mut Fields(fields));
+        }
+    }
+
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, _: &tracing::Event<'_>) {}
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+#[tokio::test]
+async fn sessions_and_messages_are_traced() {
+    let spans = Spans::default();
+    let _g = tracing::subscriber::set_default(spans.clone());
+    let srv = Fixture::new().server();
+    let (mut c, h) = connect(&srv).await;
+    c.expect("EHLO a.example", 250).await;
+    send_one(&mut c, "a@billing.example.test").await;
+    c.expect("QUIT", 221).await;
+    h.await.unwrap();
+    let v = spans.0.lock().unwrap().clone();
+    let session = v
+        .iter()
+        .find(|(n, _)| n == "fastmock.mail.session")
+        .expect("a session span");
+    let has = |fields: &Vec<String>, f: &str| fields.iter().any(|x| x == f);
+    assert!(has(&session.1, "network.protocol.name=smtp"), "{session:?}");
+    assert!(has(&session.1, "fastmock.mail.result=quit"), "{session:?}");
+    assert!(has(&session.1, "fastmock.mail.messages=1"), "{session:?}");
+    let msg = v
+        .iter()
+        .find(|(n, _)| n == "fastmock.mail.message")
+        .expect("a message span");
+    assert!(has(&msg.1, "fastmock.mail.source=smtp"), "{msg:?}");
+    assert!(has(&msg.1, "fastmock.space=billing"), "{msg:?}");
+    assert!(has(&msg.1, "fastmock.mail.result=stored"), "{msg:?}");
 }

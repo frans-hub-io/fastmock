@@ -20,7 +20,8 @@ parsing and matching. The crate has no HTTP dependency; `fastmock-server` wires 
 | `src/config.rs` | `MailConfig` (all `FASTMOCK_MAIL_*` values with defaults and `validate`); the server reads the environment in `fastmock-server/src/config.rs` (`mail_settings`). |
 | `src/tls.rs` | `server_config(&MailTlsFiles)`: rustls config for SMTPS/IMAPS/POP3S and STARTTLS/STLS. |
 | `src/smtp/` | SMTP sessions (B1): `SmtpServer::serve` runs one session over any stream (state machine in `session.rs`, SASL in `sasl.rs`, `smtp-proto` behind `codec::SmtpCodec`); `TokenCheck` is implemented by the server for managed tokens. |
-| `src/mailbox_login.rs` | Mailbox logins shared by IMAP and POP3: `MailboxLogin::check` (address via `mailbox_of`, area via `mailDomains`, a managed token through `MailboxTokenCheck` (implemented by the server) or the mailbox password; a dummy hash is checked for mailboxes without one), `hash_password`/`verify_password` (`pbkdf2-sha256$<iter>$<salt>$<hash>`, PBKDF2-HMAC-SHA256, also used by the admin API). |
+| `src/mailbox_login.rs` | Mailbox logins shared by IMAP and POP3: `MailboxLogin::check(peer, user, password)` (address via `mailbox_of`, area via `mailDomains` or an explicit `<space>/` / `_global/` prefix for unowned domains, a managed token through `MailboxTokenCheck::access` (implemented by the server; `MailboxAccess` says whether the session may write or expunge) or the mailbox password with full access; a dummy hash is checked for mailboxes without one), `hash_password`/`verify_password` (`pbkdf2-sha256$<iter>$<salt>$<hash>`, PBKDF2-HMAC-SHA256, also used by the admin API and for SMTP users). |
+| `src/auth_guard.rs` | `AuthGuard` (in `MailService::auth`): failed-login counters per client address and user name over `LoginFailures` (memory, or Valkey from `fastmock-store`), and `hash` (PBKDF2 on the blocking pool, two at a time). |
 | `src/pop3/` | POP3/POP3S sessions (C2): `Pop3Server::serve` (state machine in `session.rs`, commands in `command.rs`, dot-stuffing in `render.rs`). |
 | `src/chaos.rs` | Mail chaos (M6): `MailChaosRule` model and `validate`, `MailChaos` (cache, counters, `evaluate`, `evaluate_provider` for C3) over `ChaosBackend` (server: `mail_chaos_api::StoreChaosBackend`; tests: `MemoryChaosBackend`). |
 | `src/imap/` | IMAP/IMAPS sessions (C1): `ImapServer::serve` (state machine and framing in `session.rs`); `imap-codec`/`imap-types` only in `codec.rs`, which turns commands into `command.rs` types; `response.rs` writes responses; `mime.rs` builds ENVELOPE, BODYSTRUCTURE and `BODY[...]` sections from mail-parser; `search.rs` evaluates SEARCH. |
@@ -30,8 +31,9 @@ parsing and matching. The crate has no HTTP dependency; `fastmock-server` wires 
 Server side: `AppState::mail: Option<Arc<MailService>>` (`None` unless `FASTMOCK_MAIL_ENABLED=true`),
 built in `fastmock-server/src/mail_setup.rs`; the maintenance loop calls `MailService::sweep` every minute.
 `fastmock-server/src/mail_listeners.rs` binds every SMTP/SMTPS/POP3/POP3S/IMAP/IMAPS listener through one
-accept loop (`serve_connections`) with the shared `ConnectionLimits`, and implements `TokenCheck` and
-`MailboxTokenCheck` for managed tokens. The admin API is `mail_api.rs` (mailbox passwords hashed with
+accept loop (`serve_connections`) with the shared `ConnectionLimits`, and implements `TokenCheck` (returning the
+token's `WriteScope`, checked at every RCPT) and `MailboxTokenCheck` for managed tokens. Webhook secrets are sealed
+with `mail_webhook_secrets::Sealer`. The admin API is `mail_api.rs` (mailbox passwords hashed with
 `mailbox_login::hash_password`), chaos `mail_chaos_api.rs`, provider APIs `mail_providers.rs`, webhooks
 `mail_webhooks.rs` and `mail_webhooks_api.rs`.
 Permissions `mail:read`, `mail:write`, `mail:delete` (space-scoped) and the route rules for

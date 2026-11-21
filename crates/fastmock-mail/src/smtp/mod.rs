@@ -26,15 +26,39 @@ pub use session::{
     fail_code,
 };
 
+/// The `fastmock.mail.session` span of one SMTP, IMAP or POP3 session: protocol, client address and,
+/// once known, the result, the logged-in area (`fastmock.space`) and the messages accepted.
+pub fn session_span(protocol: &'static str, peer: SocketAddr, implicit_tls: bool) -> tracing::Span {
+    tracing::info_span!(
+        "fastmock.mail.session",
+        otel.name = %format!("{protocol} session"),
+        otel.kind = "server",
+        network.protocol.name = protocol,
+        client.address = %peer.ip(),
+        fastmock.mail.implicit_tls = implicit_tls,
+        fastmock.space = tracing::field::Empty,
+        fastmock.mail.messages = tracing::field::Empty,
+        fastmock.mail.result = tracing::field::Empty,
+    )
+}
+
 /// The reply to a plain SMTP connection over the connection limits, sent before closing it.
 pub const BUSY_REPLY: &[u8] = b"421 4.7.0 Too many connections, try again later\r\n";
+
+/// The areas a managed token that passed AUTH may deliver to: where it holds `mail:write`.
+pub trait WriteScope: Send + Sync {
+    /// Whether the token holds `mail:write` in `area` (a space; `None` is the global area). A grant in
+    /// the global area covers every space.
+    fn can_write(&self, area: Option<&str>) -> bool;
+}
 
 /// Checks a managed FastMock token given as the AUTH password while
 /// `FASTMOCK_MAIL_SMTP_REQUIRE_AUTH` is on; the server implements it.
 #[async_trait]
 pub trait TokenCheck: Send + Sync {
-    /// Whether `token` may send mail as `user`.
-    async fn allows(&self, user: &str, token: &str) -> bool;
+    /// `Some` when `token` may send mail as `user`, with the areas it may deliver to; every RCPT is
+    /// checked against them.
+    async fn allows(&self, user: &str, token: &str) -> Option<Arc<dyn WriteScope>>;
 }
 
 /// What every SMTP session of a server shares.
@@ -83,8 +107,12 @@ impl SmtpServer {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
+        use tracing::Instrument as _;
+        let span = session_span("smtp", peer, implicit_tls);
         let mut s = session::Session::new(self, session::boxed(stream), peer, shutdown);
-        let end = s.drive(implicit_tls).await;
+        let end = s.drive(implicit_tls).instrument(span.clone()).await;
+        span.record("fastmock.mail.result", end.as_str());
+        span.record("fastmock.mail.messages", s.messages);
         metrics::counter!("fastmock_mail_smtp_sessions_total", "result" => end.as_str())
             .increment(1);
         tracing::debug!(peer = %peer.ip(), result = end.as_str(), messages = s.messages, "SMTP session ended");

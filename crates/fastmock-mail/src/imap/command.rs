@@ -135,6 +135,17 @@ pub enum FetchItem {
 }
 
 impl FetchItem {
+    /// Returns message bytes: `BODY[...]`, `RFC822`, `RFC822.HEADER` or `RFC822.TEXT`.
+    pub fn is_section(&self) -> bool {
+        matches!(
+            self,
+            FetchItem::BodySection { .. }
+                | FetchItem::Rfc822
+                | FetchItem::Rfc822Header
+                | FetchItem::Rfc822Text
+        )
+    }
+
     /// Reading it sets `\Seen` (unless the mailbox is read-only).
     pub fn sets_seen(&self) -> bool {
         match self {

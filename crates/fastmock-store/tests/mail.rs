@@ -69,6 +69,50 @@ async fn pg_mail_store_passes_the_conformance_checks() {
         return;
     };
     conformance::retention(&store(&url, 5).await).await;
+    let Some(url) = fresh_database().await else {
+        return;
+    };
+    conformance::growth(&store(&url, 5).await).await;
+}
+
+#[tokio::test]
+async fn pg_mailboxes_per_area_are_capped() {
+    let Some(url) = fresh_database().await else {
+        return;
+    };
+    let s = store(&url, 3).await.with_max_mailboxes(2);
+    let space = conformance::space();
+    let sp = Some(space.as_str());
+    for (i, rcpt) in ["a@example.test", "b@example.test", "c@example.test"]
+        .iter()
+        .enumerate()
+    {
+        let m = conformance::message(sp, Utc::now(), &format!("m{i}"));
+        s.insert(&m, &[MailboxDelivery::inbox(rcpt)]).await.unwrap();
+        assert!(s.get(m.id, &SpaceFilter::Any).await.unwrap().is_some());
+    }
+    let owners = s
+        .mailboxes(&SpaceFilter::In(vec![space.clone()]), None, 10)
+        .await
+        .unwrap();
+    let names: Vec<&str> = owners.iter().map(|o| o.address.as_str()).collect();
+    assert_eq!(names, vec!["a@example.test", "b@example.test"]);
+    assert!(
+        s.mailbox_create(&MailboxKey::inbox(sp, "d@example.test"))
+            .await
+            .is_err()
+    );
+    let m = conformance::message(sp, Utc::now(), "again");
+    s.insert(&m, &[MailboxDelivery::inbox("a@example.test")])
+        .await
+        .unwrap();
+    assert_eq!(
+        s.mailbox_entries(&MailboxKey::inbox(sp, "a@example.test"))
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
 }
 
 #[tokio::test]
@@ -349,6 +393,7 @@ async fn sweeps_run_on_one_replica_at_a_time() {
     let policy = MailRetention {
         max_messages: 2,
         max_age: Duration::from_secs(86_400),
+        ..Default::default()
     };
     let mut holder = sqlx::PgConnection::connect(&url).await.unwrap();
     sqlx::query("select pg_advisory_lock($1)")
@@ -851,4 +896,51 @@ async fn valkey_events_resume_after_the_connection_drops() {
         .await
         .unwrap();
     assert_eq!(recv(&mut sub).await.ids, vec![Uuid::from_u128(5)]);
+}
+
+#[tokio::test]
+async fn valkey_login_failures_are_shared_and_expire() {
+    use fastmock_core::mail::{LoginFailures, ThrottlePolicy};
+    let Some(url) = valkey_url() else {
+        return;
+    };
+    let prefix = format!("fmtest:{}:", Uuid::new_v4().simple());
+    let (a, b) = (events(&url, &prefix).await, events(&url, &prefix).await);
+    let (fa, fb) = (a.login_failures(&prefix), b.login_failures(&prefix));
+    let policy = ThrottlePolicy {
+        limit: 2,
+        window: Duration::from_secs(60),
+        base_backoff: Duration::from_millis(400),
+        max_backoff: Duration::from_millis(400),
+    };
+    fa.failed("ip:198.51.100.7", &policy).await;
+    assert!(!fb.blocked("ip:198.51.100.7").await);
+    fb.failed("ip:198.51.100.7", &policy).await;
+    assert!(
+        fa.blocked("ip:198.51.100.7").await,
+        "counted across replicas"
+    );
+    assert!(!fa.blocked("ip:198.51.100.8").await);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!fa.blocked("ip:198.51.100.7").await, "the block expires");
+    fa.failed("user:a@example.test", &policy).await;
+    fa.failed("user:a@example.test", &policy).await;
+    assert!(fb.blocked("user:a@example.test").await);
+    fb.clear("user:a@example.test").await;
+    assert!(!fa.blocked("user:a@example.test").await);
+    let mut c = valkey_client(&url, None, &Default::default())
+        .unwrap()
+        .get_multiplexed_async_connection()
+        .await
+        .unwrap();
+    let keys: Vec<String> = redis::cmd("KEYS")
+        .arg(format!("{prefix}mail:login:*"))
+        .query_async(&mut c)
+        .await
+        .unwrap();
+    assert!(
+        keys.iter()
+            .all(|k| !k.contains("198.51.100") && !k.contains("example.test")),
+        "{keys:?}"
+    );
 }

@@ -71,12 +71,20 @@ pub struct MailTlsFiles {
     pub from_server: bool,
 }
 
-/// A user of `FASTMOCK_MAIL_SMTP_USERS` (`user:sha256hex`).
+/// A user of `FASTMOCK_MAIL_SMTP_USERS` (`user:pbkdf2-sha256$...` or `user:sha256hex`).
 #[derive(Clone, PartialEq, Eq)]
 pub struct SmtpUser {
     pub name: String,
-    /// Lowercase hex SHA-256 of the password, hashed like admin tokens.
-    pub sha256: String,
+    /// The password hash: `pbkdf2-sha256$<iterations>$<salt>$<hash>` (recommended, as written by
+    /// [`crate::mailbox_login::hash_password`]) or the lowercase hex SHA-256 of the password.
+    pub hash: String,
+}
+
+impl SmtpUser {
+    /// The hash is PBKDF2 (else SHA-256).
+    pub fn is_pbkdf2(&self) -> bool {
+        self.hash.starts_with("pbkdf2-sha256$")
+    }
 }
 
 impl std::fmt::Debug for SmtpUser {
@@ -87,7 +95,8 @@ impl std::fmt::Debug for SmtpUser {
     }
 }
 
-/// Parses `FASTMOCK_MAIL_SMTP_USERS`: `user:sha256hex` entries separated by commas or new lines.
+/// Parses `FASTMOCK_MAIL_SMTP_USERS`: `user:pbkdf2-sha256$<iterations>$<salt>$<hash>` or
+/// `user:sha256hex` entries separated by commas or new lines.
 pub fn parse_smtp_users(raw: &str) -> Result<Vec<SmtpUser>, String> {
     let mut out: Vec<SmtpUser> = Vec::new();
     for item in raw
@@ -97,20 +106,31 @@ pub fn parse_smtp_users(raw: &str) -> Result<Vec<SmtpUser>, String> {
     {
         let Some((name, hash)) = item.rsplit_once(':') else {
             return Err(format!(
-                "FASTMOCK_MAIL_SMTP_USERS: an entry must look like user:sha256hex, got `{}`",
+                "FASTMOCK_MAIL_SMTP_USERS: an entry must look like user:pbkdf2-sha256$... or user:sha256hex, got `{}`",
                 item.split(':').next().unwrap_or_default()
             ));
         };
         let name = name.trim();
-        let hash = hash.trim().to_ascii_lowercase();
+        let hash = hash.trim();
+        let pbkdf2 = hash.starts_with("pbkdf2-sha256$");
+        let hash = if pbkdf2 {
+            hash.to_string()
+        } else {
+            hash.to_ascii_lowercase()
+        };
         if name.is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
             return Err(
                 "FASTMOCK_MAIL_SMTP_USERS: user names must be 1..256 printable characters".into(),
             );
         }
-        if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if pbkdf2 && !crate::mailbox_login::hash_is_valid(&hash) {
             return Err(format!(
-                "FASTMOCK_MAIL_SMTP_USERS: the password of `{name}` must be a SHA-256 in hex (64 characters)"
+                "FASTMOCK_MAIL_SMTP_USERS: the password of `{name}` is not a valid pbkdf2-sha256 hash"
+            ));
+        }
+        if !pbkdf2 && (hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit())) {
+            return Err(format!(
+                "FASTMOCK_MAIL_SMTP_USERS: the password of `{name}` must be a pbkdf2-sha256 hash or a SHA-256 in hex (64 characters)"
             ));
         }
         if out.iter().any(|u| u.name == name) {
@@ -120,7 +140,7 @@ pub fn parse_smtp_users(raw: &str) -> Result<Vec<SmtpUser>, String> {
         }
         out.push(SmtpUser {
             name: name.to_string(),
-            sha256: hash,
+            hash,
         });
     }
     Ok(out)
@@ -165,7 +185,13 @@ pub struct MailConfig {
     pub max_auth_failures: u32,
     /// `FASTMOCK_MAIL_IMAP_IDLE_TIMEOUT`, default 30m: longest IMAP IDLE.
     pub imap_idle_timeout: Duration,
-    /// `FASTMOCK_MAIL_MAX_MESSAGES` (default 1000 per space) and `FASTMOCK_MAIL_MAX_AGE` (default 7d).
+    /// `FASTMOCK_MAIL_LOGIN_FAILURE_LIMIT`, default 5: failed logins (SMTP AUTH, IMAP, POP3) within 5
+    /// minutes after which a client address or a user name is refused for a backoff (30 s, doubling up
+    /// to 15 min); `0` turns this off.
+    pub login_failure_limit: u32,
+    /// `FASTMOCK_MAIL_MAX_MESSAGES` (default 1000 per space), `FASTMOCK_MAIL_MAX_AGE` (default 7d),
+    /// `FASTMOCK_MAIL_MAX_BYTES` (default 256 MiB of raw messages per space) and
+    /// `FASTMOCK_MAIL_MAX_MAILBOXES` (default 10,000 per space).
     pub retention: MailRetention,
 }
 
@@ -188,9 +214,12 @@ impl Default for MailConfig {
             max_connections_per_ip: 32,
             max_auth_failures: 3,
             imap_idle_timeout: Duration::from_secs(1800),
+            login_failure_limit: 5,
             retention: MailRetention {
                 max_messages: 1000,
                 max_age: Duration::from_secs(7 * 86_400),
+                max_bytes: 256 * 1024 * 1024,
+                max_mailboxes: 10_000,
             },
         }
     }
@@ -216,6 +245,11 @@ impl MailConfig {
                 self.max_auth_failures as usize,
             ),
             ("FASTMOCK_MAIL_MAX_MESSAGES", self.retention.max_messages),
+            ("FASTMOCK_MAIL_MAX_MAILBOXES", self.retention.max_mailboxes),
+            (
+                "FASTMOCK_MAIL_MAX_BYTES",
+                usize::try_from(self.retention.max_bytes).unwrap_or(usize::MAX),
+            ),
         ];
         for (name, v) in positive {
             if v == 0 {
@@ -237,6 +271,11 @@ impl MailConfig {
             return Err(format!(
                 "FASTMOCK_MAIL_MAX_MESSAGE_BYTES must be at most {MAX_MESSAGE_BYTES_LIMIT}"
             ));
+        }
+        if self.retention.max_bytes < self.max_message_bytes as u64 {
+            return Err(
+                "FASTMOCK_MAIL_MAX_BYTES must be at least FASTMOCK_MAIL_MAX_MESSAGE_BYTES".into(),
+            );
         }
         if self.max_line_bytes < 512 {
             return Err("FASTMOCK_MAIL_MAX_LINE_BYTES must be at least 512 (RFC 5321)".into());
@@ -288,6 +327,14 @@ impl MailConfig {
         v
     }
 
+    /// The failed-login policy of [`MailConfig::login_failure_limit`].
+    pub fn login_throttle(&self) -> fastmock_core::mail::ThrottlePolicy {
+        fastmock_core::mail::ThrottlePolicy {
+            limit: self.login_failure_limit,
+            ..Default::default()
+        }
+    }
+
     pub fn parse_limits(&self) -> crate::parse::ParseLimits {
         crate::parse::ParseLimits {
             max_bytes: self.max_message_bytes,
@@ -323,6 +370,9 @@ mod tests {
         );
         assert_eq!(c.retention.max_messages, 1000);
         assert_eq!(c.retention.max_age, Duration::from_secs(604_800));
+        assert_eq!(c.retention.max_bytes, 256 * 1024 * 1024);
+        assert_eq!(c.retention.max_mailboxes, 10_000);
+        assert_eq!(c.login_failure_limit, 5);
         assert_eq!(c.features(), vec!["mail", "mail.providers"]);
     }
 
@@ -377,12 +427,17 @@ mod tests {
         .unwrap();
         assert_eq!(users.len(), 2);
         assert_eq!(users[1].name, "ops@example.com");
-        assert_eq!(users[1].sha256, "b".repeat(64));
+        assert_eq!(users[1].hash, "b".repeat(64));
+        assert!(!users[1].is_pbkdf2());
+        let pb = crate::mailbox_login::hash_password_with("pw", 1000);
+        let users = parse_smtp_users(&format!("app:{pb}")).unwrap();
+        assert!(users[0].is_pbkdf2() && users[0].hash == pb);
+        assert!(parse_smtp_users("app:pbkdf2-sha256$x$y").is_err());
         assert!(!format!("{users:?}").contains(&hash));
         assert!(
             parse_smtp_users("app")
                 .unwrap_err()
-                .contains("user:sha256hex")
+                .contains("user:pbkdf2-sha256$... or user:sha256hex")
         );
         assert!(parse_smtp_users("app:xyz").unwrap_err().contains("SHA-256"));
         assert!(

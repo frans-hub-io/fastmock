@@ -62,6 +62,14 @@ pub fn message(raw: &[u8], top: Option<u32>, out: &mut Vec<u8>) {
     out.extend_from_slice(b".\r\n");
 }
 
+/// The size in octets of the message as RETR sends it: CRLF line breaks and dot-stuffing, without the
+/// terminating `.` line. STAT, LIST and RETR report this size.
+pub fn wire_size(raw: &[u8]) -> u64 {
+    lines(raw)
+        .map(|l| l.len() as u64 + 2 + u64::from(l.first() == Some(&b'.')))
+        .sum()
+}
+
 /// The size in octets of the message sent with CRLF line breaks (without dot-stuffing).
 pub fn crlf_size(raw: &[u8]) -> u64 {
     lines(raw).map(|l| l.len() as u64 + 2).sum()
@@ -113,6 +121,12 @@ mod tests {
         assert_eq!(render(b".hdr\r\n", None), b"..hdr\r\n.\r\n".to_vec());
         assert_eq!(crlf_size(b"a\nb\r\nc"), 9);
         assert_eq!(crlf_size(b"a\r\n"), 3);
+        assert_eq!(wire_size(b"a\n.b\r\n..\rc"), 3 + 5 + 5 + 3);
+        for raw in [&b"Subject: x\n\n.\nend"[..], b"a\r\n", b"", b".\r\n.\r"] {
+            let mut out = vec![];
+            message(raw, None, &mut out);
+            assert_eq!(wire_size(raw), out.len() as u64 - 3, "{raw:?}");
+        }
     }
 
     #[test]

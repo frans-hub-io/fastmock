@@ -21,6 +21,7 @@ const BEDIT: &str = "fm_bedit_token_for_mail_api_tests_0123456789";
 const ALLVIEW: &str = "fm_allview_token_for_mail_api_tests_0123456789";
 const READER: &str = "fm_reader_token_for_mail_api_tests_0123456789";
 const WRITER: &str = "fm_writer_token_for_mail_api_tests_0123456789";
+const SENDER: &str = "fm_sender_token_for_mail_api_tests_0123456789";
 
 const ACCESS: &str = r#"
 roles:
@@ -28,6 +29,8 @@ roles:
     permissions: [mail:read]
   - name: mail-writer
     permissions: [mail:read, mail:write]
+  - name: mail-sender
+    permissions: [mail:write]
 spaces:
   - name: billing
     mailDomains: [billing.example.test]
@@ -48,6 +51,9 @@ bindings:
     global: true
   - subject: token:writer
     role: mail-writer
+    spaces: [billing]
+  - subject: token:sender
+    role: mail-sender
     spaces: [billing]
 "#;
 
@@ -119,6 +125,7 @@ impl H {
                 ("allview", ALLVIEW),
                 ("reader", READER),
                 ("writer", WRITER),
+                ("sender", SENDER),
             ] {
                 tokens.push(format!("{name}::{}", hash_token(value)));
             }
@@ -2093,4 +2100,170 @@ async fn waits_and_streams_poll_the_store_when_events_are_lost() {
         assert_eq!(received[0]["entry"]["summary"]["subject"], "lost");
         assert_eq!(received[0]["space"], "billing");
     }
+}
+
+// ----- permission boundaries, paging and stream limits -----
+
+#[tokio::test]
+async fn mailbox_passwords_need_read_and_write() {
+    let h = H::start(StorageKind::Memory, true, Some(mail_config())).await;
+    let path = "/mail/mailboxes/alice@billing.example.test/password?space=billing";
+    let (st, v) = h
+        .call(
+            Method::PUT,
+            path,
+            SENDER,
+            Some(json!({"password": "s3cret"})),
+        )
+        .await;
+    assert_eq!(st, 403, "{v}");
+    let (st, v) = h.call(Method::DELETE, path, SENDER, None).await;
+    assert_eq!(st, 403, "{v}");
+    let (st, v) = h
+        .call(
+            Method::PUT,
+            path,
+            WRITER,
+            Some(json!({"password": "s3cret"})),
+        )
+        .await;
+    assert_eq!(st, 204, "{v}");
+}
+
+#[tokio::test]
+async fn mailboxes_are_listed_in_pages() {
+    let h = H::start(StorageKind::Memory, true, Some(mail_config())).await;
+    for a in ["a", "b", "c"] {
+        h.inject(
+            ADMIN,
+            "?space=billing",
+            simple(&format!("{a}@billing.example.test"), "x"),
+        )
+        .await;
+    }
+    let v = h
+        .ok(Method::GET, "/mail/mailboxes?limit=2", ADMIN, None)
+        .await;
+    let names = |v: &Value| -> Vec<String> {
+        v["mailboxes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["address"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(
+        names(&v),
+        vec!["a@billing.example.test", "b@billing.example.test"]
+    );
+    let next = v["nextCursor"].as_str().expect("a next page").to_string();
+    let v = h
+        .ok(
+            Method::GET,
+            &format!("/mail/mailboxes?limit=2&cursor={next}"),
+            ADMIN,
+            None,
+        )
+        .await;
+    assert_eq!(names(&v), vec!["c@billing.example.test"]);
+    assert!(v.get("nextCursor").is_none(), "{v}");
+    let (st, _) = h
+        .call(Method::GET, "/mail/mailboxes?limit=0", ADMIN, None)
+        .await;
+    assert_eq!(st, 400);
+    let (st, _) = h
+        .call(Method::GET, "/mail/mailboxes?cursor=%21%21", ADMIN, None)
+        .await;
+    assert_eq!(st, 400);
+}
+
+#[tokio::test]
+async fn streams_are_limited_per_caller_and_in_time() {
+    let h = H::start(StorageKind::Memory, true, Some(mail_config())).await;
+    let mut open = Vec::new();
+    for _ in 0..8 {
+        open.push(SseClient::open(&h, "", READER).await);
+    }
+    let (st, v) = h.call(Method::GET, "/mail/stream", READER, None).await;
+    assert_eq!(st, 429, "{v}");
+    let other = SseClient::open(&h, "", ADMIN).await;
+    drop(other);
+    drop(open);
+    let mut short = None;
+    for _ in 0..50 {
+        let r = h
+            .req(Method::GET, "/mail/stream?maxSeconds=1", READER)
+            .send()
+            .await
+            .unwrap();
+        if r.status() == 200 {
+            short = Some(r);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let mut short = short.expect("a stream once the others closed");
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Ok(Some(_)) = short.chunk().await {}
+    })
+    .await;
+    assert!(ended.is_ok(), "the stream ends after maxSeconds");
+    let (st, _) = h
+        .call(Method::GET, "/mail/stream?maxSeconds=0", READER, None)
+        .await;
+    assert_eq!(st, 400);
+}
+
+#[tokio::test]
+async fn streams_end_when_the_token_is_revoked() {
+    let h = H::start(StorageKind::Memory, true, Some(mail_config())).await;
+    let (st, t) = h
+        .call(
+            Method::POST,
+            "/tokens",
+            ADMIN,
+            Some(json!({"name": "stream-reader", "role": "mail-reader", "global": true})),
+        )
+        .await;
+    assert_eq!(st, 201, "{t}");
+    let token = t["token"].as_str().unwrap().to_string();
+    let id = t["id"].as_str().unwrap().to_string();
+    let mut stream = SseClient::open(&h, "", &token).await;
+    h.ok(Method::DELETE, &format!("/tokens/{id}"), ADMIN, None)
+        .await;
+    let ended = tokio::time::timeout(Duration::from_secs(45), async {
+        while let Ok(Some(c)) = stream.resp.chunk().await {
+            stream.buf.push_str(&String::from_utf8_lossy(&c));
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "the stream of a revoked token ends");
+    let late = h
+        .inject(ADMIN, "", simple("late@example.test", "late"))
+        .await;
+    assert!(!stream.buf.contains(&id_of(&late)), "{}", stream.buf);
+}
+
+fn id_of(v: &Value) -> String {
+    v["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn ui_config_lists_the_mail_ports() {
+    let mut m = mail_config();
+    m.listeners.imap = Some("127.0.0.1:1143".parse().unwrap());
+    let h = H::start(StorageKind::Memory, true, Some(m)).await;
+    let root = h.base.trim_end_matches("/__admin");
+    let v: Value = h
+        .http
+        .get(format!("{root}/ui/config.json"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["mailImapPort"], 1143, "{v}");
+    assert_eq!(v["mailSmtpPort"], Value::Null, "{v}");
+    assert_eq!(v["mailPop3Port"], Value::Null, "{v}");
 }

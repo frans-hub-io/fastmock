@@ -1,5 +1,6 @@
 pub mod mail;
 pub mod mail_events;
+pub mod mail_login;
 mod pem;
 pub mod postgres;
 pub mod valkey;
@@ -12,6 +13,7 @@ use fastmock_core::Stores;
 
 pub use mail::{MailUsage, PgMailStore};
 pub use mail_events::ValkeyMailEvents;
+pub use mail_login::ValkeyLoginFailures;
 pub use postgres::{AppliedMigration, PgStore, PgTls, SslMode, pg_connect_options};
 pub use valkey::{ValkeyStore, ValkeyTls, valkey_client};
 

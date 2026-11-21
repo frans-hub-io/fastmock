@@ -61,6 +61,7 @@ async fn storages() -> Vec<StorageKind> {
 }
 
 struct Fm {
+    app: fastmock_server::state::AppState,
     data: axum::Router,
     admin: axum::Router,
     _stop: tokio::sync::watch::Sender<bool>,
@@ -80,13 +81,20 @@ async fn server(storage: StorageKind) -> Fm {
     );
     cfg.plugins = Some(vec![]);
     cfg.access_file = Some(access);
+    std::fs::write(
+        dir.join("mail-webhook-key"),
+        "a-long-random-test-key-0123456789",
+    )
+    .unwrap();
+    cfg.secrets_dir = Some(dir.clone());
     let mut mail = MailConfig::default();
     mail.listeners.smtp = None;
     cfg.mail = Some(mail);
     let (app, data, admin, policy) = fastmock_server::build(cfg, prom()).await.unwrap();
     let (tx, rx) = tokio::sync::watch::channel(false);
-    tokio::spawn(fastmock_server::outbox::run(app, policy, rx));
+    tokio::spawn(fastmock_server::outbox::run(app.clone(), policy, rx));
     Fm {
+        app,
         data,
         admin,
         _stop: tx,
@@ -822,4 +830,120 @@ async fn inbound_payloads_per_provider() {
     )
     .await;
     assert_eq!(r.status, 400);
+}
+
+// ----- secrets at rest and unsigned Mailgun webhooks -----
+
+#[tokio::test]
+async fn webhook_secrets_are_not_stored_in_plain_text() {
+    for storage in storages().await {
+        let fm = server(storage).await;
+        let (base, rx) = Receiver::start().await;
+        let auth_base = base.replace("http://", "http://hookuser:url-plain-password@");
+        let r = admin(
+            &fm,
+            "PUT",
+            "/mail/webhooks?space=billing",
+            json!({"webhooks": [
+                {"id": "mg", "provider": "mailgun", "kind": "events", "url": format!("{base}/mg"), "signingKey": "mg-plain-signing-key"},
+                {"id": "pm", "provider": "postmark", "kind": "events", "url": format!("{auth_base}/pm")}
+            ]}),
+        )
+        .await;
+        assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+        let stored = fm
+            .app
+            .stores
+            .data
+            .get("mail-webhooks", "billing")
+            .await
+            .unwrap()
+            .unwrap()
+            .to_string();
+        assert!(!stored.contains("mg-plain-signing-key"), "{stored}");
+        assert!(!stored.contains("url-plain-password"), "{stored}");
+        let one = json!({"From": "s@example.com", "To": "r@billing.example.test", "Subject": "s", "TextBody": "t"});
+        let res = send(
+            &fm.data,
+            "POST",
+            "/__mail/postmark/email",
+            &[
+                ("x-postmark-server-token", "tok"),
+                ("content-type", "application/json"),
+            ],
+            one.to_string(),
+        )
+        .await;
+        assert_eq!(res.status, 200);
+        rx.wait(1).await;
+        let got = &rx.for_path("/pm")[0];
+        assert_eq!(
+            got.h("authorization"),
+            format!("Basic {}", B64.encode("hookuser:url-plain-password"))
+        );
+        let jobs = fm
+            .app
+            .stores
+            .outbox
+            .list(&fastmock_core::CallbackFilter {
+                source: Some("mail".into()),
+                limit: Some(100),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(!jobs.is_empty());
+        let plain = B64.encode("hookuser:url-plain-password");
+        for j in &jobs {
+            let headers = format!("{:?}", j.headers);
+            assert!(!headers.contains(&plain), "{headers}");
+            assert!(!headers.contains("url-plain-password"), "{headers}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn mailgun_webhooks_without_a_signing_key_carry_no_signature() {
+    let fm = server(StorageKind::Memory).await;
+    let (base, rx) = Receiver::start().await;
+    let r = admin(
+        &fm,
+        "PUT",
+        "/mail/webhooks",
+        json!({"webhooks": [{"id": "mg", "provider": "mailgun", "kind": "events", "url": format!("{base}/mg")}]}),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    let auth = format!("Basic {}", B64.encode("api:k"));
+    let res = send(
+        &fm.data,
+        "POST",
+        "/__mail/mailgun/v3/mg.example.com/messages",
+        &[
+            ("authorization", &auth),
+            ("content-type", "application/x-www-form-urlencoded"),
+        ],
+        "from=shop%40mg.example.com&to=a%40example.test&subject=Hi&text=x",
+    )
+    .await;
+    assert_eq!(res.status, 200);
+    rx.wait(1).await;
+    let v = rx.for_path("/mg")[0].json();
+    assert!(v.get("signature").is_none(), "{v}");
+    assert_eq!(v["event-data"]["event"], "delivered");
+}
+
+#[test]
+fn sns_notifications_name_no_aws_certificate_host() {
+    let out = fastmock_server::mail_webhooks::sns_envelope(
+        "arn:aws:sns:us-east-1:123456789012:t",
+        &json!({"x": 1}),
+        chrono::Utc::now(),
+    );
+    let v: Value = serde_json::from_slice(&out.body).unwrap();
+    assert_eq!(
+        v["SigningCertURL"],
+        "https://fastmock.invalid/sns-unsigned.pem"
+    );
+    assert_eq!(v["Signature"], "FASTMOCK-UNSIGNED");
 }

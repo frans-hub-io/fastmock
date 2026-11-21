@@ -666,7 +666,7 @@ export interface paths {
         };
         /**
          * IMAP/POP3 mailboxes
-         * @description Addresses that have a mailbox (created by the first message filed to them, or by setting a password) in `space`, or in every area the caller may read, sorted by area and address.
+         * @description Addresses that have a mailbox (created by the first message filed to them, or by setting a password) in `space`, or in every area the caller may read, sorted by area (the global area first) and address, paged with `cursor`.
          */
         get: operations["listMailboxes"];
         put?: never;
@@ -687,13 +687,13 @@ export interface paths {
         get?: never;
         /**
          * Set a mailbox password
-         * @description Sets the IMAP/POP3 password of a mailbox in `space` (the global area, or the caller's only space when it is bound to spaces), creating the mailbox. The address is stored lowercase without its plus tag. Only a salted hash is stored. Records the audit event `mail.mailbox.password.set` (without the password).
+         * @description Sets the IMAP/POP3 password of a mailbox in `space` (the global area, or the caller's only space when it is bound to spaces), creating the mailbox. Needs `mail:write` and `mail:read` there. The address is stored lowercase without its plus tag. Only a salted hash is stored. Records the audit event `mail.mailbox.password.set` (without the password).
          */
         put: operations["setMailboxPassword"];
         post?: never;
         /**
          * Remove a mailbox password
-         * @description Removes the password of a mailbox in `space`; logins then need a managed token with `mail:read`. Records the audit event `mail.mailbox.password.delete`.
+         * @description Removes the password of a mailbox in `space`; logins then need a managed token with `mail:read`. Needs `mail:write` and `mail:read` there. Records the audit event `mail.mailbox.password.delete`.
          */
         delete: operations["deleteMailboxPassword"];
         options?: never;
@@ -939,7 +939,7 @@ export interface paths {
         };
         /**
          * Live mail events
-         * @description Server-sent events of `space` (or of every area the caller may read): `message.received` (data: `MailEvent` with the message's `entry`) and `message.deleted` (data: `MailEvent` with the deleted `ids`). Starts with the comment `: ready`, sends `: heartbeat` comments while idle, ends when the server shuts down, and `resync` (data `{"missed": n}`) when this stream fell behind: list the messages again. Each event is checked against the caller's `mail:read` permission for its area. With PostgreSQL storage the stream also re-reads the last 5 minutes of messages every few seconds and sends `message.received` for those whose event was lost (`mailboxes` is empty then); each message is announced once.
+         * @description Server-sent events of `space` (or of every area the caller may read): `message.received` (data: `MailEvent` with the message's `entry`) and `message.deleted` (data: `MailEvent` with the deleted `ids`). Starts with the comment `: ready`, sends `: heartbeat` comments while idle, ends when the server shuts down, after `maxSeconds` (at most one hour; reconnect to go on) or when a check every 30 seconds finds that the caller may no longer read mail there (token revoked or expired, binding removed, session ended), and sends `resync` (data `{"missed": n}`) when this stream fell behind: list the messages again. A caller may hold 8 streams at once. Each event is checked against the caller's `mail:read` permission for its area. With PostgreSQL storage the stream also re-reads the last 5 minutes of messages every few seconds and sends `message.received` for those whose event was lost (`mailboxes` is empty then); each message is announced once.
          */
         get: operations["streamMailEvents"];
         put?: never;
@@ -984,7 +984,7 @@ export interface paths {
         get: operations["getMailWebhooks"];
         /**
          * Replace the provider webhooks of a space
-         * @description Stores the webhooks and expected API keys of one area. Events webhooks receive the provider's delivery events after each message sent through that provider's API in this area (`delivered`, or `bounce`, `complaint`, `deferred`, `dropped` for recipients with that local part); inbound webhooks receive the provider's inbound payload from `POST /__admin/mail/inbound`. Deliveries go through the callbacks outbox (retries, `/__admin/callbacks`). `signingKey` is write-only; a webhook `PUT` again with the same id without it (or with `***` as URL password) keeps the stored value. The first `PUT` creates the space's SendGrid key pair. Needs `mail:write`.
+         * @description Stores the webhooks and expected API keys of one area. Events webhooks receive the provider's delivery events after each message sent through that provider's API in this area (`delivered`, or `bounce`, `complaint`, `deferred`, `dropped` for recipients with that local part); inbound webhooks receive the provider's inbound payload from `POST /__admin/mail/inbound`. Deliveries go through the callbacks outbox (retries, `/__admin/callbacks`). `signingKey` is write-only; a webhook `PUT` again with the same id without it (or with `***` as URL password) keeps the stored value. Signing keys and URL passwords are stored encrypted with the secret `mail-webhook-key` (required with PostgreSQL storage). The first `PUT` creates the space's SendGrid key pair. Needs `mail:write`.
          */
         put: operations["putMailWebhooks"];
         post?: never;
@@ -2881,6 +2881,8 @@ export interface components {
         };
         MailboxList: {
             mailboxes: components["schemas"]["MailboxView"][];
+            /** @description Pass as `cursor` to read the next page; absent on the last page. */
+            nextCursor?: string | null;
         };
         MailboxView: {
             /** @example billing */
@@ -6644,11 +6646,12 @@ export interface operations {
     listMailboxes: {
         parameters: {
             query?: {
-                /**
-                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
-                 *     area, or to the caller's only space when it is bound to spaces.
-                 */
+                /** @description Space to list. Without it, every area the caller may read (`mail:read`). */
                 space?: string;
+                /** @description Page size, 1 to 1000 (default 100). */
+                limit?: number;
+                /** @description `nextCursor` of the previous page. */
+                cursor?: string;
             };
             header?: never;
             path?: never;
@@ -6663,6 +6666,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MailboxList"];
+                };
+            };
+            /** @description Invalid limit or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             /** @description Missing or invalid token */
@@ -7796,6 +7808,8 @@ export interface operations {
                  *     closing an idle stream.
                  */
                 heartbeatSeconds?: number;
+                /** @description Seconds after which the server ends the stream, 1 to 3600 (default 3600); reconnect to go on. */
+                maxSeconds?: number;
             };
             header?: never;
             path?: never;
@@ -7812,7 +7826,7 @@ export interface operations {
                     "text/event-stream": components["schemas"]["MailEvent"];
                 };
             };
-            /** @description Invalid heartbeatSeconds */
+            /** @description Invalid heartbeatSeconds or maxSeconds */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -7841,6 +7855,15 @@ export interface operations {
             };
             /** @description Mail is not enabled, or an unknown space */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The caller already holds 8 event streams */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

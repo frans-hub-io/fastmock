@@ -6,7 +6,7 @@ use fastmock_core::mail::ProviderExtras;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use super::build::{Attachment, Spec, check_fanout, decode_base64};
+use super::build::{Attachment, Fanout, Spec, decode_base64, substitute_all};
 use super::{Fail, Parsed, Reply, Request, json_body, norm};
 
 pub const MAX_PERSONALIZATIONS: usize = 1000;
@@ -146,16 +146,6 @@ fn value_str(v: &Value) -> String {
     }
 }
 
-fn substitute(s: &str, subs: &Map<String, Value>) -> String {
-    let mut out = s.to_string();
-    for (k, v) in subs {
-        if !k.is_empty() {
-            out = out.replace(k.as_str(), &value_str(v));
-        }
-    }
-    out
-}
-
 fn emails(list: &[Email], field: &str) -> Result<Vec<String>, Fail> {
     list.iter()
         .enumerate()
@@ -278,7 +268,7 @@ pub fn parse(req: &Request<'_>) -> Result<Parsed, Fail> {
     let shared = text.as_ref().map_or(0, String::len)
         + html.as_ref().map_or(0, String::len)
         + attachments.iter().map(|a| a.data.len()).sum::<usize>();
-    check_fanout(shared, body.personalizations.len())?;
+    let mut fan = Fanout::new(shared, body.personalizations.len())?;
     let reply_to: Vec<String> = match &body.reply_to {
         Some(r) => vec![r.display()],
         None => emails(&body.reply_to_list, "reply_to_list")?,
@@ -346,15 +336,33 @@ pub fn parse(req: &Request<'_>) -> Result<Parsed, Fail> {
         } else {
             None
         };
-        let render = |s: &Option<String>| {
-            s.as_ref().map(|v| {
-                if dynamic {
-                    v.clone()
-                } else {
-                    substitute(v, &p.substitutions)
-                }
-            })
+        let pairs: Vec<(String, String)> = p
+            .substitutions
+            .iter()
+            .map(|(k, v)| (k.clone(), value_str(v)))
+            .collect();
+        let render = |s: &Option<String>| -> Result<Option<String>, Fail> {
+            s.as_ref()
+                .map(|v| {
+                    if dynamic {
+                        Ok(v.clone())
+                    } else {
+                        substitute_all(v, &pairs, req.max_bytes)
+                    }
+                })
+                .transpose()
         };
+        let subject = render(&subject)?;
+        let (text, html) = if dynamic {
+            (None, None)
+        } else {
+            (render(&text)?, render(&html)?)
+        };
+        fan.check(
+            subject.as_ref().map_or(0, String::len)
+                + text.as_ref().map_or(0, String::len)
+                + html.as_ref().map_or(0, String::len),
+        )?;
         let to = emails(&p.to, &format!("personalizations.{i}.to"))?;
         let spec = Spec {
             from: from.display(),
@@ -363,9 +371,9 @@ pub fn parse(req: &Request<'_>) -> Result<Parsed, Fail> {
             cc: emails(&p.cc, &format!("personalizations.{i}.cc"))?,
             bcc: emails(&p.bcc, &format!("personalizations.{i}.bcc"))?,
             reply_to: reply_to.clone(),
-            subject: render(&subject),
-            text: if dynamic { None } else { render(&text) },
-            html: if dynamic { None } else { render(&html) },
+            subject,
+            text,
+            html,
             headers: hdrs,
             attachments: attachments.clone(),
             extras: ProviderExtras {
@@ -378,10 +386,11 @@ pub fn parse(req: &Request<'_>) -> Result<Parsed, Fail> {
             },
             ..Default::default()
         };
-        items.push(Ok(spec.build(req.max_bytes).map_err(|e| match e {
+        let m = spec.build(req.max_bytes).map_err(|e| match e {
             Fail::Invalid { message, .. } => Fail::field(&format!("personalizations.{i}"), message),
             other => other,
-        })?));
+        })?;
+        items.push(Ok(fan.message(m)?));
     }
     Ok(Parsed {
         items,

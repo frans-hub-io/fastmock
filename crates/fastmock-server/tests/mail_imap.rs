@@ -447,7 +447,7 @@ async fn python_imaplib_as_a_client() {
     let billing = s
         .token(
             "py-billing",
-            json!({"role": "viewer", "spaces": ["billing"]}),
+            json!({"role": "editor", "spaces": ["billing"]}),
         )
         .await;
     s.set_password("payments", PW_BOX, "pw-secret").await;

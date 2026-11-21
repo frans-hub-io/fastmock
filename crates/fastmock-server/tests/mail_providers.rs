@@ -67,6 +67,10 @@ struct Fm {
 }
 
 async fn server(storage: StorageKind, max_message: usize) -> Fm {
+    server_with(storage, max_message, None).await
+}
+
+async fn server_with(storage: StorageKind, max_message: usize, max_body: Option<usize>) -> Fm {
     let dir = std::env::temp_dir().join(format!("fm-mail-prov-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let access = dir.join("access.yaml");
@@ -74,6 +78,10 @@ async fn server(storage: StorageKind, max_message: usize) -> Fm {
     let mut cfg = Config::for_tests(storage, vec![format!("ops:admin:{}", hash_token(ADMIN))]);
     cfg.plugins = Some(vec![]);
     cfg.access_file = Some(access);
+    if let Some(b) = max_body {
+        cfg.max_body_bytes = b;
+        cfg.max_inflight_body_bytes = cfg.max_inflight_body_bytes.max(b * 4);
+    }
     let mut mail = MailConfig::default();
     mail.listeners.smtp = None;
     mail.max_message_bytes = max_message;
@@ -1132,4 +1140,153 @@ async fn chaos_rules_answer_provider_errors() {
     .await;
     assert_eq!(r.status.as_u16(), 402);
     assert_eq!(r.json()["code"], "not_enough_credits");
+}
+
+// ----- body limits, expected keys, idempotency and webhook fan-out -----
+
+#[tokio::test]
+async fn mailgun_multipart_attachments_above_two_mib() {
+    let fm = server_with(StorageKind::Memory, 10 << 20, Some(16 << 20)).await;
+    let auth = format!("Basic {}", B64.encode("api:key-big"));
+    let big = vec![b'a'; 3 << 20];
+    let (ct, body) = multipart(&[
+        ("from", None, b"shop@mg.example.com"),
+        ("to", None, b"ann@billing.example.test"),
+        ("subject", None, b"Big"),
+        ("text", None, b"see attachment"),
+        ("attachment", Some("big.bin"), &big),
+    ]);
+    let r = send(
+        &fm.data,
+        "POST",
+        "/__mail/mailgun/v3/mg.example.com/messages",
+        &[("authorization", &auth), ("content-type", &ct)],
+        body,
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let stored = messages(&fm, Some("billing")).await;
+    assert_eq!(stored[0].summary.attachment_names, vec!["big.bin"]);
+}
+
+#[tokio::test]
+async fn the_postmark_test_token_follows_expected_keys() {
+    let fm = server(StorageKind::Memory, 1 << 20).await;
+    let digest = fastmock_server::mail_webhooks::key_digest("server-token-real");
+    let r = admin(
+        &fm,
+        "PUT",
+        "/mail/webhooks?space=billing",
+        json!({"apiKeys": {"postmark": [digest]}}),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let one = json!({"From": "sender@example.com", "To": "r@billing.example.test", "Subject": "s", "TextBody": "t"});
+    let with = |token: &'static str| {
+        [
+            ("x-postmark-server-token", token),
+            ("accept", "application/json"),
+            ("content-type", "application/json"),
+        ]
+    };
+    let r = send(
+        &fm.data,
+        "POST",
+        "/__mail/postmark/email",
+        &with("POSTMARK_API_TEST"),
+        one.to_string(),
+    )
+    .await;
+    assert_eq!(r.status, 401, "{}", r.text());
+    assert!(messages(&fm, Some("billing")).await.is_empty());
+    let r = send(
+        &fm.data,
+        "POST",
+        "/__mail/postmark/email",
+        &with("server-token-real"),
+        one.to_string(),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let crm = json!({"From": "sender@example.com", "To": "r@crm.example.test", "Subject": "s", "TextBody": "t"});
+    let r = send(
+        &fm.data,
+        "POST",
+        "/__mail/postmark/email",
+        &with("POSTMARK_API_TEST"),
+        crm.to_string(),
+    )
+    .await;
+    assert_eq!(r.status, 200, "a space without expected keys: {}", r.text());
+}
+
+#[tokio::test]
+async fn resend_idempotency_keys_belong_to_the_api_key() {
+    for storage in storages().await {
+        let fm = server(storage, 1 << 20).await;
+        let headers = |auth: &'static str| {
+            [
+                ("authorization", auth),
+                ("content-type", "application/json"),
+                ("user-agent", "t"),
+                ("idempotency-key", "shared-key-1"),
+            ]
+        };
+        let a = json!({"from": "a@example.com", "to": ["x@example.test"], "subject": "from a", "html": "<p>a</p>"});
+        let b = json!({"from": "b@example.com", "to": ["y@example.test"], "subject": "from b", "html": "<p>b</p>"});
+        let r = send(
+            &fm.data,
+            "POST",
+            "/__mail/resend/emails",
+            &headers("Bearer re_tenant_a"),
+            a.to_string(),
+        )
+        .await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        let first = r.json()["id"].clone();
+        let r = send(
+            &fm.data,
+            "POST",
+            "/__mail/resend/emails",
+            &headers("Bearer re_tenant_b"),
+            b.to_string(),
+        )
+        .await;
+        assert_eq!(r.status, 200, "another key, another scope: {}", r.text());
+        assert_ne!(r.json()["id"], first);
+        assert_eq!(messages(&fm, None).await.len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn webhook_requests_per_call_are_capped() {
+    let fm = server(StorageKind::Memory, 1 << 20).await;
+    let r = admin(
+        &fm,
+        "PUT",
+        "/mail/webhooks?space=billing",
+        json!({"webhooks": [{"provider": "postmark", "kind": "events", "url": "https://hooks.example.com/pm"}]}),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let batch: Vec<Value> = (0..500)
+        .map(|i| {
+            json!({"From": "s@example.com", "To": format!("a{i}@billing.example.test, b{i}@billing.example.test, c{i}@billing.example.test"), "Subject": "s", "TextBody": "t"})
+        })
+        .collect();
+    let r = send(
+        &fm.data,
+        "POST",
+        "/__mail/postmark/email/batch",
+        &[
+            ("x-postmark-server-token", "tok"),
+            ("content-type", "application/json"),
+        ],
+        Value::Array(batch).to_string(),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(messages(&fm, Some("billing")).await.len(), 200);
+    let pending = fm.app.stores.outbox.pending_count().await.unwrap();
+    assert_eq!(pending, 1000, "1500 events, 1000 queued");
 }

@@ -46,6 +46,8 @@ pub struct AppState {
     pub mail: Option<Arc<fastmock_mail::MailService>>,
     /// Mail chaos rules and counters; present with the mail module.
     pub mail_chaos: Option<Arc<fastmock_mail::chaos::MailChaos>>,
+    /// Seals mail webhook secrets at rest; present with the mail module.
+    pub mail_sealer: Option<Arc<crate::mail_webhook_secrets::Sealer>>,
 }
 
 pub struct StubSecrets {

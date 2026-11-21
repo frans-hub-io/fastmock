@@ -14,9 +14,10 @@ use tokio::time::Instant;
 
 use super::codec::{BodyType, Command, CommandError, Mechanism};
 use super::sasl::{self, Credentials, SaslError};
-use super::{SmtpServer, TokenCheck};
+use super::{SmtpServer, WriteScope};
 use crate::chaos::{ChaosEffect, ChaosEvent, ChaosStage};
 use crate::config::MailConfig;
+use crate::mailbox_login::verify_password;
 use crate::service::{AcceptError, Incoming};
 use std::sync::Arc;
 
@@ -183,6 +184,8 @@ pub(crate) struct Session<'a> {
     helo: Option<String>,
     esmtp: bool,
     auth_user: Option<String>,
+    /// The write scope of a managed token that passed AUTH.
+    token_scope: Option<Arc<dyn WriteScope>>,
     auth_failures: u32,
     txn: Option<Txn>,
     transcript: Transcript,
@@ -234,6 +237,7 @@ impl<'a> Session<'a> {
             helo: None,
             esmtp: false,
             auth_user: None,
+            token_scope: None,
             auth_failures: 0,
             txn: None,
             transcript: Transcript::default(),
@@ -516,7 +520,9 @@ impl<'a> Session<'a> {
             Command::Auth { mechanism, initial } => self.auth(mechanism, initial).await,
             Command::StartTls => self.starttls().await,
             Command::Rset => {
-                self.txn = None;
+                if let Some(t) = self.txn.take() {
+                    self.transcript.truncate(t.transcript_start);
+                }
                 self.reply(250, "2.0.0", "OK");
                 Ok(true)
             }
@@ -693,6 +699,13 @@ impl<'a> Session<'a> {
             .into_iter()
             .map(|r| r.space)
             .collect();
+        if let Some(scope) = &self.token_scope
+            && areas.iter().any(|a| !scope.can_write(a.as_deref()))
+        {
+            rejected("rcpt_scope");
+            self.reply(550, "5.7.1", "Not authorized to deliver to this recipient");
+            return Ok(true);
+        }
         let one = [address.clone()];
         let ev = ChaosEvent {
             mail_from: Some(&mail_from),
@@ -766,6 +779,16 @@ impl<'a> Session<'a> {
 
     async fn bdat(&mut self, size: usize, last: bool) -> Step<bool> {
         let max = self.cfg.max_message_bytes;
+        if size > max {
+            rejected("size");
+            self.txn = None;
+            self.reply(
+                552,
+                "5.3.4",
+                "Message size exceeds fixed maximum message size",
+            );
+            return Err(Close::Rejected);
+        }
         let refusal = match &self.txn {
             None => Some((503, "5.5.1", "Send MAIL first")),
             Some(t) if t.rcpt.is_empty() => Some((554, "5.5.1", "No valid recipients")),
@@ -928,28 +951,33 @@ impl<'a> Session<'a> {
         })
     }
 
-    async fn verify(
-        cfg: &MailConfig,
-        tokens: Option<Arc<dyn TokenCheck>>,
-        c: &Credentials,
-    ) -> bool {
+    /// Checks AUTH credentials: `None` when refused, else the token's write scope (`None` inside for a
+    /// configured user or when AUTH is not required).
+    async fn verify(srv: &SmtpServer, c: &Credentials) -> Option<Option<Arc<dyn WriteScope>>> {
+        let cfg = &*srv.service.config;
         if !cfg.smtp_require_auth {
-            return true;
+            return Some(None);
         }
-        let Some(pass) = &c.password else {
-            return false;
-        };
-        let hash = hex::encode(Sha256::digest(pass.as_bytes()));
-        let user_ok = cfg
-            .smtp_users
-            .iter()
-            .any(|u| u.name == c.user && bool::from(u.sha256.as_bytes().ct_eq(hash.as_bytes())));
-        if user_ok {
-            return true;
+        let pass = c.password.as_ref()?;
+        if let Some(u) = cfg.smtp_users.iter().find(|u| u.name == c.user) {
+            let ok = if u.is_pbkdf2() {
+                let (stored, pw) = (u.hash.clone(), pass.clone());
+                srv.service
+                    .auth
+                    .hash(move || verify_password(&stored, &pw))
+                    .await
+                    .unwrap_or(false)
+            } else {
+                let hash = hex::encode(Sha256::digest(pass.as_bytes()));
+                bool::from(u.hash.as_bytes().ct_eq(hash.as_bytes()))
+            };
+            if ok {
+                return Some(None);
+            }
         }
-        match &tokens {
-            Some(t) => t.allows(&c.user, pass).await,
-            None => false,
+        match &srv.tokens {
+            Some(t) => t.allows(&c.user, pass).await.map(Some),
+            None => None,
         }
     }
 
@@ -992,11 +1020,21 @@ impl<'a> Session<'a> {
             }
             Err(SaslError::Malformed) => None,
         };
-        let ok = match &creds {
-            Some(c) => Self::verify(self.cfg, self.srv.tokens.clone(), c).await,
-            None => false,
+        let guard = self.srv.service.auth.clone();
+        let ip = self.peer.ip();
+        let throttled = self.cfg.smtp_require_auth;
+        let verified = match &creds {
+            Some(c) if throttled && guard.blocked(ip, &c.user).await => None,
+            Some(c) => Self::verify(self.srv, c).await,
+            None => None,
         };
-        let Some(creds) = creds.filter(|_| ok) else {
+        if throttled && let Some(c) = &creds {
+            match verified {
+                Some(_) => guard.succeeded(&c.user).await,
+                None => guard.failed(ip, &c.user).await,
+            }
+        }
+        let Some((creds, scope)) = creds.zip(verified) else {
             self.auth_failures += 1;
             rejected("auth_failed");
             if self.auth_failures >= self.cfg.max_auth_failures {
@@ -1012,6 +1050,9 @@ impl<'a> Session<'a> {
             return Ok(false);
         };
         let area = self.user_area(Some(&creds.user));
+        if let Some(a) = &area {
+            tracing::Span::current().record("fastmock.space", a.as_str());
+        }
         let ev = ChaosEvent {
             auth_user: Some(&creds.user),
             ..ChaosEvent::new(ChaosStage::Auth)
@@ -1021,6 +1062,7 @@ impl<'a> Session<'a> {
             return Ok(true);
         }
         self.auth_user = Some(creds.user);
+        self.token_scope = scope;
         self.reply(235, "2.7.0", "Authentication successful");
         Ok(true)
     }
@@ -1077,6 +1119,7 @@ impl<'a> Session<'a> {
         self.helo = None;
         self.esmtp = false;
         self.auth_user = None;
+        self.token_scope = None;
         self.txn = None;
         Ok(true)
     }

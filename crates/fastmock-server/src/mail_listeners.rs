@@ -14,9 +14,9 @@ use std::time::Duration;
 use anyhow::Context;
 use async_trait::async_trait;
 use fastmock_mail::imap::{self, ImapServer};
-use fastmock_mail::mailbox_login::MailboxTokenCheck;
+use fastmock_mail::mailbox_login::{MailboxAccess, MailboxTokenCheck};
 use fastmock_mail::pop3::{self, Pop3Server};
-use fastmock_mail::smtp::{self, SmtpServer, TokenCheck};
+use fastmock_mail::smtp::{self, SmtpServer, TokenCheck, WriteScope};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
@@ -98,8 +98,9 @@ impl ConnectionLimits {
 }
 
 /// AUTH with a managed token: valid, and allowed `mail:write` in the global area or in the space named
-/// like the AUTH user. As an IMAP/POP3 password: valid, and allowed `mail:read` in the mailbox's space or
-/// globally (a mailbox of the global area needs a global grant).
+/// like the AUTH user; every recipient must route to an area where it holds `mail:write`. As an
+/// IMAP/POP3 password: valid, and allowed `mail:read` in the mailbox's space or globally (a mailbox of
+/// the global area needs a global grant); changes need `mail:write` (expunge also `mail:delete`).
 pub struct ManagedTokens {
     app: AppState,
 }
@@ -122,33 +123,42 @@ impl ManagedTokens {
     }
 }
 
+/// Where a token that passed SMTP AUTH holds `mail:write`.
+struct PrincipalScope(Principal);
+
+impl WriteScope for PrincipalScope {
+    fn can_write(&self, area: Option<&str>) -> bool {
+        self.0.allowed(Permission::MailWrite, area)
+    }
+}
+
 #[async_trait]
 impl TokenCheck for ManagedTokens {
-    async fn allows(&self, user: &str, token: &str) -> bool {
-        let Some((id, p)) = self.principal(token, "SMTP AUTH").await else {
-            return false;
-        };
+    async fn allows(&self, user: &str, token: &str) -> Option<Arc<dyn WriteScope>> {
+        let (id, p) = self.principal(token, "SMTP AUTH").await?;
         let space = self.app.auth.access().space(user).map(|s| s.name.as_str());
         let ok = p.allowed(Permission::MailWrite, None)
             || space.is_some_and(|s| p.allowed(Permission::MailWrite, Some(s)));
-        if ok {
-            self.app.tokens.touch(id);
+        if !ok {
+            return None;
         }
-        ok
+        self.app.tokens.touch(id);
+        Some(Arc::new(PrincipalScope(p)))
     }
 }
 
 #[async_trait]
 impl MailboxTokenCheck for ManagedTokens {
-    async fn can_read(&self, area: Option<&str>, token: &str) -> bool {
-        let Some((id, p)) = self.principal(token, "a mailbox login").await else {
-            return false;
-        };
-        let ok = p.allowed(Permission::MailRead, area);
-        if ok {
-            self.app.tokens.touch(id);
+    async fn access(&self, area: Option<&str>, token: &str) -> Option<MailboxAccess> {
+        let (id, p) = self.principal(token, "a mailbox login").await?;
+        if !p.allowed(Permission::MailRead, area) {
+            return None;
         }
-        ok
+        self.app.tokens.touch(id);
+        Some(MailboxAccess {
+            write: p.allowed(Permission::MailWrite, area),
+            delete: p.allowed(Permission::MailDelete, area),
+        })
     }
 }
 

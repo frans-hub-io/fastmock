@@ -191,6 +191,11 @@ async fn listen(
 }
 
 impl ValkeyMailEvents {
+    /// Failed-login counters on the same connection and prefix.
+    pub fn login_failures(&self, prefix: &str) -> crate::ValkeyLoginFailures {
+        crate::ValkeyLoginFailures::new(self.conn.clone(), prefix)
+    }
+
     /// Connects, subscribes and starts the listener task. Fails when Valkey cannot be reached now; later
     /// outages are retried. `capacity`: events a slow subscriber may fall behind (see [`MailEventHub`]).
     pub async fn connect(

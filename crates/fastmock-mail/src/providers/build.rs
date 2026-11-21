@@ -27,6 +27,10 @@ pub const MAX_TEMPLATE_DATA_BYTES: usize = 64 * 1024;
 pub const MAX_FANOUT_BYTES: usize = 128 * 1024 * 1024;
 /// Most loop iterations times template bytes a render may need.
 const MAX_RENDER_WORK: u128 = 64 * 1024 * 1024;
+/// Deepest nesting of blocks and subexpressions in a template.
+pub const MAX_TEMPLATE_DEPTH: usize = 32;
+/// Most bytes of the provider extras (tags, metadata, template data) of one message, as JSON.
+pub const MAX_EXTRAS_BYTES: usize = 128 * 1024;
 
 /// Header fields that the message fields set or that describe the MIME structure.
 const RESERVED: [&str; 10] = [
@@ -136,6 +140,92 @@ pub fn check_fanout(shared: usize, count: usize) -> Result<(), Fail> {
     Ok(())
 }
 
+/// The byte budget of one call whose content is repeated per message: every built message (its raw
+/// size and its provider extras) and every per-message expansion is charged before or as it is made, and
+/// the call fails with [`Fail::TooLarge`] once [`MAX_FANOUT_BYTES`] are used up.
+#[derive(Debug)]
+pub struct Fanout {
+    left: usize,
+}
+
+impl Default for Fanout {
+    fn default() -> Self {
+        Self {
+            left: MAX_FANOUT_BYTES,
+        }
+    }
+}
+
+impl Fanout {
+    /// A budget for `count` messages sharing `shared` bytes ([`check_fanout`] first).
+    pub fn new(shared: usize, count: usize) -> Result<Self, Fail> {
+        check_fanout(shared, count)?;
+        Ok(Self::default())
+    }
+
+    /// Charges `n` bytes.
+    pub fn charge(&mut self, n: usize) -> Result<(), Fail> {
+        if n > self.left {
+            self.left = 0;
+            return Err(Fail::TooLarge);
+        }
+        self.left -= n;
+        Ok(())
+    }
+
+    /// Fails when `n` more bytes would not fit (an expansion about to be built), without charging them.
+    pub fn check(&self, n: usize) -> Result<(), Fail> {
+        if n > self.left {
+            return Err(Fail::TooLarge);
+        }
+        Ok(())
+    }
+
+    /// Charges a built message: its raw size and its extras.
+    pub fn message(&mut self, m: OutMessage) -> Result<OutMessage, Fail> {
+        self.charge(m.raw.len().saturating_add(extras_bytes(&m.extras)?))?;
+        Ok(m)
+    }
+}
+
+/// The size of provider extras as JSON; fails when it is above [`MAX_EXTRAS_BYTES`].
+pub fn extras_bytes(e: &ProviderExtras) -> Result<usize, Fail> {
+    let n = serde_json::to_vec(e).map(|v| v.len()).unwrap_or(usize::MAX);
+    if n > MAX_EXTRAS_BYTES {
+        return Err(Fail::invalid(format!(
+            "the metadata of a message (tags, custom arguments, parameters and template data) is larger than {MAX_EXTRAS_BYTES} bytes"
+        )));
+    }
+    Ok(n)
+}
+
+/// Replaces every key of `pairs` found in `s` in one pass, the leftmost and then longest key first;
+/// inserted values are not searched again. Fails with [`Fail::TooLarge`] when the result would be
+/// larger than `max` bytes, before building it.
+pub fn substitute_all(s: &str, pairs: &[(String, String)], max: usize) -> Result<String, Fail> {
+    let pairs: Vec<&(String, String)> = pairs.iter().filter(|(k, _)| !k.is_empty()).collect();
+    if pairs.is_empty() {
+        if s.len() > max {
+            return Err(Fail::TooLarge);
+        }
+        return Ok(s.to_string());
+    }
+    let ac = aho_corasick::AhoCorasick::builder()
+        .match_kind(aho_corasick::MatchKind::LeftmostLongest)
+        .build(pairs.iter().map(|(k, _)| k.as_str()))
+        .map_err(|_| Fail::invalid("the substitutions cannot be applied"))?;
+    let mut size = s.len();
+    for m in ac.find_iter(s) {
+        let v = &pairs[m.pattern().as_usize()].1;
+        size = size.saturating_sub(m.len()).saturating_add(v.len());
+    }
+    if size > max {
+        return Err(Fail::TooLarge);
+    }
+    let values: Vec<&str> = pairs.iter().map(|(_, v)| v.as_str()).collect();
+    Ok(ac.replace_all(s, &values))
+}
+
 /// Decodes base64 content (standard alphabet, whitespace ignored).
 pub fn decode_base64(what: &str, s: &str) -> Result<Vec<u8>, Fail> {
     let clean: String = s.chars().filter(|c| !c.is_ascii_whitespace()).collect();
@@ -171,6 +261,7 @@ impl Spec {
                 "at most {MAX_ATTACHMENTS} attachments"
             )));
         }
+        extras_bytes(&self.extras)?;
         let rcpt_to = self.recipients()?;
         let (from_name, from) =
             parse_address(&self.from).map_err(|e| Fail::invalid(e.to_string()))?;
@@ -281,6 +372,7 @@ pub fn raw_message(
     if raw.len() > max_bytes {
         return Err(Fail::TooLarge);
     }
+    extras_bytes(&extras)?;
     let parsed = crate::parse::ParsedMail::parse(
         &raw,
         &crate::parse::ParseLimits {
@@ -367,12 +459,104 @@ fn each_depth(template: &str) -> usize {
     max
 }
 
+/// Deepest nesting of blocks (`{{#...}}`) and of subexpressions inside one tag.
+fn nesting_depth(template: &str) -> usize {
+    let mut blocks = 0usize;
+    let mut max = 0usize;
+    let mut rest = template;
+    while let Some(i) = rest.find("{{") {
+        rest = &rest[i + 2..];
+        let end = rest.find("}}").unwrap_or(rest.len());
+        let tag = &rest[..end];
+        let mut parens = 0usize;
+        for c in tag.chars() {
+            match c {
+                '(' => {
+                    parens += 1;
+                    max = max.max(parens);
+                }
+                ')' => parens = parens.saturating_sub(1),
+                _ => {}
+            }
+        }
+        let t = tag.trim_start_matches(['~', '{']).trim_start();
+        if t.starts_with('#') {
+            blocks += 1;
+            max = max.max(blocks);
+        } else if t.starts_with('/') {
+            blocks = blocks.saturating_sub(1);
+        }
+        rest = &rest[end..];
+    }
+    max
+}
+
+/// Refuses partials and decorators (`{{> p}}`, `{{#> p}}`, `{{#*inline}}`, `{{*name}}`) anywhere in a
+/// compiled template.
+fn check_elements(t: &handlebars::template::Template) -> Result<(), Fail> {
+    use handlebars::template::TemplateElement as E;
+    let mut stack = vec![t];
+    while let Some(t) = stack.pop() {
+        for e in &t.elements {
+            match e {
+                E::PartialExpression(_)
+                | E::PartialBlock(_)
+                | E::DecoratorExpression(_)
+                | E::DecoratorBlock(_) => {
+                    return Err(Fail::invalid(
+                        "the template cannot be rendered: partials and inline partials are not supported",
+                    ));
+                }
+                E::HelperBlock(h) | E::Expression(h) | E::HtmlExpression(h) => {
+                    stack.extend(h.template.iter());
+                    stack.extend(h.inverse.iter());
+                }
+                E::RawString(_) | E::Comment(_) => {}
+                _ => {
+                    return Err(Fail::invalid(
+                        "the template cannot be rendered: unsupported template element",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A writer that stops after `max` bytes.
+struct Capped {
+    buf: Vec<u8>,
+    max: usize,
+    over: bool,
+}
+
+impl std::io::Write for Capped {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        if self.buf.len().saturating_add(b.len()) > self.max {
+            self.over = true;
+            return Err(std::io::Error::other("rendered output too large"));
+        }
+        self.buf.extend_from_slice(b);
+        Ok(b.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Renders a Handlebars template part with the data (SES `TemplateContent`); HTML-escapes values when
-/// `html`. Templates and data are size-capped and loops bounded, partials are not available.
-pub fn render(template: &str, data: &Value, html: bool) -> Result<String, Fail> {
+/// `html`. Templates and data are size-capped, nesting ([`MAX_TEMPLATE_DEPTH`]) and loops bounded,
+/// partials and decorators refused, and the output limited to `max_out` bytes.
+pub fn render(template: &str, data: &Value, html: bool, max_out: usize) -> Result<String, Fail> {
     if template.len() > MAX_TEMPLATE_BYTES {
         return Err(Fail::invalid(format!(
             "a template part is larger than {MAX_TEMPLATE_BYTES} bytes"
+        )));
+    }
+    if nesting_depth(template) > MAX_TEMPLATE_DEPTH {
+        return Err(Fail::invalid(format!(
+            "the template nests blocks or expressions deeper than {MAX_TEMPLATE_DEPTH} levels"
         )));
     }
     let depth = each_depth(template);
@@ -386,6 +570,9 @@ pub fn render(template: &str, data: &Value, html: bool) -> Result<String, Fail> 
             "the template loops over too much data to render",
         ));
     }
+    let compiled = handlebars::template::Template::compile(template)
+        .map_err(|e| Fail::invalid(format!("the template cannot be rendered: {}", e.reason())))?;
+    check_elements(&compiled)?;
     let mut hb = handlebars::Handlebars::new();
     hb.set_strict_mode(false);
     hb.set_prevent_indent(true);
@@ -393,8 +580,24 @@ pub fn render(template: &str, data: &Value, html: bool) -> Result<String, Fail> 
     if !html {
         hb.register_escape_fn(handlebars::no_escape);
     }
-    hb.render_template(template, data)
-        .map_err(|e| Fail::invalid(format!("the template cannot be rendered: {}", e.reason())))
+    hb.register_template("t", compiled);
+    let mut out = Capped {
+        buf: Vec::new(),
+        max: max_out,
+        over: false,
+    };
+    match hb.render_to_write("t", data, &mut out) {
+        Ok(()) => {
+            String::from_utf8(out.buf).map_err(|_| Fail::invalid("the template cannot be rendered"))
+        }
+        Err(_) if out.over => Err(Fail::invalid(format!(
+            "the rendered template is larger than {max_out} bytes"
+        ))),
+        Err(e) => Err(Fail::invalid(format!(
+            "the template cannot be rendered: {}",
+            e.reason()
+        ))),
+    }
 }
 
 fn noop_helper(
@@ -506,24 +709,31 @@ mod tests {
     fn renders_templates_with_bounds() {
         let data = json!({"name": "<Ann>", "items": [1, 2, 3]});
         assert_eq!(
-            render("Hi {{name}}{{#each items}} {{this}}{{/each}}", &data, false).unwrap(),
+            render(
+                "Hi {{name}}{{#each items}} {{this}}{{/each}}",
+                &data,
+                false,
+                1 << 20
+            )
+            .unwrap(),
             "Hi <Ann> 1 2 3"
         );
         assert_eq!(
-            render("<p>{{name}}</p>", &data, true).unwrap(),
+            render("<p>{{name}}</p>", &data, true, 1 << 20).unwrap(),
             "<p>&lt;Ann&gt;</p>"
         );
-        assert_eq!(render("{{missing}}!", &data, false).unwrap(), "!");
+        assert_eq!(render("{{missing}}!", &data, false, 1 << 20).unwrap(), "!");
         let big = json!({"a": (0..2000).collect::<Vec<_>>()});
         assert!(
             render(
                 "{{#each a}}{{#each ../a}}{{#each ../../a}}x{{/each}}{{/each}}{{/each}}",
                 &big,
-                false
+                false,
+                1 << 20
             )
             .is_err()
         );
-        assert!(render("{{> partial}}", &data, false).is_err());
+        assert!(render("{{> partial}}", &data, false, 1 << 20).is_err());
         assert_eq!(each_depth("{{#if a}}{{#each b}}{{/each}}{{/if}}"), 1);
         assert_eq!(
             merge_data(&json!({"a": 1, "b": 2}), &json!({"b": 3})),

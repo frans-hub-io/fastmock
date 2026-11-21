@@ -1179,6 +1179,7 @@ dependencies = [
 name = "fastmock-mail"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "async-trait",
  "base64 0.22.1",
@@ -1311,12 +1312,14 @@ dependencies = [
  "chrono",
  "fastmock-core",
  "futures-util",
+ "hex",
  "metrics",
  "rcgen",
  "redis",
  "rustls",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "tokio",
  "tracing",

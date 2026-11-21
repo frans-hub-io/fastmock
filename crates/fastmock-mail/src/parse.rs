@@ -107,6 +107,12 @@ pub struct PartContent {
     pub bytes: Vec<u8>,
 }
 
+/// The largest HTML [`ParsedMail::html_with_inline_parts`] returns for a raw message of `raw_size`
+/// bytes: twice the raw size, at least 4 MiB.
+pub fn max_html_output(raw_size: usize) -> usize {
+    raw_size.saturating_mul(2).max(4 * 1024 * 1024)
+}
+
 /// A message parsed within [`ParseLimits`]; it borrows the raw bytes.
 pub struct ParsedMail<'a> {
     msg: Option<Message<'a>>,
@@ -304,30 +310,56 @@ impl<'a> ParsedMail<'a> {
         })
     }
 
-    /// The HTML body with `cid:` references to parts of the message replaced by `data:` URIs, as long as
-    /// the inlined parts stay within `max_inline_bytes` in total; other references are left as they are.
+    /// The HTML body with `cid:` references to parts of the message replaced by `data:` URIs. A
+    /// reference is a whole `cid:` token (ended by a quote, whitespace, `)`, `>` or the end of the text).
+    /// Every substitution is charged to `max_inline_bytes` and the result stays within
+    /// [`max_html_output`] of the raw size; references beyond either limit are left as they are.
     pub fn html_with_inline_parts(&self, max_inline_bytes: usize) -> Option<String> {
         let html = self.html()?;
         let m = self.msg.as_ref()?;
-        let mut budget = max_inline_bytes;
-        let mut out = html;
-        for p in m.parts() {
-            let Some(cid) = p.content_id() else {
-                continue;
-            };
-            let needle = format!("cid:{cid}");
-            if !out.contains(&needle) || p.is_multipart() {
-                continue;
-            }
-            let bytes = p.decoded();
-            let encoded = B64.encode(&bytes);
-            if encoded.len() > budget {
-                continue;
-            }
-            budget -= encoded.len();
-            let uri = format!("data:{};base64,{encoded}", content_type(&p));
-            out = out.replace(&needle, &uri);
+        let parts: Vec<MessagePart<'_>> = m
+            .parts()
+            .filter(|p| p.content_id().is_some_and(|c| !c.is_empty()) && !p.is_multipart())
+            .collect();
+        if parts.is_empty() {
+            return Some(html);
         }
+        let max_out = max_html_output(self.size);
+        let mut uris: std::collections::HashMap<usize, String> = Default::default();
+        let mut budget = max_inline_bytes;
+        let mut out = String::with_capacity(html.len().min(max_out));
+        let mut rest = html.as_str();
+        while let Some(at) = rest.find("cid:") {
+            out.push_str(&rest[..at]);
+            let after = &rest[at + 4..];
+            let end = after
+                .find(|c: char| matches!(c, '"' | '\'' | ')' | '>') || c.is_whitespace())
+                .unwrap_or(after.len());
+            let token = &after[..end];
+            let found = parts.iter().position(|p| p.content_id() == Some(token));
+            let mut replaced = false;
+            if let Some(i) = found {
+                let uri = uris.entry(i).or_insert_with(|| {
+                    let p = &parts[i];
+                    format!(
+                        "data:{};base64,{}",
+                        content_type(p),
+                        B64.encode(p.decoded())
+                    )
+                });
+                if uri.len() <= budget && out.len() + uri.len() + (after.len() - end) <= max_out {
+                    budget -= uri.len();
+                    out.push_str(uri);
+                    replaced = true;
+                }
+            }
+            if !replaced {
+                out.push_str("cid:");
+                out.push_str(token);
+            }
+            rest = &after[end..];
+        }
+        out.push_str(rest);
         Some(out)
     }
 

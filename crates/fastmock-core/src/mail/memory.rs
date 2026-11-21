@@ -32,11 +32,22 @@ struct Mailbox {
     password: Option<String>,
 }
 
+/// Where a message was filed: area, address, folder and UID. Entries may be stale after an expunge.
+type Location = (String, String, u32);
+
 #[derive(Default)]
 struct State {
     areas: HashMap<Area, BTreeMap<Key, MailMessage>>,
     index: HashMap<Uuid, (Area, DateTime<Utc>)>,
+    /// Raw bytes per area.
+    bytes: HashMap<Area, u64>,
+    /// Folder entries of each message, so removing a message does not walk every mailbox.
+    locations: HashMap<Uuid, Vec<Location>>,
     mailboxes: BTreeMap<(Area, String), Mailbox>,
+    /// Mailboxes per area.
+    mailbox_count: HashMap<Area, usize>,
+    /// Areas whose mailbox limit was reported.
+    full_reported: BTreeSet<Area>,
     last_validity: u32,
 }
 
@@ -51,8 +62,31 @@ impl State {
         }
     }
 
+    fn has_mailbox(&self, area: &Area, address: &str) -> bool {
+        self.mailboxes
+            .contains_key(&(area.clone(), address.to_string()))
+    }
+
+    /// Whether a new mailbox fits in `area`; reports the first refusal per area.
+    fn mailbox_fits(&mut self, area: &Area, max: usize) -> bool {
+        if self.mailbox_count.get(area).copied().unwrap_or(0) < max {
+            return true;
+        }
+        if self.full_reported.insert(area.clone()) {
+            tracing::warn!(
+                space = area.as_deref().unwrap_or("-"),
+                max,
+                "mail: the mailbox limit of the area is reached; further addresses get no mailbox"
+            );
+        }
+        false
+    }
+
     fn folder(&mut self, area: &Area, address: &str, folder: &str) -> &mut Folder {
         let key = (area.clone(), address.to_string());
+        if !self.mailboxes.contains_key(&key) {
+            *self.mailbox_count.entry(area.clone()).or_default() += 1;
+        }
         if !self
             .mailboxes
             .get(&key)
@@ -84,17 +118,77 @@ impl State {
 
     fn remove(&mut self, id: Uuid) -> Option<MailRef> {
         let (area, at) = self.index.remove(&id)?;
-        if let Some(map) = self.areas.get_mut(&area) {
-            map.remove(&(at, id));
+        if let Some(m) = self
+            .areas
+            .get_mut(&area)
+            .and_then(|map| map.remove(&(at, id)))
+            && let Some(b) = self.bytes.get_mut(&area)
+        {
+            *b = b.saturating_sub(m.raw.len() as u64);
         }
-        for ((a, _), mb) in self.mailboxes.iter_mut() {
-            if *a == area {
-                for f in mb.folders.values_mut() {
-                    f.entries.retain(|_, s| s.message_id != id);
-                }
+        for (address, folder, uid) in self.locations.remove(&id).unwrap_or_default() {
+            if let Some(f) = self
+                .mailboxes
+                .get_mut(&(area.clone(), address))
+                .and_then(|m| m.folders.get_mut(&folder))
+                && f.entries.get(&uid).is_some_and(|s| s.message_id == id)
+            {
+                f.entries.remove(&uid);
             }
         }
         Some(MailRef { space: area, id })
+    }
+
+    fn file(
+        &mut self,
+        area: &Area,
+        address: &str,
+        folder: &str,
+        id: Uuid,
+        flags: BTreeSet<String>,
+    ) {
+        let f = self.folder(area, address, folder);
+        let uid = f.uid_next;
+        f.uid_next += 1;
+        f.entries.insert(
+            uid,
+            Slot {
+                message_id: id,
+                flags,
+            },
+        );
+        self.locations
+            .entry(id)
+            .or_default()
+            .push((address.to_string(), folder.to_string(), uid));
+    }
+
+    /// The oldest message of `area` while it holds more than `max_messages` or `max_bytes` (the
+    /// newest one stays).
+    fn excess(&self, area: &Area, max_messages: usize, max_bytes: u64) -> Option<Uuid> {
+        let map = self.areas.get(area)?;
+        let over = map.len() > max_messages
+            || (map.len() > 1 && self.bytes.get(area).copied().unwrap_or(0) > max_bytes);
+        over.then(|| map.keys().next().map(|(_, id)| *id)).flatten()
+    }
+
+    /// Removes mailboxes without entries and without a password.
+    fn drop_empty_mailboxes(&mut self) {
+        let empty: Vec<(Area, String)> = self
+            .mailboxes
+            .iter()
+            .filter(|(_, m)| {
+                m.password.is_none() && m.folders.values().all(|f| f.entries.is_empty())
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in empty {
+            self.mailboxes.remove(&k);
+            if let Some(n) = self.mailbox_count.get_mut(&k.0) {
+                *n = n.saturating_sub(1);
+            }
+            self.full_reported.remove(&k.0);
+        }
     }
 
     fn entry(&self, uid: u32, slot: &Slot) -> Option<MailboxEntry> {
@@ -123,18 +217,30 @@ impl State {
     }
 }
 
-/// Mail kept in process memory; every area keeps at most `max_per_area` messages, dropping the oldest
-/// when a new one arrives.
+/// Mail kept in process memory; every area keeps at most `max_messages` messages and `max_bytes` raw
+/// bytes, dropping the oldest when a new one arrives, and at most `max_mailboxes` mailboxes.
 pub struct MemoryMailStore {
     state: Mutex<State>,
-    max_per_area: usize,
+    limits: MailRetention,
 }
 
 impl MemoryMailStore {
+    /// At most `max_per_area` messages per area, other limits at their defaults.
     pub fn new(max_per_area: usize) -> Self {
+        Self::with_limits(MailRetention {
+            max_messages: max_per_area,
+            ..Default::default()
+        })
+    }
+
+    /// The message, byte and mailbox limits of `limits` (its age is applied by the sweep).
+    pub fn with_limits(limits: MailRetention) -> Self {
         Self {
             state: Mutex::new(State::default()),
-            max_per_area: max_per_area.max(1),
+            limits: MailRetention {
+                max_messages: limits.max_messages.max(1),
+                ..limits
+            },
         }
     }
 
@@ -204,29 +310,23 @@ impl MailStore for MemoryMailStore {
             .entry(area.clone())
             .or_default()
             .insert((msg.received_at, msg.id), msg.clone());
+        *st.bytes.entry(area.clone()).or_default() += msg.raw.len() as u64;
         for d in deliveries {
-            let f = st.folder(&area, &d.address, &folder_name(&d.folder));
-            let uid = f.uid_next;
-            f.uid_next += 1;
-            f.entries.insert(
-                uid,
-                Slot {
-                    message_id: msg.id,
-                    flags: flag_set(&d.flags),
-                },
+            if !st.has_mailbox(&area, &d.address)
+                && !st.mailbox_fits(&area, self.limits.max_mailboxes)
+            {
+                continue;
+            }
+            st.file(
+                &area,
+                &d.address,
+                &folder_name(&d.folder),
+                msg.id,
+                flag_set(&d.flags),
             );
         }
-        loop {
-            let oldest = match st.areas.get(&area) {
-                Some(map) if map.len() > self.max_per_area => map.keys().next().copied(),
-                _ => None,
-            };
-            match oldest {
-                Some((_, id)) => {
-                    st.remove(id);
-                }
-                None => break,
-            }
+        while let Some(id) = st.excess(&area, self.limits.max_messages, self.limits.max_bytes) {
+            st.remove(id);
         }
         Ok(())
     }
@@ -311,7 +411,15 @@ impl MailStore for MemoryMailStore {
                 }
             }
         }
-        Ok(doomed.into_iter().filter_map(|id| st.remove(id)).collect())
+        let mut out: Vec<MailRef> = doomed.into_iter().filter_map(|id| st.remove(id)).collect();
+        let areas: Vec<Area> = st.areas.keys().cloned().collect();
+        for area in areas {
+            while let Some(id) = st.excess(&area, usize::MAX, policy.max_bytes) {
+                out.extend(st.remove(id));
+            }
+        }
+        st.drop_empty_mailboxes();
+        Ok(out)
     }
 
     async fn mailbox_folders(
@@ -331,27 +439,40 @@ impl MailStore for MemoryMailStore {
         Ok(v)
     }
 
-    async fn mailboxes(&self, spaces: &SpaceFilter) -> StoreResult<Vec<MailboxOwner>> {
+    async fn mailboxes(
+        &self,
+        spaces: &SpaceFilter,
+        after: Option<&MailboxAfter>,
+        limit: usize,
+    ) -> StoreResult<Vec<MailboxOwner>> {
         let st = self.lock();
-        let mut v: Vec<MailboxOwner> = st
-            .mailboxes
-            .iter()
+        let range = match after {
+            Some(k) => st
+                .mailboxes
+                .range::<MailboxAfter, _>((Bound::Excluded(k.clone()), Bound::Unbounded)),
+            None => st.mailboxes.range::<MailboxAfter, _>(..),
+        };
+        Ok(range
             .filter(|((a, _), _)| spaces.matches(a.as_deref()))
+            .take(limit)
             .map(|((a, addr), mb)| MailboxOwner {
                 space: a.clone(),
                 address: addr.clone(),
                 folders: mb.folders.keys().cloned().collect(),
                 has_password: mb.password.is_some(),
             })
-            .collect();
-        v.sort_by(|a, b| (&a.space, &a.address).cmp(&(&b.space, &b.address)));
-        Ok(v)
+            .collect())
     }
 
     async fn mailbox_create(&self, key: &MailboxKey) -> StoreResult<bool> {
         let mut st = self.lock();
         if st.existing(key).is_some() {
             return Ok(false);
+        }
+        if !st.has_mailbox(&key.space, &key.address)
+            && !st.mailbox_fits(&key.space, self.limits.max_mailboxes)
+        {
+            anyhow::bail!("the mailbox limit of the area is reached");
         }
         st.folder(&key.space, &key.address, &folder_name(&key.folder));
         Ok(true)
@@ -454,11 +575,20 @@ impl MailStore for MemoryMailStore {
             return Ok(None);
         };
         let mut pairs = Vec::with_capacity(picked.len());
+        let mut filed = Vec::with_capacity(picked.len());
         for (uid, message_id, flags) in picked {
             let new = t.uid_next;
             t.uid_next += 1;
             t.entries.insert(new, Slot { message_id, flags });
             pairs.push((uid, new));
+            filed.push((message_id, new));
+        }
+        for (id, new) in filed {
+            st.locations.entry(id).or_default().push((
+                key.address.clone(),
+                target_key.folder.clone(),
+                new,
+            ));
         }
         Ok(Some(pairs))
     }
@@ -545,6 +675,77 @@ mod tests {
         conformance::messages(&MemoryMailStore::new(1000)).await;
         conformance::mailboxes(&MemoryMailStore::new(1000)).await;
         conformance::retention(&MemoryMailStore::new(1000)).await;
+        conformance::growth(&MemoryMailStore::new(1000)).await;
+    }
+
+    #[tokio::test]
+    async fn memory_store_caps_bytes_and_mailboxes_on_insert() {
+        let s = MemoryMailStore::with_limits(MailRetention {
+            max_bytes: 1,
+            max_mailboxes: 2,
+            ..Default::default()
+        });
+        let ids = conformance::fill(&s, Some("capped"), 3).await;
+        let left = s
+            .list(&MailQuery {
+                spaces: SpaceFilter::In(vec!["capped".into()]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(left.items.len(), 1, "the newest message stays");
+        assert_eq!(left.items[0].id, ids[2]);
+        let now = Utc::now();
+        for (i, rcpt) in ["a@example.test", "b@example.test", "c@example.test"]
+            .iter()
+            .enumerate()
+        {
+            let m = conformance::message(Some("boxes"), now, &format!("m{i}"));
+            s.insert(&m, &[MailboxDelivery::inbox(rcpt)]).await.unwrap();
+            assert!(s.get(m.id, &SpaceFilter::Any).await.unwrap().is_some());
+        }
+        let owners = s
+            .mailboxes(&SpaceFilter::In(vec!["boxes".into()]), None, 10)
+            .await
+            .unwrap();
+        let names: Vec<&str> = owners.iter().map(|o| o.address.as_str()).collect();
+        assert_eq!(names, vec!["a@example.test", "b@example.test"]);
+        assert!(
+            s.mailbox_create(&MailboxKey::inbox(Some("boxes"), "d@example.test"))
+                .await
+                .is_err()
+        );
+        assert!(
+            !s.mailbox_create(&MailboxKey::inbox(Some("boxes"), "a@example.test"))
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn removing_a_message_uses_its_locations() {
+        let s = MemoryMailStore::new(10);
+        let m = conformance::message(Some("loc"), Utc::now(), "m");
+        s.insert(&m, &[MailboxDelivery::inbox("a@example.test")])
+            .await
+            .unwrap();
+        let inbox = MailboxKey::inbox(Some("loc"), "a@example.test");
+        s.mailbox_create(&MailboxKey {
+            folder: "Archive".into(),
+            ..inbox.clone()
+        })
+        .await
+        .unwrap();
+        s.mailbox_copy(&inbox, &[1], "Archive").await.unwrap();
+        s.delete(m.id, &SpaceFilter::Any).await.unwrap();
+        for f in ["INBOX", "Archive"] {
+            let key = MailboxKey {
+                folder: f.into(),
+                ..inbox.clone()
+            };
+            assert!(s.mailbox_entries(&key).await.unwrap().is_empty(), "{f}");
+        }
+        assert!(s.lock().locations.is_empty());
     }
 
     #[tokio::test]

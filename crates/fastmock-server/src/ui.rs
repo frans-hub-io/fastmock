@@ -28,7 +28,7 @@ pub fn csp(connect_src: &str, style_nonce: Option<&str>) -> String {
         None => "'self'".to_string(),
     };
     format!(
-        "default-src 'none'; script-src 'self'; style-src {style}; img-src 'self' data:; font-src 'self' data:; \
+        "default-src 'none'; script-src 'self'; style-src {style}; img-src 'self' data: https:; font-src 'self' data:; \
          connect-src {connect_src}; manifest-src 'self'; \
          base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'"
     )
@@ -171,6 +171,10 @@ async fn ui_config(State(app): State<AppState>, headers: HeaderMap) -> Response 
     if let Some(u) = app.cfg.ui_data_plane_origins.first() {
         body["dataPlaneUrl"] = json!(u);
     }
+    let l = app.cfg.mail.as_ref().map(|m| &m.listeners);
+    body["mailSmtpPort"] = json!(l.and_then(|l| l.smtp).map(|a| a.port()));
+    body["mailImapPort"] = json!(l.and_then(|l| l.imap).map(|a| a.port()));
+    body["mailPop3Port"] = json!(l.and_then(|l| l.pop3).map(|a| a.port()));
     respond(
         StatusCode::OK,
         "application/json",
@@ -279,6 +283,13 @@ mod tests {
         assert!(p.contains("connect-src 'self' http://mock.example.com:8080;"));
         assert!(!p.contains('*'));
         assert!(p.contains("frame-ancestors 'none'"));
+    }
+
+    #[test]
+    fn csp_allows_remote_images_for_opted_in_mail_views() {
+        let p = csp("'self'", None);
+        assert!(p.contains("img-src 'self' data: https:;"), "{p}");
+        assert!(!p.contains("img-src 'self' data: http:"), "{p}");
     }
 
     #[test]

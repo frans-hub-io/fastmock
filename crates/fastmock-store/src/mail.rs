@@ -20,8 +20,8 @@ use fastmock_core::SpaceFilter;
 use fastmock_core::StoreResult;
 use fastmock_core::mail::{
     FlagOp, INBOX, MailAddress, MailCursor, MailEntry, MailFilter, MailMessage, MailPage,
-    MailQuery, MailRef, MailRetention, MailSource, MailStore, MailTerm, MailboxDelivery,
-    MailboxEntry, MailboxInfo, MailboxKey, MailboxOwner, flag_name, folder_name,
+    MailQuery, MailRef, MailRetention, MailSource, MailStore, MailTerm, MailboxAfter,
+    MailboxDelivery, MailboxEntry, MailboxInfo, MailboxKey, MailboxOwner, flag_name, folder_name,
 };
 use serde_json::Value;
 use sqlx::postgres::PgRow;
@@ -55,12 +55,68 @@ pub struct MailUsage {
 #[derive(Clone)]
 pub struct PgMailStore {
     pool: PgPool,
+    max_mailboxes: usize,
+    /// Areas whose mailbox limit was reported by this replica.
+    full_reported: std::sync::Arc<std::sync::Mutex<BTreeSet<String>>>,
 }
 
 impl PgMailStore {
     /// A store on the pool of a migrated database (see [`crate::PgStore::pool`]).
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            max_mailboxes: MailRetention::default().max_mailboxes,
+            full_reported: Default::default(),
+        }
+    }
+
+    /// At most `n` mailboxes per area (`FASTMOCK_MAIL_MAX_MAILBOXES`).
+    pub fn with_max_mailboxes(mut self, n: usize) -> Self {
+        self.max_mailboxes = n;
+        self
+    }
+
+    /// Whether `area` may get another mailbox (one that does not exist yet); reports the first refusal
+    /// per area.
+    async fn mailbox_fits(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        area: &str,
+        address: &str,
+    ) -> StoreResult<bool> {
+        let exists: bool = sqlx::query_scalar(
+            "select exists (select 1 from fm_mail_mailboxes where area = $1 and address = $2)",
+        )
+        .bind(area)
+        .bind(address)
+        .fetch_one(&mut **tx)
+        .await?;
+        if exists {
+            return Ok(true);
+        }
+        let limit = i64::try_from(self.max_mailboxes).unwrap_or(i64::MAX);
+        let full: bool = sqlx::query_scalar(
+            "select count(*) >= $2 from (select 1 from fm_mail_mailboxes where area = $1 limit $2) m",
+        )
+        .bind(area)
+        .bind(limit)
+        .fetch_one(&mut **tx)
+        .await?;
+        if full {
+            let first = self
+                .full_reported
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(area.to_string());
+            if first {
+                tracing::warn!(
+                    space = if area.is_empty() { "-" } else { area },
+                    max = self.max_mailboxes,
+                    "mail: the mailbox limit of the area is reached; further addresses get no mailbox"
+                );
+            }
+        }
+        Ok(!full)
     }
 
     /// Stored messages and raw bytes per area, sorted with the global area first.
@@ -428,6 +484,9 @@ impl MailStore for PgMailStore {
             .collect();
         ds.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
         for (address, folder, flags) in ds {
+            if !self.mailbox_fits(&mut tx, &area, &address).await? {
+                continue;
+            }
             let (folder_id, _) = ensure_folder(&mut tx, &area, &address, &folder).await?;
             let uid = reserve_uids(&mut tx, folder_id, 1).await?;
             sqlx::query(
@@ -572,7 +631,35 @@ impl MailStore for PgMailStore {
             .fetch_all(&mut *tx)
             .await?,
         ));
+        let max_bytes = i64::try_from(policy.max_bytes).unwrap_or(i64::MAX);
+        out.extend(refs(
+            sqlx::query_as(
+                "delete from fm_mail_messages m using (
+                    select id from (
+                        select id,
+                               row_number() over w as n,
+                               sum(raw_size) over w as total
+                        from fm_mail_messages
+                        window w as (partition by space order by received_at desc, id desc)
+                    ) ranked where ranked.n > 1 and ranked.total > $1
+                 ) doomed where m.id = doomed.id returning m.id, m.space",
+            )
+            .bind(max_bytes)
+            .fetch_all(&mut *tx)
+            .await?,
+        ));
+        sqlx::query(
+            "delete from fm_mail_mailboxes m where m.password_hash is null and not exists (
+                select 1 from fm_mail_folders f join fm_mail_entries e on e.folder_id = f.id where f.mailbox_id = m.id
+             )",
+        )
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
+        self.full_reported
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         Ok(out)
     }
 
@@ -593,16 +680,32 @@ impl MailStore for PgMailStore {
         rows.iter().map(row_to_info).collect()
     }
 
-    async fn mailboxes(&self, spaces: &SpaceFilter) -> StoreResult<Vec<MailboxOwner>> {
+    async fn mailboxes(
+        &self,
+        spaces: &SpaceFilter,
+        after: Option<&MailboxAfter>,
+        limit: usize,
+    ) -> StoreResult<Vec<MailboxOwner>> {
         let mut qb = QueryBuilder::new(
             "select m.area, m.address, m.password_hash is not null as has_password,
                     coalesce(array_agg(f.name order by f.name collate \"C\") filter (where f.name is not null), '{}') as folders
              from fm_mail_mailboxes m left join fm_mail_folders f on f.mailbox_id = m.id where true",
         );
         push_areas(&mut qb, spaces);
+        if let Some((a, addr)) = after {
+            let a = area(a.as_deref());
+            qb.push(" and (m.area collate \"C\" > ")
+                .push_bind(a.clone())
+                .push(" or (m.area = ")
+                .push_bind(a)
+                .push(" and m.address collate \"C\" > ")
+                .push_bind(no_nul(addr))
+                .push("))");
+        }
         qb.push(
-            " group by m.id, m.area, m.address, m.password_hash order by m.area collate \"C\", m.address collate \"C\"",
-        );
+            " group by m.id, m.area, m.address, m.password_hash order by m.area collate \"C\", m.address collate \"C\" limit ",
+        )
+        .push_bind(i64::try_from(limit).unwrap_or(i64::MAX));
         let rows = qb.build().fetch_all(&self.pool).await?;
         rows.iter()
             .map(|r| {
@@ -620,6 +723,9 @@ impl MailStore for PgMailStore {
     async fn mailbox_create(&self, key: &MailboxKey) -> StoreResult<bool> {
         let (area, address, folder) = key_parts(key);
         let mut tx = self.pool.begin().await?;
+        if !self.mailbox_fits(&mut tx, &area, &address).await? {
+            return Err(anyhow::anyhow!("the mailbox limit of the area is reached"));
+        }
         let (_, created) = ensure_folder(&mut tx, &area, &address, &folder).await?;
         tx.commit().await?;
         Ok(created)

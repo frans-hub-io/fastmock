@@ -231,10 +231,25 @@ pub struct MemoryOutbox {
     jobs: Mutex<Vec<(CallbackJob, Option<DateTime<Utc>>)>>,
 }
 
+impl MemoryOutbox {
+    /// Jobs kept at most; finished ones are dropped first when it is reached, then new jobs are refused.
+    pub const MAX_JOBS: usize = 100_000;
+}
+
 #[async_trait]
 impl OutboxStore for MemoryOutbox {
     async fn enqueue(&self, job: &CallbackJob) -> StoreResult<()> {
-        self.jobs.lock().await.push((job.clone(), None));
+        let mut jobs = self.jobs.lock().await;
+        if jobs.len() >= Self::MAX_JOBS {
+            jobs.retain(|(j, _)| j.status == CallbackStatus::Pending);
+        }
+        if jobs.len() >= Self::MAX_JOBS {
+            anyhow::bail!(
+                "the callback outbox holds {} pending jobs; try again later",
+                Self::MAX_JOBS
+            );
+        }
+        jobs.push((job.clone(), None));
         Ok(())
     }
 
@@ -714,6 +729,29 @@ pub fn memory_stores(journal_capacity: usize) -> Stores {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn the_memory_outbox_is_bounded() {
+        let o = MemoryOutbox::default();
+        let job = CallbackJob::new(
+            "mail",
+            "https://hooks.example.com/".into(),
+            "POST".into(),
+            Default::default(),
+            String::new(),
+            Utc::now() + chrono::Duration::days(1),
+            1,
+        );
+        {
+            let mut jobs = o.jobs.lock().await;
+            jobs.resize(MemoryOutbox::MAX_JOBS - 1, (job.clone(), None));
+        }
+        o.enqueue(&job).await.unwrap();
+        assert!(o.enqueue(&job).await.is_err());
+        o.jobs.lock().await[0].0.status = CallbackStatus::Sent;
+        o.enqueue(&job).await.unwrap();
+        assert_eq!(o.jobs.lock().await.len(), MemoryOutbox::MAX_JOBS);
+    }
 
     #[tokio::test]
     async fn expired_hot_entries_are_swept() {
