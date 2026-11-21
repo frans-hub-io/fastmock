@@ -11,6 +11,7 @@ pub mod extract;
 pub mod labels;
 pub mod matching;
 pub mod parse;
+pub mod pop3;
 pub mod query;
 pub mod routing;
 pub mod service;
