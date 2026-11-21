@@ -473,6 +473,7 @@ dependencies = [
  "metrics",
  "rand",
  "regex",
+ "ring",
  "rustls",
  "serde",
  "serde_json",

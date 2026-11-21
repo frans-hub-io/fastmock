@@ -20,8 +20,9 @@ matching. The crate has no HTTP dependency; `fastmock-server` wires it in. FastM
 | `src/config.rs` | `MailConfig` (all `FASTMOCK_MAIL_*` values with defaults and `validate`); the server reads the environment in `fastmock-server/src/config.rs` (`mail_settings`). |
 | `src/tls.rs` | `server_config(&MailTlsFiles)`: rustls config for SMTPS/IMAPS/POP3S and STARTTLS/STLS. |
 | `src/smtp/` | SMTP sessions (B1): `SmtpServer::serve` runs one session over any stream (state machine in `session.rs`, SASL in `sasl.rs`, `smtp-proto` behind `codec::SmtpCodec`); `TokenCheck` is implemented by the server for managed tokens. |
+| `src/pop3/` | POP3/POP3S sessions (C2): `Pop3Server::serve` (state machine in `session.rs`, commands in `command.rs`, dot-stuffing in `render.rs`); `login.rs` holds the mailbox login shared with IMAP (`MailboxLogin`: address via `mailbox_of`, area via `mailDomains`, managed token through `MailboxTokenCheck` or the mailbox password hash, `hash_password`/`verify_password`, PBKDF2-HMAC-SHA256). |
 | `src/chaos.rs` | Mail chaos (M6): `MailChaosRule` model and `validate`, `MailChaos` (cache, counters, `evaluate`, `evaluate_provider` for C3) over `ChaosBackend` (server: `mail_chaos_api::StoreChaosBackend`; tests: `MemoryChaosBackend`). |
-| `fuzz/` | cargo-fuzz targets `smtp_session` and `smtp_codec` (own workspace, not built by CI). |
+| `fuzz/` | cargo-fuzz targets `smtp_session`, `smtp_codec` and `pop3_session` (own workspace, not built by CI). |
 
 Server side: `AppState::mail: Option<Arc<MailService>>` (`None` unless `FASTMOCK_MAIL_ENABLED=true`),
 built in `fastmock-server/src/mail_setup.rs`; the maintenance loop calls `MailService::sweep` every minute.
