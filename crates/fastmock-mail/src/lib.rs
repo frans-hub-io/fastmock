@@ -8,6 +8,7 @@ pub mod chaos;
 pub mod compose;
 pub mod config;
 pub mod extract;
+pub mod imap;
 pub mod labels;
 pub mod matching;
 pub mod parse;
