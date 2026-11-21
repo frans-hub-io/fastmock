@@ -12,6 +12,10 @@ use tracing::Instrument;
 use crate::state::AppState;
 use crate::telemetry;
 
+/// A callback job header that marks `body` as base64 of binary content (mail webhooks with binary
+/// attachments); the outbox decodes the body and never sends the header.
+pub const BODY_BASE64_HEADER: &str = "x-fastmock-body-base64";
+
 #[derive(Clone)]
 pub struct EgressPolicy {
     pub allowed_hosts: Vec<String>,
@@ -280,7 +284,12 @@ async fn send(app: &AppState, policy: &EgressPolicy, job: &CallbackJob) -> Resul
         retryable: false,
     })?;
     let mut rb = app.http.request(method, url);
+    let mut base64_body = false;
     for (k, v) in &job.headers {
+        if k.eq_ignore_ascii_case(BODY_BASE64_HEADER) {
+            base64_body = true;
+            continue;
+        }
         if fastmock_core::outbound::blocked_outbound_header(k)
             || k.eq_ignore_ascii_case("traceparent")
         {
@@ -295,7 +304,17 @@ async fn send(app: &AppState, policy: &EgressPolicy, job: &CallbackJob) -> Resul
     {
         rb = rb.header("traceparent", tp);
     }
-    if !job.body.is_empty() {
+    if base64_body {
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(job.body.as_bytes())
+            .map_err(|_| Failure {
+                message: "invalid base64 body".into(),
+                status: None,
+                retryable: false,
+            })?;
+        rb = rb.body(bytes);
+    } else if !job.body.is_empty() {
         rb = rb.body(job.body.clone());
     }
     let resp = rb.send().await.map_err(|e| Failure {

@@ -637,6 +637,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/__admin/mail/inbound": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post an inbound message to provider webhooks
+         * @description Builds the provider's inbound payload for a message (SendGrid Inbound Parse multipart, Mailgun route form/JSON/MIME, Postmark inbound JSON, SES receipt in an SNS envelope) and queues it for the inbound webhooks of that provider in the space. The message is not stored. Send JSON (`InboundBody`), or the raw message with `Content-Type: message/rfc822` and `provider` in the query. SNS envelopes are not signed. Needs `mail:write`.
+         */
+        post: operations["sendMailInbound"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/__admin/mail/mailboxes": {
         parameters: {
             query?: never;
@@ -945,6 +965,34 @@ export interface paths {
          */
         post: operations["verifyMail"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/mail/webhooks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Provider webhooks of a space
+         * @description The webhooks, the expected provider API keys (SHA-256 digests) and the SendGrid verification key of one area. Signing keys are never returned and URL passwords are shown as `***`. Needs `mail:read`.
+         */
+        get: operations["getMailWebhooks"];
+        /**
+         * Replace the provider webhooks of a space
+         * @description Stores the webhooks and expected API keys of one area. Events webhooks receive the provider's delivery events after each message sent through that provider's API in this area (`delivered`, or `bounce`, `complaint`, `deferred`, `dropped` for recipients with that local part); inbound webhooks receive the provider's inbound payload from `POST /__admin/mail/inbound`. Deliveries go through the callbacks outbox (retries, `/__admin/callbacks`). `signingKey` is write-only; a webhook `PUT` again with the same id without it (or with `***` as URL password) keeps the stored value. The first `PUT` creates the space's SendGrid key pair. Needs `mail:write`.
+         */
+        put: operations["putMailWebhooks"];
+        post?: never;
+        /**
+         * Remove the provider webhooks of a space
+         * @description Removes the webhooks, expected API keys and the SendGrid key pair of one area; queued deliveries stay in the outbox. Needs `mail:write`.
+         */
+        delete: operations["clearMailWebhooks"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2347,6 +2395,39 @@ export interface components {
             /** @description The generated stubs, only on a dry run. */
             stubs?: components["schemas"]["Stub"][] | null;
         };
+        /**
+         * @description `POST /__admin/mail/inbound` with JSON: the provider and the message, built from fields
+         *     (`message`) or given raw (`raw` text or `rawBase64`).
+         */
+        InboundBody: {
+            /**
+             * @description `ses`, `sendgrid`, `mailgun` or `postmark`.
+             * @example sendgrid
+             */
+            provider: string;
+            /** @description Only this inbound webhook; default all inbound webhooks of the provider in the space. */
+            webhookId?: string | null;
+            message?: null | components["schemas"]["ComposeRequest"];
+            /** @description The MIME message as text. */
+            raw?: string | null;
+            /** @description The MIME message, base64. */
+            rawBase64?: string | null;
+            /** @description Envelope sender; default the From address. */
+            mailFrom?: string | null;
+            /** @description Envelope recipients; default the To, Cc and Bcc addresses. */
+            rcptTo?: string[];
+        };
+        InboundDelivery: {
+            webhookId: string;
+            /**
+             * Format: uuid
+             * @description The callback job (`/__admin/callbacks`).
+             */
+            callbackId: string;
+        };
+        InboundResult: {
+            deliveries: components["schemas"]["InboundDelivery"][];
+        };
         InfoResponse: {
             name: string;
             version: string;
@@ -2608,6 +2689,13 @@ export interface components {
         };
         /** @enum {string} */
         MailEventKind: "message.received" | "message.deleted";
+        /**
+         * @description A delivery event. FastMock emits `delivered` unless the recipient's local part (without `+tag`) is
+         *     `bounce`, `complaint`, `deferred` or `dropped`; `open` and `click` are accepted in the configuration
+         *     but not emitted.
+         * @enum {string}
+         */
+        MailEventName: "delivered" | "bounce" | "complaint" | "deferred" | "dropped" | "open" | "click";
         /** @description A header field as written in the message, its value decoded (RFC 2047) and unfolded. */
         MailHeader: {
             /** @example Subject */
@@ -2756,6 +2844,40 @@ export interface components {
             details: string[];
             /** @description The closest non-matching messages, best first (only on failure, at most 5). */
             nearMisses: components["schemas"]["MailNearMiss"][];
+        };
+        /** @description Body of `PUT /__admin/mail/webhooks`. */
+        MailWebhooksBody: {
+            /** @description At most 20. */
+            webhooks?: components["schemas"]["WebhookInput"][];
+            /**
+             * @description Expected API keys per provider (`ses`, `sendgrid`, `mailgun`, `postmark`, `resend`, `brevo`) as
+             *     lowercase SHA-256 hex digests, at most 20 each. A provider listed here accepts only these keys in
+             *     this space (SES: the access key id); others accept any key.
+             * @example {
+             *       "sendgrid": [
+             *         "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+             *       ]
+             *     }
+             */
+            apiKeys?: {
+                [key: string]: string[];
+            };
+        };
+        MailWebhooksView: {
+            /**
+             * @description The space; absent for the global area.
+             * @example billing
+             */
+            space?: string | null;
+            webhooks: components["schemas"]["WebhookView"][];
+            apiKeys: {
+                [key: string]: string[];
+            };
+            /**
+             * @description The space's SendGrid verification key (base64 DER `SubjectPublicKeyInfo`), for the application's
+             *     Event Webhook and Inbound Parse verification settings. Absent until webhooks are first stored.
+             */
+            sendgridPublicKey?: string | null;
         };
         MailboxList: {
             mailboxes: components["schemas"]["MailboxView"][];
@@ -3540,6 +3662,55 @@ export interface components {
             closeAfterMs?: number | null;
             /** Format: int32 */
             maxMessages?: number | null;
+        };
+        /** @description A webhook as `PUT /__admin/mail/webhooks` takes it. */
+        WebhookInput: {
+            /**
+             * @description Letters, digits, `.`, `_`, `-` (at most 64); `webhook-<n>` when left out. A webhook keeps its
+             *     stored `signingKey` and URL password when `PUT` again with the same id without them.
+             * @example sendgrid-events
+             */
+            id?: string | null;
+            /**
+             * @description `ses`, `sendgrid`, `mailgun` or `postmark`.
+             * @example sendgrid
+             */
+            provider: string;
+            kind: components["schemas"]["WebhookKind"];
+            /**
+             * @description `http(s)://` URL of the application; user info (`https://user:pass@host/`) is sent as basic
+             *     authentication (Postmark style). Checked against the callback egress policy.
+             * @example https://app.example.com/hooks/sendgrid
+             */
+            url: string;
+            /**
+             * @description Write-only. SendGrid: a P-256 private key (PKCS#8, PEM or base64 DER) to sign with instead of the
+             *     space's generated key. Mailgun: the HTTP webhook signing key for the HMAC. `""` removes a stored
+             *     key.
+             */
+            signingKey?: string | null;
+            /** @description Events to send (`kind: events`); all when empty. */
+            events?: components["schemas"]["MailEventName"][];
+            /** @description SendGrid inbound: post the full MIME message (`email` field) instead of parsed fields. */
+            raw?: boolean;
+            /** @description SES: the SNS topic ARN in notifications (default `arn:aws:sns:us-east-1:123456789012:fastmock-ses`). */
+            topicArn?: string | null;
+        };
+        /** @enum {string} */
+        WebhookKind: "events" | "inbound";
+        WebhookView: {
+            id: string;
+            provider: string;
+            kind: components["schemas"]["WebhookKind"];
+            /** @description The URL with its password replaced by `***`. */
+            url: string;
+            events: components["schemas"]["MailEventName"][];
+            /** @description A signing key is stored (never shown). */
+            hasSigningKey: boolean;
+            /** @description SendGrid: the public key that verifies this webhook's signatures (base64 DER). */
+            publicKey?: string | null;
+            raw?: boolean;
+            topicArn?: string | null;
         };
         WireMockImport: {
             /** @description `{"mappings": [...]}`, an array of mappings or a single mapping. */
@@ -6381,6 +6552,95 @@ export interface operations {
             };
         };
     };
+    sendMailInbound: {
+        parameters: {
+            query?: {
+                /** @description Space whose inbound webhooks receive the message. */
+                space?: string;
+                /** @description With `Content-Type: message/rfc822`: the provider (`ses`, `sendgrid`, `mailgun`, `postmark`). */
+                provider?: string;
+                /** @description With `Content-Type: message/rfc822`: only this webhook. */
+                webhookId?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "provider": "postmark",
+                 *       "message": {
+                 *         "from": "Customer <customer@example.com>",
+                 *         "to": [
+                 *           "support@inbound.example.test"
+                 *         ],
+                 *         "subject": "Help",
+                 *         "text": "Hello"
+                 *       }
+                 *     }
+                 */
+                "application/json": components["schemas"]["InboundBody"];
+            };
+        };
+        responses: {
+            /** @description Queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboundResult"];
+                };
+            };
+            /** @description Invalid message or provider */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Requires mail:write */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, unknown space, or no inbound webhook of the provider */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The message exceeds the mail message size limit */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     listMailboxes: {
         parameters: {
             query?: {
@@ -7687,6 +7947,204 @@ export interface operations {
             };
             /** @description Too many verifications are reading stored messages */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getMailWebhooks: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Configuration */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailWebhooksView"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Requires mail:read */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, or unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    putMailWebhooks: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "webhooks": [
+                 *         {
+                 *           "id": "sg-events",
+                 *           "provider": "sendgrid",
+                 *           "kind": "events",
+                 *           "url": "https://app.example.com/hooks/sendgrid",
+                 *           "events": [
+                 *             "delivered",
+                 *             "bounce"
+                 *           ]
+                 *         },
+                 *         {
+                 *           "id": "mg-inbound",
+                 *           "provider": "mailgun",
+                 *           "kind": "inbound",
+                 *           "url": "https://app.example.com/hooks/mailgun",
+                 *           "signingKey": "key-example"
+                 *         }
+                 *       ],
+                 *       "apiKeys": {
+                 *         "sendgrid": [
+                 *           "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+                 *         ]
+                 *       }
+                 *     }
+                 */
+                "application/json": components["schemas"]["MailWebhooksBody"];
+            };
+        };
+        responses: {
+            /** @description Stored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailWebhooksView"];
+                };
+            };
+            /** @description Invalid configuration */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Requires mail:write */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, or unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    clearMailWebhooks: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Requires mail:write */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, or unknown space */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

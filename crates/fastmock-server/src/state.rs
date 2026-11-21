@@ -70,6 +70,12 @@ impl AppState {
     }
 
     pub fn source_for(&self, path: &str) -> String {
+        if self.mail.is_some()
+            && (path == crate::mail_providers::PREFIX
+                || path.starts_with(&format!("{}/", crate::mail_providers::PREFIX)))
+        {
+            return "mail".to_string();
+        }
         for p in self.plugins.iter() {
             if path == p.mount || path.starts_with(&format!("{}/", p.mount)) {
                 return p.name.clone();
