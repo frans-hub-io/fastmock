@@ -116,6 +116,7 @@ pub fn spec() -> utoipa::openapi::OpenApi {
     doc.merge(crate::admin_core::CoreApi::openapi());
     doc.merge(crate::tokens::TokensApi::openapi());
     doc.merge(crate::oidc::routes::AuthApi::openapi());
+    doc.merge(crate::mail_api::MailApi::openapi());
     normalize_tags(&mut doc);
     standard_responses(&mut doc);
     doc

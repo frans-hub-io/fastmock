@@ -181,6 +181,8 @@ const OLD_VIEWER_POSTS: &[&str] = &[
     "/__admin/verify/sequence",
     "/__admin/stubs/find-by-metadata",
     "/__admin/stubs/validate",
+    "/__admin/mail/messages/wait",
+    "/__admin/mail/verify",
 ];
 
 /// The role table before permissions existed: `required_role` of the middleware (GET/HEAD and the

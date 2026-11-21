@@ -80,6 +80,10 @@ pub trait MailEvents: Send + Sync {
 
     /// Events of the areas `filter` selects, from now on.
     fn subscribe(&self, filter: SpaceFilter) -> MailSubscription;
+
+    fn poll_interval(&self) -> Option<std::time::Duration> {
+        None
+    }
 }
 
 /// The in-process fan-out of mail events.
