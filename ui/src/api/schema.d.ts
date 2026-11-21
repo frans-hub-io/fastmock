@@ -637,6 +637,319 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/__admin/mail/mailboxes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * IMAP/POP3 mailboxes
+         * @description Addresses that have a mailbox (created by the first message filed to them, or by setting a password) in `space`, or in every area the caller may read, sorted by area and address.
+         */
+        get: operations["listMailboxes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/mail/mailboxes/{address}/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set a mailbox password
+         * @description Sets the IMAP/POP3 password of a mailbox in `space` (the global area, or the caller's only space when it is bound to spaces), creating the mailbox. The address is stored lowercase without its plus tag. Only a salted hash is stored. Records the audit event `mail.mailbox.password.set` (without the password).
+         */
+        put: operations["setMailboxPassword"];
+        post?: never;
+        /**
+         * Remove a mailbox password
+         * @description Removes the password of a mailbox in `space`; logins then need a managed token with `mail:read`. Records the audit event `mail.mailbox.password.delete`.
+         */
+        delete: operations["deleteMailboxPassword"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/mail/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List and search captured messages
+         * @description Summaries of the messages in the areas the caller may read (`mail:read`), newest first unless `order=oldest`, paged with `cursor`.
+         */
+        get: operations["listMailMessages"];
+        put?: never;
+        /**
+         * Inject a message
+         * @description Stores a message in `space` as if it had been received (`source: inject`) and files it into the IMAP/POP3 INBOX of each recipient (or of `mailbox`). Send `application/json` (`ComposeRequest`: the message is built from the fields; header fields must be single printable lines, and `From`, `To`, `Cc`, `Subject` and the MIME structure headers cannot be set through `headers`) or `message/rfc822` (the raw message, envelope from `mailFrom`/`rcptTo` or its headers). Labels come from plus addresses and the `X-FastMock-Labels` header. The message may not exceed `FASTMOCK_MAIL_MAX_MESSAGE_BYTES`. Publishes `message.received` and records the audit event `mail.inject`.
+         */
+        post: operations["injectMailMessage"];
+        /**
+         * Delete messages
+         * @description Deletes the messages matching `query` (all without it) in `space`, or in every area where the caller holds `mail:delete`; publishes `message.deleted` per area and records the audit event `mail.messages.delete`.
+         */
+        delete: operations["deleteMailMessages"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/mail/messages/wait": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Wait for messages
+         * @description Long-polls until `count` messages matching `match` have arrived in `space` (or the areas the caller may read) and answers 200 with them, or 408 with what was seen when `timeoutMs` (at most 60 s) runs out. Messages stored before the request count only with `includeExisting`, `since` or `lookbackMs`. Works on any replica (events travel through Valkey with PostgreSQL storage; the store is also re-read every few seconds there, so a lost event delays a match but does not miss it). The wait stops when the client disconnects, and answers 503 when the server shuts down. Matchers use the stub string matcher syntax (`equalTo`, `contains`, `matches`, `caseInsensitive`, `and`/`or`/`not`, `absent`, ...).
+         */
+        post: operations["waitForMail"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/mail/messages/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One message
+         * @description The envelope, summary, labels, source and provider fields of a stored message with its header fields in order, decoded addresses, the text body, whether it has an HTML body (served by `/html`, never inline here) and its attachments (`partId` for `/parts/{partId}`).
+         */
+        get: operations["getMailMessage"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a message
+         * @description Removes the message and its IMAP/POP3 mailbox entries, publishes `message.deleted` and records the audit event `mail.message.delete`.
+         */
+        delete: operations["deleteMailMessage"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/mail/messages/{id}/codes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Codes in a message
+         * @description One-time codes found in the subject and the text body (HTML converted when there is no text part). The `regex` crate matches in linear time; 2 MiB of text are scanned.
+         */
+        get: operations["getMailMessageCodes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/mail/messages/{id}/html": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The HTML body, sandboxed
+         * @description The HTML body with `cid:` references to parts of the message replaced by `data:` URIs (4 MiB of encoded parts in total; references beyond it stay `cid:`). Served with `Content-Security-Policy: sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'` (`img-src data: https:` with `images=allow`) and `X-Content-Type-Options: nosniff`, so scripts, forms, frames and requests are blocked. Show it in an `<iframe sandbox>` without `allow-scripts` and `allow-same-origin`.
+         */
+        get: operations["getMailMessageHtml"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/mail/messages/{id}/labels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Replace the labels of a message
+         * @description Labels are stored lowercase, sorted and without duplicates. Records the audit event `mail.message.labels`.
+         */
+        put: operations["setMailMessageLabels"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/mail/messages/{id}/links": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Links in a message
+         * @description Every http(s) URL of the text and HTML bodies, de-duplicated in order of appearance: HTML anchors (with their text) first, then URLs written in the text. At most 1000; 2 MiB of each body are scanned. FastMock never follows them.
+         */
+        get: operations["getMailMessageLinks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/mail/messages/{id}/parts/{partId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download a part
+         * @description The decoded content of an attachment or inline part (`partId` from the message's `attachments`), as a download (`Content-Disposition: attachment` with a sanitised file name), with its content type when well-formed (else `application/octet-stream`), `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox; default-src 'none'`.
+         */
+        get: operations["getMailMessagePart"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/mail/messages/{id}/raw": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The message as received
+         * @description The raw MIME message (`message/rfc822`) as a download named `<id>.eml`.
+         */
+        get: operations["getMailMessageRaw"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/mail/messages/{id}/text": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The text body
+         * @description The text body; for a message with only an HTML body, the HTML converted to text.
+         */
+        get: operations["getMailMessageText"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/mail/messages/{id}/transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The SMTP session of a message */
+        get: operations["getMailMessageTranscript"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/mail/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Live mail events
+         * @description Server-sent events of `space` (or of every area the caller may read): `message.received` (data: `MailEvent` with the message's `entry`) and `message.deleted` (data: `MailEvent` with the deleted `ids`). Starts with the comment `: ready`, sends `: heartbeat` comments while idle, ends when the server shuts down, and `resync` (data `{"missed": n}`) when this stream fell behind: list the messages again. Each event is checked against the caller's `mail:read` permission for its area. With PostgreSQL storage the stream also re-reads the last 5 minutes of messages every few seconds and sends `message.received` for those whose event was lost (`mailboxes` is empty then); each message is announced once.
+         */
+        get: operations["streamMailEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/mail/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify how many messages were received
+         * @description Counts the stored messages of `space` (or of the areas the caller may read) matching `match`. Without `count`/`atLeast`/`atMost` the expectation is `atLeast: 1`. Answers 200 when it holds and 422 with the count and the closest non-matching messages (which matchers failed) when it does not.
+         */
+        post: operations["verifyMail"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/__admin/plugins": {
         parameters: {
             query?: never;
@@ -1695,6 +2008,47 @@ export interface components {
             importedAt: string;
             importedBy: string;
         };
+        ComposeAttachment: {
+            /** @example invoice.pdf */
+            name: string;
+            /**
+             * @description Default `application/octet-stream`.
+             * @example application/pdf
+             */
+            contentType?: string | null;
+            /** @description The content, base64. */
+            base64: string;
+            /** @description Makes the part inline, referenced from the HTML as `cid:<contentId>`. */
+            contentId?: string | null;
+        };
+        /** @description A message to build (`POST /__admin/mail/messages` with JSON). */
+        ComposeRequest: {
+            /**
+             * @description `addr@example.com` or `Name <addr@example.com>`.
+             * @example Shop <shop@example.com>
+             */
+            from: string;
+            /**
+             * @example [
+             *       "alice@example.test"
+             *     ]
+             */
+            to: string[];
+            cc?: string[];
+            subject?: string | null;
+            text?: string | null;
+            html?: string | null;
+            /** @description Further header fields; `Message-ID` and `Date` replace the generated ones. */
+            headers?: {
+                [key: string]: string;
+            };
+            attachments?: components["schemas"]["ComposeAttachment"][];
+            /**
+             * @description Mailbox (address) to file the message into instead of the recipients' INBOXes; read by the admin
+             *     API, not part of the MIME message.
+             */
+            mailbox?: string | null;
+        };
         ContractRun: {
             /** Format: uuid */
             id: string;
@@ -1813,6 +2167,33 @@ export interface components {
             id: string;
             /** Format: int64 */
             deletedStubs: number;
+        };
+        /** @description The SMTP envelope, or what stands for it for messages that did not come over SMTP. */
+        Envelope: {
+            /**
+             * @description Reverse path of `MAIL FROM`; empty for the null sender `<>`.
+             * @example noreply@example.com
+             */
+            mailFrom: string;
+            /**
+             * @description Recipients of this stored copy. A message routed to several spaces lists here only the recipients
+             *     of the copy's space.
+             * @example [
+             *       "alice@billing.example.com"
+             *     ]
+             */
+            rcptTo: string[];
+            /** @description EHLO or HELO name. */
+            helo?: string | null;
+            /**
+             * @description Address of the SMTP or HTTP client.
+             * @example 198.51.100.7
+             */
+            clientIp?: string | null;
+            /** @description The session used TLS (SMTPS, or STARTTLS before the message). */
+            tls?: boolean;
+            /** @description User name given with SMTP AUTH; never the password. */
+            authUser?: string | null;
         };
         ErrorBody: {
             /** @example stub not found */
@@ -1991,6 +2372,10 @@ export interface components {
              */
             warnings?: string[];
         };
+        Injected: {
+            /** @description The stored message (one entry). */
+            messages: components["schemas"]["MailEntry"][];
+        };
         JournalEntry: {
             /** Format: int64 */
             id?: number;
@@ -2057,6 +2442,17 @@ export interface components {
             key: string;
             value: string;
         };
+        LabelsBody: {
+            /**
+             * @description The new labels (replacing the current ones): 1 to 64 letters, digits or `- _ . : /` each,
+             *     case-insensitive, at most 32.
+             * @example [
+             *       "otp",
+             *       "signup"
+             *     ]
+             */
+            labels: string[];
+        };
         LogNormalDelay: {
             /** Format: int64 */
             medianMs: number;
@@ -2068,6 +2464,34 @@ export interface components {
             loggedOut: boolean;
             /** @description The provider's end-session URL; the UI navigates there to end the IdP session too. */
             logoutUrl?: string | null;
+        };
+        /** @description A mailbox of an address header. */
+        MailAddress: {
+            /** @example Billing */
+            name?: string | null;
+            /** @example billing@example.com */
+            address: string;
+        };
+        /** @description An attachment or inline part. */
+        MailAttachment: {
+            /**
+             * @description For `/__admin/mail/messages/{id}/parts/{partId}`.
+             * @example 3
+             */
+            partId: string;
+            /** @example invoice.pdf */
+            name?: string | null;
+            /** @example application/pdf */
+            contentType: string;
+            /**
+             * Format: int64
+             * @description Decoded size in bytes.
+             */
+            size: number;
+            /** @description `Content-ID` without angle brackets, for `cid:` references. */
+            contentId?: string | null;
+            /** @description Marked to be shown inside the message. */
+            inline: boolean;
         };
         MailChaosBody: {
             /** @description Evaluated in order; the first rule that fires wins. At most 100. */
@@ -2116,6 +2540,243 @@ export interface components {
             /** @description How often each rule matched and fired since the rules were stored, over all replicas. */
             counters: components["schemas"]["ChaosCounters"][];
         };
+        MailCodes: {
+            /** @description Distinct codes in order of appearance (subject first, then the text), at most 100. */
+            codes: string[];
+            /**
+             * @description The pattern used.
+             * @example \b\d{4,8}\b
+             */
+            pattern: string;
+        };
+        MailDeleted: {
+            deleted: number;
+            ids: string[];
+        };
+        /**
+         * @description The parsed parts of `GET /__admin/mail/messages/{id}`; the envelope, labels and source come from the
+         *     stored message.
+         */
+        MailDetail: {
+            /** @description Header fields of the message in order. */
+            headers: components["schemas"]["MailHeader"][];
+            from: components["schemas"]["MailAddress"][];
+            to: components["schemas"]["MailAddress"][];
+            cc: components["schemas"]["MailAddress"][];
+            bcc: components["schemas"]["MailAddress"][];
+            replyTo: components["schemas"]["MailAddress"][];
+            subject?: string | null;
+            /** Format: date-time */
+            date?: string | null;
+            messageId?: string | null;
+            /** @description The text body (HTML converted when the message has no text part). */
+            text?: string | null;
+            /** @description The message has an HTML body, served by `/html`. */
+            hasHtml: boolean;
+            attachments: components["schemas"]["MailAttachment"][];
+            /** @description The message could not be parsed; only the raw form is available. */
+            unparsed?: boolean;
+        };
+        /** @description A message as lists, searches and events show it. */
+        MailEntry: {
+            /** Format: uuid */
+            id: string;
+            /** @example billing */
+            space?: string | null;
+            /** Format: date-time */
+            receivedAt: string;
+            source: components["schemas"]["MailSource"];
+            /** @example sendgrid */
+            provider?: string | null;
+            envelope: components["schemas"]["Envelope"];
+            summary: components["schemas"]["MailSummary"];
+            labels: string[];
+            providerExtras?: null | components["schemas"]["ProviderExtras"];
+        };
+        /**
+         * @description A change to the stored mail of one area (a space or the global area). It travels between replicas as
+         *     JSON.
+         */
+        MailEvent: {
+            type: components["schemas"]["MailEventKind"];
+            space?: string | null;
+            /** @description The message received, or the messages deleted. */
+            ids: string[];
+            /** @description `message.received`: mailbox addresses whose INBOX got the message (IMAP IDLE). */
+            mailboxes?: string[];
+            entry?: null | components["schemas"]["MailEntry"];
+        };
+        /** @enum {string} */
+        MailEventKind: "message.received" | "message.deleted";
+        /** @description A header field as written in the message, its value decoded (RFC 2047) and unfolded. */
+        MailHeader: {
+            /** @example Subject */
+            name: string;
+            /** @example Your invoice */
+            value: string;
+        };
+        MailLink: {
+            /** @example https://example.com/verify?t=1 */
+            url: string;
+            /**
+             * @description Text of the HTML anchor, when the link comes from one.
+             * @example Verify your address
+             */
+            text?: string | null;
+        };
+        MailLinks: {
+            links: components["schemas"]["MailLink"][];
+        };
+        MailList: {
+            messages: components["schemas"]["MailEntry"][];
+            /** @description Pass as `cursor` to read the next page; absent on the last page. */
+            nextCursor?: string | null;
+        };
+        /**
+         * @description Conditions on a message; all given ones must hold. Address fields hold when one address matches
+         *     (its address alone or `Name <address>`); multi-value matchers (`includes`, `hasExactly`) see the
+         *     bare addresses. `to` covers the `To` header and the envelope recipients, so Bcc recipients match.
+         */
+        MailMatch: {
+            from?: null | components["schemas"]["StringMatcher"];
+            to?: null | components["schemas"]["StringMatcher"];
+            cc?: null | components["schemas"]["StringMatcher"];
+            subject?: null | components["schemas"]["StringMatcher"];
+            text?: null | components["schemas"]["StringMatcher"];
+            html?: null | components["schemas"]["StringMatcher"];
+            /**
+             * @description Header fields by name (case-insensitive), as for stub request headers; a field present several
+             *     times matches when one occurrence matches.
+             */
+            headers?: {
+                [key: string]: components["schemas"]["StringMatcher"];
+            };
+            hasAttachment?: boolean | null;
+            attachmentName?: null | components["schemas"]["StringMatcher"];
+            label?: null | components["schemas"]["StringMatcher"];
+            source?: null | components["schemas"]["StringMatcher"];
+            provider?: null | components["schemas"]["StringMatcher"];
+        };
+        /** @description A stored message with its parsed headers, bodies and parts. */
+        MailMessageView: components["schemas"]["MailEntry"] & components["schemas"]["MailDetail"] & {
+            urls: components["schemas"]["MessageUrls"];
+        };
+        /** @description A stored message that fails some matchers. */
+        MailNearMiss: {
+            /** Format: uuid */
+            id: string;
+            space?: string | null;
+            /** Format: date-time */
+            receivedAt: string;
+            subject?: string | null;
+            from: components["schemas"]["MailAddress"][];
+            to: string[];
+            /**
+             * Format: double
+             * @description Share of the matchers that matched, 0..1.
+             */
+            score: number;
+            /**
+             * @description The matchers that failed: `from`, `subject`, `headers.x-mailer`, `hasAttachment`, ...
+             * @example [
+             *       "subject"
+             *     ]
+             */
+            mismatches: string[];
+        };
+        /**
+         * @description How a message reached FastMock.
+         * @enum {string}
+         */
+        MailSource: "smtp" | "provider" | "inject";
+        /** @description What lists and searches show of a message, parsed once when it is stored. */
+        MailSummary: {
+            /** @example Your invoice */
+            subject?: string | null;
+            from?: components["schemas"]["MailAddress"][];
+            to?: components["schemas"]["MailAddress"][];
+            cc?: components["schemas"]["MailAddress"][];
+            /**
+             * Format: date-time
+             * @description The `Date` header.
+             */
+            date?: string | null;
+            /** @description The `Message-ID` header, without angle brackets. */
+            messageId?: string | null;
+            /**
+             * Format: int64
+             * @description Size of the raw message in bytes.
+             */
+            size: number;
+            hasAttachments?: boolean;
+            /** @description File names of the attachments, in document order. */
+            attachmentNames?: string[];
+            hasText?: boolean;
+            hasHtml?: boolean;
+            /** @description The start of the text (or of the HTML converted to text), at most 200 characters. */
+            preview?: string;
+            /** @description The message could not be parsed as MIME (too large, or no header block); it is kept raw. */
+            unparsed?: boolean;
+        };
+        MailTranscript: {
+            /**
+             * @description SMTP commands (credentials masked, DATA replaced by its size) and replies; empty for messages
+             *     that did not come over SMTP.
+             */
+            transcript: components["schemas"]["TranscriptLine"][];
+        };
+        MailVerifyBody: {
+            /** @description Conditions on the message; all given ones must hold. Empty: any message. */
+            match?: components["schemas"]["MailMatch"];
+            /**
+             * Format: int64
+             * @description Exactly this many matching messages.
+             */
+            count?: number | null;
+            /** Format: int64 */
+            atLeast?: number | null;
+            /** Format: int64 */
+            atMost?: number | null;
+            /**
+             * Format: date-time
+             * @description Only messages received at or after this time.
+             */
+            since?: string | null;
+        };
+        MailVerifyResult: {
+            verified: boolean;
+            /**
+             * Format: int64
+             * @description Matching messages found.
+             */
+            count: number;
+            /** @description The expectation, e.g. `exactly 2`, `at least 1`, `between 1 and 3`. */
+            expected: string;
+            error?: string | null;
+            details: string[];
+            /** @description The closest non-matching messages, best first (only on failure, at most 5). */
+            nearMisses: components["schemas"]["MailNearMiss"][];
+        };
+        MailboxList: {
+            mailboxes: components["schemas"]["MailboxView"][];
+        };
+        MailboxView: {
+            /** @example billing */
+            space?: string | null;
+            /**
+             * @description Lowercase mailbox address (plus tags removed); the IMAP/POP3 user name.
+             * @example alice@billing.example.test
+             */
+            address: string;
+            /**
+             * @example [
+             *       "INBOX"
+             *     ]
+             */
+            folders: string[];
+            /** @description A password was set with `PUT /mail/mailboxes/{address}/password` (it is never returned). */
+            hasPassword: boolean;
+        };
         MessageDef: {
             topic: string;
             key?: string | null;
@@ -2134,6 +2795,22 @@ export interface components {
             key?: string | null;
             excerpt: string;
             errors: string[];
+        };
+        /** @description Admin API paths of a message's renditions. */
+        MessageUrls: {
+            /** @example /__admin/mail/messages/01936b4e-8c1a-7d2e-9f00-1a2b3c4d5e6f/raw */
+            raw: string;
+            /** @description Present when the message has an HTML body; render it only in a sandboxed `<iframe>`. */
+            html?: string | null;
+            text?: string | null;
+            transcript: string;
+            links: string;
+            codes: string;
+            /**
+             * @description Append the `partId` of an attachment.
+             * @example /__admin/mail/messages/01936b4e-8c1a-7d2e-9f00-1a2b3c4d5e6f/parts/
+             */
+            parts: string;
         };
         MetadataPattern: {
             matchesJsonPath?: Record<string, never> | null;
@@ -2224,6 +2901,13 @@ export interface components {
         };
         /** @enum {string} */
         OutputFormat: "FULL" | "IDS";
+        PasswordBody: {
+            /**
+             * @description 1 to 1024 bytes; stored as a salted PBKDF2-HMAC-SHA256 hash, never returned or logged.
+             * @example change-me
+             */
+            password: string;
+        };
         PermissionsView: {
             /**
              * @description Permissions granted everywhere.
@@ -2282,6 +2966,19 @@ export interface components {
         };
         /** @enum {string} */
         PrincipalKind: "token" | "apiToken" | "user" | "anonymous";
+        /** @description Fields of a message sent through a provider API. */
+        ProviderExtras: {
+            /** @description Id the provider API answered with (SES `MessageId`, SendGrid `X-Message-Id`, ...). */
+            providerMessageId?: string | null;
+            templateId?: string | null;
+            templateData?: unknown;
+            tags?: string[];
+            metadata?: {
+                [key: string]: unknown;
+            };
+            /** @description Sent in the provider's sandbox or test mode. */
+            testMode?: boolean;
+        };
         ProxyDef: {
             baseUrl: string;
             additionalHeaders?: {
@@ -2716,6 +3413,19 @@ export interface components {
          * @enum {string}
          */
         TopicNaming: "channel" | "microcks";
+        /**
+         * @description Who wrote a transcript line.
+         * @enum {string}
+         */
+        TranscriptDirection: "client" | "server";
+        /** @description One line of an SMTP session: a command (credentials masked, DATA replaced by its size) or a reply. */
+        TranscriptLine: {
+            /** Format: date-time */
+            at: string;
+            direction: components["schemas"]["TranscriptDirection"];
+            /** @example MAIL FROM:<noreply@example.com> SIZE=1024 */
+            text: string;
+        };
         TriggerResult: {
             /** Format: uuid */
             id: string;
@@ -2782,6 +3492,44 @@ export interface components {
              *     `mail.imap`, `mail.pop3` (when their listeners are on) and `mail.providers`.
              */
             features: string[];
+        };
+        WaitBody: {
+            /** @description Conditions on the message; all given ones must hold. Empty: any message. */
+            match?: components["schemas"]["MailMatch"];
+            /** @description Matching messages to wait for, 1 to 500 (default 1). */
+            count?: number;
+            /**
+             * Format: int64
+             * @description How long to wait, 0 to 60000 ms (default 10000).
+             */
+            timeoutMs?: number | null;
+            /** @description Count matching messages already stored, whenever they arrived. */
+            includeExisting?: boolean;
+            /**
+             * Format: date-time
+             * @description Count stored messages received at or after this time too (ignored with `includeExisting`).
+             */
+            since?: string | null;
+            /**
+             * Format: int64
+             * @description Without `since`: count stored messages received up to this many milliseconds before the request
+             *     (default 0: only messages arriving from now on).
+             */
+            lookbackMs?: number | null;
+        };
+        WaitResult: {
+            /** @description The first `count` matching messages, oldest first. */
+            messages: components["schemas"]["MailEntry"][];
+            count: number;
+        };
+        WaitTimeout: {
+            /** @example timed out after 10000 ms: 0 of 1 matching messages received */
+            error: string;
+            details: string[];
+            /** @description Matching messages seen before the time ran out. */
+            count: number;
+            expected: number;
+            messages: components["schemas"]["MailEntry"][];
         };
         WebSocketDef: {
             messages?: components["schemas"]["WsMessage"][];
@@ -5624,6 +6372,1321 @@ export interface operations {
             };
             /** @description Mail is not enabled, or unknown space */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    listMailboxes: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Mailboxes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailboxList"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, or an unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    setMailboxPassword: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Mailbox address */
+                address: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "password": "change-me"
+                 *     }
+                 */
+                "application/json": components["schemas"]["PasswordBody"];
+            };
+        };
+        responses: {
+            /** @description Set */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid address or password */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, or an unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    deleteMailboxPassword: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Mailbox address */
+                address: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid address */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, an unknown space, or no password is set */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    listMailMessages: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to list. Without it, every area the caller may read (`mail:read`); the global area only for
+                 *     callers holding `mail:read` globally.
+                 */
+                space?: string;
+                /**
+                 * @description Search: `from:` `to:` `cc:` `subject:` `has:attachment` `label:` `after:` `before:` (dates as
+                 *     `YYYY-MM-DD` or RFC 3339) and free text on the subject and text, values with spaces in double
+                 *     quotes; all terms must hold. At most 1024 bytes and 32 terms.
+                 * @example from:billing subject:"monthly invoice" has:attachment
+                 */
+                query?: string;
+                /** @description Page size, 1 to 500 (default 50). */
+                limit?: number;
+                /** @description `nextCursor` of the previous page. */
+                cursor?: string;
+                /** @description `newest` (default) or `oldest` first. */
+                order?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of messages */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailList"];
+                };
+            };
+            /** @description Invalid query, limit, order or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, or an unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    injectMailMessage: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space the message goes to. Without it, the global area, or the caller's only space when it is
+                 *     bound to spaces.
+                 */
+                space?: string;
+                /**
+                 * @description File the message into this address's INBOX instead of the INBOX of each recipient (for a JSON
+                 *     body, its `mailbox` field wins).
+                 */
+                mailbox?: string;
+                /** @description `message/rfc822` only: the envelope sender (default: the `From` address). */
+                mailFrom?: string;
+                /**
+                 * @description `message/rfc822` only: envelope recipients, comma-separated (default: the `To`, `Cc` and `Bcc`
+                 *     addresses).
+                 */
+                rcptTo?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "from": "Shop <shop@example.com>",
+                 *       "to": [
+                 *         "alice@example.test"
+                 *       ],
+                 *       "subject": "Your code",
+                 *       "text": "Your code is 123456",
+                 *       "headers": {
+                 *         "X-FastMock-Labels": "otp"
+                 *       }
+                 *     }
+                 */
+                "application/json": components["schemas"]["ComposeRequest"];
+                "message/rfc822": number[];
+            };
+        };
+        responses: {
+            /** @description Stored */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Injected"];
+                };
+            };
+            /** @description Invalid message: addresses, header fields (line breaks are refused), base64, or no recipients */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, or an unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The message exceeds FASTMOCK_MAIL_MAX_MESSAGE_BYTES */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Neither application/json nor message/rfc822 */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    deleteMailMessages: {
+        parameters: {
+            query?: {
+                /** @description Space to clear. Without it, every area where the caller holds `mail:delete`. */
+                space?: string;
+                /** @description Only messages matching this search (syntax of `GET /mail/messages`); all without it. */
+                query?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted messages */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailDeleted"];
+                };
+            };
+            /** @description Invalid query */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, or an unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    waitForMail: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "match": {
+                 *         "to": {
+                 *           "contains": "alice@"
+                 *         },
+                 *         "subject": {
+                 *           "contains": "Verify"
+                 *         }
+                 *       },
+                 *       "count": 1,
+                 *       "timeoutMs": 10000
+                 *     }
+                 */
+                "application/json": components["schemas"]["WaitBody"];
+            };
+        };
+        responses: {
+            /** @description The matching messages arrived */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaitResult"];
+                };
+            };
+            /** @description Invalid match, count or timeout */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, or an unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Timed out; `count` matching messages were seen */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaitTimeout"];
+                };
+            };
+            /** @description More than 10000 stored messages to check */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Too many waits are reading stored messages, or the server is shutting down */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getMailMessage: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Message id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The message */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailMessageView"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, no such message, or one the caller cannot read */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    deleteMailMessage: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Message id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The caller may read the message but lacks mail:delete */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, or no such message */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getMailMessageCodes: {
+        parameters: {
+            query?: {
+                /** @description Space of the message. */
+                space?: string;
+                /**
+                 * @description Regular expression (Rust `regex` syntax, at most 256 bytes, compiled within a size limit); with a
+                 *     capture group the first group is the code. Default `\b\d{4,8}\b` (4 to 8 digit codes).
+                 * @example code:\s*([A-Z0-9]{6})
+                 */
+                pattern?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Message id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Codes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailCodes"];
+                };
+            };
+            /** @description The pattern is too long, invalid or too large once compiled */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, or no such message */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getMailMessageHtml: {
+        parameters: {
+            query?: {
+                /** @description Space of the message. */
+                space?: string;
+                /**
+                 * @description `block` (default): only `data:` images (inline `cid:` parts) load. `allow`: remote images over
+                 *     HTTPS load too (`img-src data: https:`), which tells their senders the message was opened.
+                 */
+                images?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Message id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description HTML body */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description Invalid `images` value */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, no such message, or the message has no HTML body */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    setMailMessageLabels: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Message id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "labels": [
+                 *         "otp",
+                 *         "signup"
+                 *       ]
+                 *     }
+                 */
+                "application/json": components["schemas"]["LabelsBody"];
+            };
+        };
+        responses: {
+            /** @description The message with its new labels */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailEntry"];
+                };
+            };
+            /** @description Invalid label, or more than 32 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The caller may read the message but lacks mail:write */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, or no such message */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getMailMessageLinks: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Message id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Links */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailLinks"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, or no such message */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getMailMessagePart: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Message id */
+                id: string;
+                /** @description Part id */
+                partId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Part content */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": number[];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, no such message or part */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getMailMessageRaw: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Message id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Raw message */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "message/rfc822": number[];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, or no such message */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getMailMessageText: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Message id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Text body */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, no such message, or the message has no body */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getMailMessageTranscript: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Message id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Session transcript */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailTranscript"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, or no such message */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    streamMailEvents: {
+        parameters: {
+            query?: {
+                /** @description Space to follow. Without it, every area the caller may read. */
+                space?: string;
+                /**
+                 * @description Seconds between heartbeat comments (`: heartbeat`), 1 to 60 (default 15); keeps proxies from
+                 *     closing an idle stream.
+                 */
+                heartbeatSeconds?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Event stream */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["MailEvent"];
+                };
+            };
+            /** @description Invalid heartbeatSeconds */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, or an unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Too many event streams are open */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    verifyMail: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "match": {
+                 *         "to": {
+                 *           "equalTo": "alice@example.test"
+                 *         },
+                 *         "subject": {
+                 *           "contains": "Welcome"
+                 *         }
+                 *       },
+                 *       "count": 1
+                 *     }
+                 */
+                "application/json": components["schemas"]["MailVerifyBody"];
+            };
+        };
+        responses: {
+            /** @description Expectation met */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailVerifyResult"];
+                };
+            };
+            /** @description Invalid match or expectation */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, or an unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Expectation not met (`MailVerifyResult`), or more than 10000 stored messages to check (`ErrorBody`) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailVerifyResult"];
+                };
+            };
+            /** @description Too many verifications are reading stored messages */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
