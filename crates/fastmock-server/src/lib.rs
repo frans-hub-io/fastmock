@@ -15,7 +15,10 @@ pub mod journal_api;
 pub mod mail_api;
 pub mod mail_chaos_api;
 pub mod mail_listeners;
+pub mod mail_providers;
 pub mod mail_setup;
+pub mod mail_webhooks;
+pub mod mail_webhooks_api;
 pub mod oidc;
 pub mod openapi_doc;
 pub mod outbox;
@@ -259,6 +262,9 @@ pub async fn build(
     let mut data: Router<AppState> = Router::new();
     for (mount, r) in data_routes {
         data = data.nest_service(&mount, r);
+    }
+    if app.mail.is_some() {
+        data = data.nest_service(mail_providers::PREFIX, mail_providers::service(app.clone()));
     }
     let data = data
         .fallback(dataplane::stub_handler)

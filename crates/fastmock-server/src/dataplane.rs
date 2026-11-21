@@ -199,6 +199,10 @@ pub async fn data_plane_middleware(
     let status = resp.status().as_u16();
     span.record("http.response.status_code", status);
     let stub = resp.extensions().get::<StubHit>().cloned();
+    let mail_space = resp
+        .extensions()
+        .get::<crate::mail_providers::JournalSpace>()
+        .and_then(|s| s.0.clone());
     if let Some(s) = &stub {
         span.record("fastmock.stub_id", s.id.to_string().as_str());
     }
@@ -290,7 +294,7 @@ pub async fn data_plane_middleware(
             status,
             response_body: r.body(&response_body, resp_ct, app.cfg.journal_max_body),
             stub_id: stub.as_ref().map(|s| s.id),
-            space: stub.and_then(|s| s.space),
+            space: stub.and_then(|s| s.space).or(mail_space),
             correlation,
             matched,
             duration_ms: elapsed.as_millis() as u64,
