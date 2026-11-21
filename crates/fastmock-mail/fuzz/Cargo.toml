@@ -1,0 +1,35 @@
+[package]
+name = "fastmock-mail-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+fastmock-core = { path = "../../fastmock-core" }
+fastmock-mail = { path = ".." }
+tokio = { version = "1", features = ["full", "test-util"] }
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "smtp_session"
+path = "fuzz_targets/smtp_session.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "smtp_codec"
+path = "fuzz_targets/smtp_codec.rs"
+test = false
+doc = false
+bench = false
