@@ -4,7 +4,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::crd::FastMockSpec;
+use crate::crd::{FastMockSpec, MailSpec};
 
 pub const MANAGER: &str = "fastmock-operator";
 pub const OPERATOR_PRINCIPAL: &str = "fastmock-operator";
@@ -12,6 +12,7 @@ pub const ACCESS_DIR: &str = "/etc/fastmock/access";
 pub const ACCESS_FILE: &str = "access.yaml";
 pub const OIDC_DIR: &str = "/etc/fastmock/oidc";
 pub const OIDC_CA_DIR: &str = "/etc/fastmock/oidc-ca";
+pub const MAIL_TLS_DIR: &str = "/etc/fastmock/tls/mail";
 
 pub fn labels(name: &str) -> BTreeMap<String, String> {
     BTreeMap::from([
@@ -110,6 +111,9 @@ pub fn env_map(name: &str, spec: &FastMockSpec) -> BTreeMap<String, String> {
             }
         }
     }
+    if let Some(mail) = spec.mail_on() {
+        mail_env(&mut m, mail);
+    }
     if spec.secrets_secret.is_some() {
         m.insert(
             "FASTMOCK_SECRETS_DIR".into(),
@@ -139,14 +143,77 @@ pub fn env_map(name: &str, spec: &FastMockSpec) -> BTreeMap<String, String> {
     m
 }
 
-/// Pod template checksum: the pods roll when the environment, the token file, the access file or the
-/// OIDC client secret (given as a digest) change. Without an access file and OIDC it is the same as before
-/// they existed, so upgrades do not roll pods.
+fn mail_env(m: &mut BTreeMap<String, String>, mail: &MailSpec) {
+    m.insert("FASTMOCK_MAIL_ENABLED".into(), "true".into());
+    let ports = mail.ports.enabled();
+    if !ports.iter().any(|(n, ..)| *n == "smtp") {
+        m.insert("FASTMOCK_MAIL_SMTP_LISTEN".into(), String::new());
+    }
+    for (_, port, var, _) in ports {
+        m.insert(var.into(), format!("0.0.0.0:{port}"));
+    }
+    if let Some(h) = mail
+        .hostname
+        .as_deref()
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+    {
+        m.insert("FASTMOCK_MAIL_HOSTNAME".into(), h.into());
+    }
+    if mail.tls_secret_ref.is_some() {
+        m.insert(
+            "FASTMOCK_MAIL_TLS_CERT_FILE".into(),
+            format!("{MAIL_TLS_DIR}/tls.crt"),
+        );
+        m.insert(
+            "FASTMOCK_MAIL_TLS_KEY_FILE".into(),
+            format!("{MAIL_TLS_DIR}/tls.key"),
+        );
+    }
+    m.insert(
+        "FASTMOCK_MAIL_SMTP_REQUIRE_AUTH".into(),
+        mail.require_auth.to_string(),
+    );
+    m.insert(
+        "FASTMOCK_MAIL_ALLOW_PLAINTEXT_AUTH".into(),
+        mail.allow_plaintext_auth.to_string(),
+    );
+    if let Some(l) = &mail.limits {
+        for (k, v) in [
+            ("MAX_MESSAGE_BYTES", l.max_message_bytes),
+            ("MAX_MESSAGES", l.max_messages),
+            ("MAX_BYTES", l.max_bytes),
+            ("MAX_MAILBOXES", l.max_mailboxes),
+            ("LOGIN_FAILURE_LIMIT", l.login_failure_limit),
+            ("MAX_CONNECTIONS", l.max_connections),
+            ("MAX_CONNECTIONS_PER_IP", l.max_connections_per_ip),
+        ] {
+            if let Some(v) = v {
+                m.insert(format!("FASTMOCK_MAIL_{k}"), v.to_string());
+            }
+        }
+        for (k, v) in [
+            ("MAX_AGE", &l.max_age),
+            ("IDLE_TIMEOUT", &l.idle_timeout),
+            ("SESSION_TIMEOUT", &l.session_timeout),
+            ("IMAP_IDLE_TIMEOUT", &l.imap_idle_timeout),
+        ] {
+            if let Some(v) = v.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                m.insert(format!("FASTMOCK_MAIL_{k}"), v.into());
+            }
+        }
+    }
+}
+
+/// Pod template checksum: the pods roll when the environment, the token file, the access file, the
+/// OIDC client secret or the mail certificate and SMTP users (given as digests) change. Without an access
+/// file, OIDC and mail it is the same as before they existed, so upgrades do not roll pods.
 pub fn config_checksum(
     env: &BTreeMap<String, String>,
     tokens: &str,
     access_file: Option<&str>,
     oidc_secret_digest: Option<&str>,
+    mail_secrets_digest: Option<&str>,
 ) -> String {
     let mut basis = format!(
         "{}|{}",
@@ -159,6 +226,10 @@ pub fn config_checksum(
     }
     if let Some(d) = oidc_secret_digest {
         basis.push_str("|oidc-client-secret:");
+        basis.push_str(d);
+    }
+    if let Some(d) = mail_secrets_digest {
+        basis.push_str("|mail-secrets:");
         basis.push_str(d);
     }
     sha256_hex(&basis)
@@ -192,6 +263,39 @@ pub fn services(name: &str, ns: &str, owner: &OwnerReference) -> [Value; 2] {
         json!({"apiVersion": "v1", "kind": "Service", "metadata": meta(&format!("{name}-admin"), ns, owner, Some(json!({"app.kubernetes.io/component": "admin"}))),
             "spec": {"selector": selector(name), "ports": [{"name": "admin", "port": 9090, "targetPort": "admin"}]}}),
     ]
+}
+
+/// The `<name>-mail` Service with the enabled mail ports; `None` when mail is off or has no listener.
+pub fn mail_service(
+    name: &str,
+    ns: &str,
+    owner: &OwnerReference,
+    spec: &FastMockSpec,
+) -> Option<Value> {
+    let mail = spec.mail_on()?;
+    let ports: Vec<Value> = mail
+        .ports
+        .enabled()
+        .into_iter()
+        .map(|(n, p, _, _)| json!({"name": n, "port": p, "targetPort": n, "protocol": "TCP"}))
+        .collect();
+    if ports.is_empty() {
+        return None;
+    }
+    let svc = mail.service.clone().unwrap_or_default();
+    let mut metadata = meta(
+        &format!("{name}-mail"),
+        ns,
+        owner,
+        Some(json!({"app.kubernetes.io/component": "mail"})),
+    );
+    if !svc.annotations.is_empty() {
+        metadata["annotations"] = json!(svc.annotations);
+    }
+    Some(
+        json!({"apiVersion": "v1", "kind": "Service", "metadata": metadata,
+        "spec": {"type": svc.type_.as_deref().unwrap_or("ClusterIP"), "selector": selector(name), "ports": ports}}),
+    )
 }
 
 pub fn pdb(name: &str, ns: &str, owner: &OwnerReference) -> Value {
@@ -232,6 +336,17 @@ pub fn deployment(
             env.push(secret_env("FASTMOCK_VALKEY_URL", v));
         }
     }
+    let mail = spec.mail_on();
+    if let Some(r) = mail.and_then(|m| m.users_secret_ref.as_ref()) {
+        env.push(json!({"name": "FASTMOCK_MAIL_SMTP_USERS", "valueFrom": {"secretKeyRef": {"name": r.name, "key": r.key}}}));
+    }
+    let mut ports = vec![
+        json!({"name": "http", "containerPort": 8080}),
+        json!({"name": "admin", "containerPort": 9090}),
+    ];
+    for (n, p, _, _) in mail.map(|m| m.ports.enabled()).unwrap_or_default() {
+        ports.push(json!({"name": n, "containerPort": p, "protocol": "TCP"}));
+    }
     let mut mounts =
         vec![json!({"name": "admin-tokens", "mountPath": "/etc/fastmock/admin", "readOnly": true})];
     let mut volumes = vec![
@@ -256,6 +371,10 @@ pub fn deployment(
             mounts.push(json!({"name": "oidc-ca", "mountPath": OIDC_CA_DIR, "readOnly": true}));
             volumes.push(json!({"name": "oidc-ca", "configMap": {"name": c.name, "items": [{"key": c.key, "path": "ca.crt"}], "defaultMode": 0o440}}));
         }
+    }
+    if let Some(r) = mail.and_then(|m| m.tls_secret_ref.as_ref()) {
+        mounts.push(json!({"name": "tls-mail", "mountPath": MAIL_TLS_DIR, "readOnly": true}));
+        volumes.push(json!({"name": "tls-mail", "secret": {"secretName": r.name, "items": [{"key": r.cert_key, "path": "tls.crt"}, {"key": r.key_key, "path": "tls.key"}], "defaultMode": 0o440}}));
     }
     let resources = spec.resources.clone().unwrap_or_else(|| json!({"requests": {"cpu": "100m", "memory": "64Mi"}, "limits": {"cpu": "2", "memory": "512Mi"}}));
     let pull: Vec<Value> = spec
@@ -285,7 +404,7 @@ pub fn deployment(
                         "args": ["serve"],
                         "envFrom": [{"configMapRef": {"name": format!("{name}-config")}}],
                         "env": env,
-                        "ports": [{"name": "http", "containerPort": 8080}, {"name": "admin", "containerPort": 9090}],
+                        "ports": ports,
                         "securityContext": {"runAsNonRoot": true, "allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true, "capabilities": {"drop": ["ALL"]}},
                         "startupProbe": {"httpGet": {"path": "/healthz", "port": "admin"}, "periodSeconds": 2, "failureThreshold": 60},
                         "readinessProbe": {"httpGet": {"path": "/readyz", "port": "admin"}, "periodSeconds": 5, "timeoutSeconds": 3},
@@ -405,16 +524,16 @@ mod tests {
             .unwrap();
         assert_eq!(mount["mountPath"], "/etc/fastmock/access");
         assert_eq!(mount["readOnly"], true);
-        let base = config_checksum(&env, "t", None, None);
+        let base = config_checksum(&env, "t", None, None, None);
         assert_eq!(
             base,
             sha256_hex(&format!("{}|t", serde_json::to_string(&env).unwrap()))
         );
-        let a = config_checksum(&env, "t", Some("spaces: [{name: a}]"), None);
-        let b = config_checksum(&env, "t", Some("spaces: [{name: b}]"), None);
+        let a = config_checksum(&env, "t", Some("spaces: [{name: a}]"), None, None);
+        let b = config_checksum(&env, "t", Some("spaces: [{name: b}]"), None, None);
         assert!(a != b && a != base);
-        let s1 = config_checksum(&env, "t", None, Some("d1"));
-        let s2 = config_checksum(&env, "t", None, Some("d2"));
+        let s1 = config_checksum(&env, "t", None, Some("d1"), None);
+        let s2 = config_checksum(&env, "t", None, Some("d2"), None);
         assert!(s1 != s2 && s1 != base);
     }
 
@@ -507,5 +626,122 @@ mod tests {
             env["FASTMOCK_OIDC_ISSUER"],
             "https://sso.example.com/realms/mocks"
         );
+    }
+
+    fn mail_spec() -> FastMockSpec {
+        serde_json::from_value(json!({
+            "mail": {
+                "enabled": true,
+                "hostname": "mail.example.test",
+                "ports": {"imap": 1143, "smtps": 4650},
+                "tlsSecretRef": {"name": "mail-tls"},
+                "requireAuth": true,
+                "usersSecretRef": {"name": "mail-users", "key": "list"},
+                "limits": {"maxMessages": 50, "maxBytes": 1048576000, "maxMailboxes": 300, "loginFailureLimit": 0, "maxAge": "2d", "idleTimeout": " "},
+                "service": {"type": "LoadBalancer", "annotations": {"example.com/a": "b"}}
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn mail_sets_env_ports_mounts_and_a_service() {
+        let spec = mail_spec();
+        let env = env_map("m", &spec);
+        assert_eq!(env["FASTMOCK_MAIL_ENABLED"], "true");
+        assert_eq!(env["FASTMOCK_MAIL_SMTP_LISTEN"], "0.0.0.0:2525");
+        assert_eq!(env["FASTMOCK_MAIL_SMTPS_LISTEN"], "0.0.0.0:4650");
+        assert_eq!(env["FASTMOCK_MAIL_IMAP_LISTEN"], "0.0.0.0:1143");
+        assert!(!env.contains_key("FASTMOCK_MAIL_POP3_LISTEN"));
+        assert_eq!(env["FASTMOCK_MAIL_HOSTNAME"], "mail.example.test");
+        assert_eq!(
+            env["FASTMOCK_MAIL_TLS_CERT_FILE"],
+            "/etc/fastmock/tls/mail/tls.crt"
+        );
+        assert_eq!(env["FASTMOCK_MAIL_SMTP_REQUIRE_AUTH"], "true");
+        assert_eq!(env["FASTMOCK_MAIL_ALLOW_PLAINTEXT_AUTH"], "false");
+        assert_eq!(env["FASTMOCK_MAIL_MAX_MESSAGES"], "50");
+        assert_eq!(env["FASTMOCK_MAIL_MAX_BYTES"], "1048576000");
+        assert_eq!(env["FASTMOCK_MAIL_MAX_MAILBOXES"], "300");
+        assert_eq!(env["FASTMOCK_MAIL_LOGIN_FAILURE_LIMIT"], "0");
+        assert_eq!(env["FASTMOCK_MAIL_MAX_AGE"], "2d");
+        assert!(!env.contains_key("FASTMOCK_MAIL_IDLE_TIMEOUT"));
+        assert!(!env.contains_key("FASTMOCK_MAIL_SMTP_USERS"));
+        let d = deployment("m", "ns", &owner(), &spec, "img:1", "abc");
+        let pod = &d["spec"]["template"]["spec"];
+        let c = &pod["containers"][0];
+        let names: Vec<&str> = c["ports"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["http", "admin", "smtp", "smtps", "imap"]);
+        assert!(c["env"].as_array().unwrap().iter().any(|e| e
+            == &json!({"name": "FASTMOCK_MAIL_SMTP_USERS", "valueFrom": {"secretKeyRef": {"name": "mail-users", "key": "list"}}})));
+        let vol = pod["volumes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["name"] == "tls-mail")
+            .unwrap();
+        assert_eq!(
+            vol["secret"],
+            json!({"secretName": "mail-tls", "items": [{"key": "tls.crt", "path": "tls.crt"}, {"key": "tls.key", "path": "tls.key"}], "defaultMode": 0o440})
+        );
+        assert!(
+            c["volumeMounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["name"] == "tls-mail"
+                    && m["mountPath"] == "/etc/fastmock/tls/mail"
+                    && m["readOnly"] == true)
+        );
+        let svc = mail_service("m", "ns", &owner(), &spec).unwrap();
+        assert_eq!(svc["metadata"]["name"], "m-mail");
+        assert_eq!(svc["metadata"]["annotations"]["example.com/a"], "b");
+        assert_eq!(
+            svc["metadata"]["labels"]["app.kubernetes.io/component"],
+            "mail"
+        );
+        assert_eq!(svc["spec"]["type"], "LoadBalancer");
+        assert_eq!(svc["spec"]["selector"], selector("m"));
+        assert_eq!(
+            svc["spec"]["ports"][2],
+            json!({"name": "imap", "port": 1143, "targetPort": "imap", "protocol": "TCP"})
+        );
+        let base = config_checksum(&env, "t", None, None, None);
+        assert_ne!(base, config_checksum(&env, "t", None, None, Some("d")));
+    }
+
+    #[test]
+    fn mail_off_or_without_listeners_changes_nothing() {
+        let plain: FastMockSpec = serde_json::from_value(json!({})).unwrap();
+        let mut off = mail_spec();
+        off.mail.as_mut().unwrap().enabled = false;
+        assert_eq!(env_map("m", &plain), env_map("m", &off));
+        assert_eq!(
+            deployment("m", "ns", &owner(), &plain, "i", "c"),
+            deployment("m", "ns", &owner(), &off, "i", "c")
+        );
+        assert!(mail_service("m", "ns", &owner(), &off).is_none());
+        let none: FastMockSpec = serde_json::from_value(json!({
+            "mail": {"enabled": true, "ports": {"smtp": 0}}
+        }))
+        .unwrap();
+        let env = env_map("m", &none);
+        assert_eq!(env["FASTMOCK_MAIL_SMTP_LISTEN"], "");
+        assert!(mail_service("m", "ns", &owner(), &none).is_none());
+        let svc = mail_service(
+            "m",
+            "ns",
+            &owner(),
+            &serde_json::from_value(json!({"mail": {"enabled": true}})).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(svc["spec"]["type"], "ClusterIP");
+        assert!(svc["metadata"].get("annotations").is_none());
+        assert_eq!(svc["spec"]["ports"].as_array().unwrap().len(), 1);
     }
 }

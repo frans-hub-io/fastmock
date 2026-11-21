@@ -16,6 +16,7 @@ files, imports, recording, scenarios, chaos rules and gRPC descriptors. The UI u
 - [Unused stubs](#unused-stubs)
 - [Body files](#body-files)
 - [Audit log](#audit-log)
+- [Mail](#mail)
 - [Version and info](#version-and-info)
 - [Limits](#limits)
 - [Metrics](#metrics)
@@ -127,6 +128,9 @@ selects data are listed in [Access control](../operations/access-control.md#perm
 | `GET /access` | admin (`access:read`; see [Version and info](#version-and-info)) |
 | `GET /tokens`, `/tokens/{id}`; `POST /tokens`, `GET /tokens/options`, `DELETE /tokens/{id}` | admin (`tokens:read`, `tokens:write`; see [Managed tokens](#managed-tokens)) |
 | `GET /tokens/self`; `DELETE /tokens/{id}` of the calling token itself | the managed token itself |
+| `GET /mail/messages`, `/mail/messages/{id}` and its renditions, `/mail/stream`, `/mail/mailboxes`, `/mail/chaos`, `/mail/webhooks`; `POST /mail/messages/wait`, `/mail/verify` | viewer (`mail:read`) |
+| `POST /mail/messages`, `PUT /mail/messages/{id}/labels`, `PUT`/`DELETE /mail/mailboxes/{address}/password`, `PUT`/`DELETE /mail/chaos`, `PUT`/`DELETE /mail/webhooks`, `POST /mail/inbound` | editor (`mail:write`) |
+| `DELETE /mail/messages`, `DELETE /mail/messages/{id}` | editor (`mail:delete`) |
 
 ## Sign-in endpoints
 
@@ -354,6 +358,33 @@ they are written. Other actions: `stub.create`, `stub.delete_many`, `stub.delete
 `token.revoke` (id, name, kind, role, scopes and expiry of the managed token, never its value). Audit entries are also
 logged with the `audit` tracing target.
 
+## Mail
+
+With `FASTMOCK_MAIL_ENABLED=true` the admin API has routes for captured mail; while mail is off they answer
+`404 {"error":"mail is not enabled; set FASTMOCK_MAIL_ENABLED=true",...}`. All take `?space=`. Details and
+examples are in [Mail](mail.md).
+
+| Route | Purpose |
+|---|---|
+| `GET /mail/messages` | List and search (`query`, `limit` 1 to 500, `cursor`, `order`); summaries only. |
+| `GET /mail/messages/{id}` | One message: envelope, headers, addresses, text, attachments, labels, provider fields. |
+| `GET /mail/messages/{id}/raw`, `/html`, `/text`, `/parts/{partId}` | The raw message, the sandboxed HTML, the text, one attachment. |
+| `GET /mail/messages/{id}/transcript`, `/links`, `/codes` | The SMTP session, the links, codes such as one-time passwords. |
+| `PUT /mail/messages/{id}/labels` | Replace the labels. |
+| `DELETE /mail/messages/{id}`, `DELETE /mail/messages?query=` | Delete one message, or the matching (or all) messages of a space. |
+| `POST /mail/messages/wait` | Long-poll until matching messages arrive (at most 60 s); `408` on timeout. |
+| `POST /mail/verify` | Check how many matching messages were received; `422` with near misses. |
+| `POST /mail/messages` | Inject a message (JSON or `message/rfc822`). |
+| `GET /mail/stream` | Server-Sent Events: `message.received`, `message.deleted`. |
+| `GET /mail/mailboxes`; `PUT`/`DELETE /mail/mailboxes/{address}/password` | IMAP/POP3 mailboxes and their passwords. |
+| `GET`/`PUT`/`DELETE /mail/chaos` | Mail chaos rules with their counters. |
+| `GET`/`PUT`/`DELETE /mail/webhooks` | Provider webhooks and expected provider API keys. |
+| `POST /mail/inbound` | Send a message to the provider's inbound webhooks. |
+
+Audit actions: `mail.message.delete`, `mail.messages.delete`, `mail.message.labels`, `mail.inject`,
+`mail.mailbox.password.set`, `mail.mailbox.password.delete`, `mail.chaos.set`, `mail.chaos.clear`,
+`mail.webhooks.set`, `mail.webhooks.clear`, `mail.inbound`.
+
 ## Version and info
 
 ```sh
@@ -361,7 +392,8 @@ curl -s -H "Authorization: Bearer $FASTMOCK_TOKEN" http://localhost:9090/__admin
 # {"version":"0.1.0","gitSha":"3f2c1ab","features":["grpc","kafka","sse","chaos","recording","verification","files","import-openapi","import-wiremock","import-postman","import-har"]}
 ```
 
-`features` lists `tokens` when the server supports [managed tokens](#managed-tokens). `gitSha` is set when the binary was built with the `FASTMOCK_GIT_SHA` environment variable, otherwise `null`.
+`features` lists `tokens` when the server supports [managed tokens](#managed-tokens), and `mail`,
+`mail.providers`, `mail.imap` and `mail.pop3` when [mail](mail.md#enabling-mail) and its listeners are on. `gitSha` is set when the binary was built with the `FASTMOCK_GIT_SHA` environment variable, otherwise `null`.
 `GET /info` returns the version, storage kind, uptime, number of loaded stubs (`stubsLoaded`, only those the caller can see), plugins and the caller's identity:
 `principal` with `name`, `kind`, `role` and `permissions`: `global`, per-space lists in `spaces`, and `allSpaces`,
 the permissions granted in [all spaces](../operations/access-control.md#all-spaces) (empty when none; they also

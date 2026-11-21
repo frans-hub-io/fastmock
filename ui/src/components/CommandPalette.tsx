@@ -1,15 +1,17 @@
 import { Loader, Modal, Text, TextInput, UnstyledButton, useComputedColorScheme, useMantineColorScheme } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
-import { IconArrowRight, IconCornerDownLeft, IconMoon, IconPlus, IconSearch, IconSun } from '@tabler/icons-react';
+import { IconArrowRight, IconCornerDownLeft, IconFlame, IconMail, IconMailPlus, IconMailbox, IconMoon, IconPlus, IconSearch, IconSun } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router';
 import { client, unwrap } from '../api/client';
-import { useTokensApi } from '../api/features';
+import { useTokensApi, useVersion } from '../api/features';
+import { mailApi } from '../api/mail';
 import { can } from '../auth/permissions';
 import { useAuth, useCan, useSpaceQuery } from '../auth/useAuth';
 import { stubPath, stubTitle } from '../lib/stubs';
 import { formatRelative } from '../lib/format';
+import { senderOf } from '../lib/mail';
 import { MethodBadge, PathText, StatusBadge } from './common';
 import { visibleNav } from './nav';
 import classes from './CommandPalette.module.css';
@@ -53,6 +55,9 @@ export function CommandPalette({ opened, onClose }: { opened: boolean; onClose: 
   const listRef = useRef<HTMLDivElement>(null);
   const readStubs = can(permissions, 'stubs:read');
   const readJournal = can(permissions, 'journal:read');
+  const features = useVersion().data?.features;
+  const mailOn = !!features?.includes('mail');
+  const readMail = mailOn && can(permissions, 'mail:read');
 
   const stubs = useQuery({
     queryKey: ['palette', 'stubs', debounced, spaceQ],
@@ -65,6 +70,14 @@ export function CommandPalette({ opened, onClose }: { opened: boolean; onClose: 
     queryFn: () => unwrap(client.GET('/__admin/requests', { params: { query: { limit: 50, ...spaceQ } } })),
     enabled: opened && readJournal,
     staleTime: 5_000,
+  });
+
+  const mail = useQuery({
+    queryKey: ['palette', 'mail', debounced, spaceQ],
+    queryFn: () => mailApi.list({ ...spaceQ, query: debounced || undefined, limit: 5 }),
+    enabled: opened && readMail,
+    staleTime: 5_000,
+    retry: false,
   });
 
   useEffect(() => {
@@ -82,7 +95,7 @@ export function CommandPalette({ opened, onClose }: { opened: boolean; onClose: 
   const entries = useMemo<Entry[]>(() => {
     const term = q.trim();
     const out: Entry[] = [];
-    for (const g of visibleNav(permissions, tokensApi)) {
+    for (const g of visibleNav(permissions, tokensApi, features)) {
       for (const i of g.items) {
         const text = `${i.label} ${g.group} ${i.keywords ?? ''}`;
         if (!matches(text, term)) continue;
@@ -91,6 +104,12 @@ export function CommandPalette({ opened, onClose }: { opened: boolean; onClose: 
     }
     const actions: Entry[] = [];
     if (canDo('stubs:write')) actions.push({ id: 'act:new-stub', group: 'Actions', label: 'Create a stub', text: 'create new stub add', icon: <IconPlus size={18} />, run: () => go('/stubs/new') });
+    if (readMail) {
+      if (canDo('mail:write'))
+        actions.push({ id: 'act:inject-mail', group: 'Actions', label: 'Inject a mail message', text: 'inject mail email message compose send eml', icon: <IconMailPlus size={18} />, run: () => go('/mail?inject=1') });
+      actions.push({ id: 'act:mailboxes', group: 'Actions', label: 'Mailboxes and IMAP/POP3 passwords', text: 'mailboxes imap pop3 password mail', icon: <IconMailbox size={18} />, run: () => go('/mail/mailboxes') });
+      actions.push({ id: 'act:mail-chaos', group: 'Actions', label: 'Mail chaos rules', text: 'mail chaos smtp faults reply delay disconnect', icon: <IconFlame size={18} />, run: () => go('/mail/chaos') });
+    }
     const next = scheme === 'dark' ? 'light' : 'dark';
     actions.push({
       id: 'act:theme',
@@ -140,9 +159,26 @@ export function CommandPalette({ opened, onClose }: { opened: boolean; onClose: 
         run: () => go(`/requests?id=${String(r.id)}`),
       });
     }
+    for (const m of mail.data?.messages ?? []) {
+      const subject = m.summary.subject || '(no subject)';
+      out.push({
+        id: `mail:${m.id}`,
+        group: 'Recent mail',
+        label: subject,
+        text: `${subject} ${senderOf(m)}`,
+        hint: (
+          <span className={classes.reqHint}>
+            <span>{senderOf(m)}</span>
+            <span>{formatRelative(m.receivedAt)}</span>
+          </span>
+        ),
+        icon: <IconMail size={18} />,
+        run: () => go(`/mail/${m.id}`),
+      });
+    }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, permissions, tokensApi, stubs.data, requests.data, scheme]);
+  }, [q, permissions, tokensApi, features, stubs.data, requests.data, mail.data, scheme]);
 
   useEffect(() => {
     setActive((a) => (a >= entries.length ? 0 : a));
@@ -165,7 +201,7 @@ export function CommandPalette({ opened, onClose }: { opened: boolean; onClose: 
     }
   };
 
-  const loading = (stubs.isFetching && !stubs.data) || (requests.isFetching && !requests.data);
+  const loading = (stubs.isFetching && !stubs.data) || (requests.isFetching && !requests.data) || (mail.isFetching && !mail.data);
   let lastGroup = '';
 
   return (

@@ -5,8 +5,8 @@
 # FastMock documentation
 
 FastMock is an API mock server for test environments: HTTP, HTTPS with mTLS, gRPC, GraphQL, SOAP, WebSocket,
-Server-Sent Events, Kafka and AsyncAPI, with durable signed callbacks, shared state for any number of replicas,
-security by default and full observability. Start with [Getting started](guide/getting-started.md), then pick the
+Server-Sent Events, Kafka and AsyncAPI, plus mail capture over SMTP and provider APIs, with durable signed
+callbacks, shared state for any number of replicas, security by default and full observability. Start with [Getting started](guide/getting-started.md), then pick the
 section for what you do.
 
 <div class="fm-hero__actions" markdown>
@@ -145,6 +145,10 @@ section for what you do.
 -   :material-check-decagram-outline:{ .fm-card__icon } **[Verification](guide/verification.md)**
 
     Query the journal, verify counts and sequences, near misses.
+
+-   :material-email-outline:{ .fm-card__icon } **[Mail](guide/mail.md)**
+
+    Capture email over SMTP and provider APIs (SES, SendGrid, Mailgun, Postmark, Resend, Brevo), wait for and verify it in tests, read links and codes, IMAP and POP3 mailboxes, mail chaos, provider webhooks.
 
 -   :material-code-tags:{ .fm-card__icon } **[Java client](guide/java-client.md)**
 

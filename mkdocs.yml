@@ -111,6 +111,7 @@ nav:
       - guide/migrating-from-microcks.md
   - Testing:
       - guide/verification.md
+      - guide/mail.md
       - guide/java-client.md
       - guide/contract-testing.md
       - guide/admin-api.md

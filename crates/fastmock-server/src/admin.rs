@@ -1963,6 +1963,9 @@ pub struct SpaceInfo {
     pub path_prefixes: Vec<String>,
     /// Hosts the space's stubs must match (empty: no restriction).
     pub hosts: Vec<String>,
+    /// Mail domains whose captured messages go to the space (`*.domain` for subdomains).
+    #[schema(example = json!(["billing.example.com"]))]
+    pub mail_domains: Vec<String>,
     /// The caller's effective permissions in the space.
     pub permissions: Vec<String>,
 }
@@ -1998,6 +2001,7 @@ pub async fn list_spaces(
                 description: s.description.clone(),
                 path_prefixes: s.path_prefixes.clone(),
                 hosts: s.hosts.clone(),
+                mail_domains: s.mail_domains.clone(),
                 permissions: perms.names().into_iter().map(String::from).collect(),
             })
         })
@@ -2012,11 +2016,12 @@ pub struct VersionResponse {
     pub version: String,
     /// Commit the binary was built from, when the build set `FASTMOCK_GIT_SHA`.
     pub git_sha: Option<String>,
-    /// Compiled-in optional features and capabilities.
+    /// Compiled-in optional features and capabilities; with the mail module enabled also `mail`, and
+    /// `mail.imap`, `mail.pop3` (when their listeners are on) and `mail.providers`.
     pub features: Vec<String>,
 }
 
-pub fn version_info() -> VersionResponse {
+pub fn version_info(mail: Option<&fastmock_mail::MailConfig>) -> VersionResponse {
     let mut features: Vec<String> = Vec::new();
     features.extend(
         [
@@ -2035,6 +2040,9 @@ pub fn version_info() -> VersionResponse {
         ]
         .map(String::from),
     );
+    if let Some(m) = mail {
+        features.extend(m.features().into_iter().map(String::from));
+    }
     VersionResponse {
         version: env!("CARGO_PKG_VERSION").into(),
         git_sha: option_env!("FASTMOCK_GIT_SHA")
@@ -2053,8 +2061,8 @@ pub fn version_info() -> VersionResponse {
     ),
     security(("bearer" = []))
 )]
-pub async fn version() -> Json<VersionResponse> {
-    Json(version_info())
+pub async fn version(State(app): State<AppState>) -> Json<VersionResponse> {
+    Json(version_info(app.cfg.mail.as_ref()))
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
@@ -2958,6 +2966,9 @@ pub fn router(app: AppState, plugin_admin: Vec<(String, Router)>) -> Router {
         .merge(crate::services::routes())
         .merge(crate::admin_core::routes())
         .merge(crate::tokens::routes())
+        .merge(crate::mail_api::routes())
+        .merge(crate::mail_chaos_api::routes())
+        .merge(crate::mail_webhooks_api::routes())
         .with_state(app.clone());
     for (name, r) in plugin_admin {
         api = api.nest(&format!("/plugins/{name}"), r);

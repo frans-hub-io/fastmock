@@ -47,6 +47,9 @@
 {{- fail "oidc.trustOutboundCA needs outboundCA.configMap" }}
 {{- end }}
 {{- end }}
+{{- include "fastmock.mailValidate" . }}
+{{- $mail := .Values.mail | default dict }}
+{{- $mailTls := and $mail.enabled (dig "tls" "existingSecret" "" $mail) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -166,6 +169,13 @@ spec:
                   name: {{ . }}
                   key: {{ $.Values.messaging.kafka.schemaRegistry.passwordKey }}
             {{- end }}
+            {{- if and $mail.enabled (dig "smtpUsers" "existingSecret" "" $mail) }}
+            - name: FASTMOCK_MAIL_SMTP_USERS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $mail.smtpUsers.existingSecret }}
+                  key: {{ $mail.smtpUsers.key | default "users" }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -174,6 +184,11 @@ spec:
               containerPort: 8080
             - name: admin
               containerPort: 9090
+            {{- range include "fastmock.mailListeners" . | fromJsonArray }}
+            - name: {{ .name }}
+              containerPort: {{ int .port }}
+              protocol: TCP
+            {{- end }}
           startupProbe:
             httpGet:
               path: /healthz
@@ -249,6 +264,11 @@ spec:
             {{- if (and (not .Values.kafka.enabled) .Values.messaging.kafka.tls.clientCertSecret) }}
             - name: tls-kafka-client
               mountPath: /etc/fastmock/tls/kafka-client
+              readOnly: true
+            {{- end }}
+            {{- if $mailTls }}
+            - name: tls-mail
+              mountPath: /etc/fastmock/tls/mail
               readOnly: true
             {{- end }}
       volumes:
@@ -349,6 +369,17 @@ spec:
               - key: tls.crt
                 path: tls.crt
               - key: tls.key
+                path: tls.key
+            defaultMode: 0440
+        {{- end }}
+        {{- if $mailTls }}
+        - name: tls-mail
+          secret:
+            secretName: {{ $mail.tls.existingSecret }}
+            items:
+              - key: {{ $mail.tls.certKey | default "tls.crt" }}
+                path: tls.crt
+              - key: {{ $mail.tls.keyKey | default "tls.key" }}
                 path: tls.key
             defaultMode: 0440
         {{- end }}

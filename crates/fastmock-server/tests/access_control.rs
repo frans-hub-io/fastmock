@@ -181,6 +181,8 @@ const OLD_VIEWER_POSTS: &[&str] = &[
     "/__admin/verify/sequence",
     "/__admin/stubs/find-by-metadata",
     "/__admin/stubs/validate",
+    "/__admin/mail/messages/wait",
+    "/__admin/mail/verify",
 ];
 
 /// The role table before permissions existed: `required_role` of the middleware (GET/HEAD and the
@@ -426,7 +428,8 @@ async fn custom_roles_bindings_info_and_spaces() {
             "files:read",
             "callbacks:read",
             "state:read",
-            "contracts:read"
+            "contracts:read",
+            "mail:read"
         ])
     );
     let v = h.ok(Method::GET, "/spaces", AUDITOR, None).await;

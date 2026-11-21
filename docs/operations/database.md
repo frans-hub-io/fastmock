@@ -17,13 +17,16 @@ upgrade PostgreSQL to a new major version. Connection settings and TLS are in
 | Store | Table or keys | Content |
 |---|---|---|
 | PostgreSQL | `fm_stubs`, `fm_revision` | Stubs (with their [space](access-control.md#spaces)) and the revision counter that tells replicas to reload them. |
-| PostgreSQL | `fm_data` | Body files, settings, gRPC descriptors, async mocks, the service catalog, specifications and contract-test runs. |
+| PostgreSQL | `fm_data` | Body files, settings, gRPC descriptors, async mocks, the service catalog, specifications, contract-test runs, mail chaos rules and provider webhook settings. |
 | PostgreSQL | `fm_journal` | Request journal (kept for `FASTMOCK_JOURNAL_RETENTION`). |
 | PostgreSQL | `fm_outbox` | Callbacks waiting for delivery and their results. |
 | PostgreSQL | `fm_audit` | Audit log of admin actions. |
 | PostgreSQL | `fm_api_tokens` | [Managed tokens](access-control.md#managed-tokens): hashes and metadata, never the values. |
+| PostgreSQL | `fm_mail_messages` | Captured [mail](../guide/mail.md): envelope, parsed summary, labels, provider fields, SMTP transcript and the raw message (kept for `FASTMOCK_MAIL_MAX_AGE`, at most `FASTMOCK_MAIL_MAX_MESSAGES` and `FASTMOCK_MAIL_MAX_BYTES` per space). |
+| PostgreSQL | `fm_mail_mailboxes`, `fm_mail_folders`, `fm_mail_entries`, sequence `fm_mail_uid_validity` | IMAP and POP3 mailboxes: mailbox password hashes, folders with their UID counters, and per-folder message flags. |
 | PostgreSQL | `_sqlx_migrations` | Applied migrations: version, description, checksum, success. |
-| Valkey | keys under `FASTMOCK_VALKEY_PREFIX` | Scenario states, key-value entries, counters, delayed deliveries, caches, OIDC sessions and pending sign-ins. |
+| Valkey | keys under `FASTMOCK_VALKEY_PREFIX` | Scenario states, key-value entries, counters, delayed deliveries, caches, OIDC sessions and pending sign-ins, mail chaos counters, Resend idempotency keys, failed mail logins (`<prefix>mail:login:*`, keyed by a digest, expiring). |
+| Valkey | channels `<prefix>mail:events:<space>` (`_global` for the global area) | New and deleted mail, so waits, event streams and IMAP `IDLE` on every replica see messages accepted by another one. |
 
 ## How migrations run
 
@@ -62,8 +65,8 @@ To keep DDL rights away from the server, or to migrate once per release instead 
    `FASTMOCK_DATABASE_*` variables (URL, password, TLS settings, `FASTMOCK_DATABASE_MIGRATION_TIMEOUT`) and
    `FASTMOCK_LOG_FORMAT`, and exits with status 0 once the schema is current. It logs like the server (JSON by
    default): one `applied database migration` line per migration with `version`, `name` and `duration_ms`, and
-   ends with a summary line such as `migrations applied (schema version 10): 9 applied (1-10) in 412 ms`, or
-   `migrations applied (schema version 10): none, the schema was up to date`.
+   ends with a summary line such as `migrations applied (schema version 14): 13 applied (1-14) in 412 ms`, or
+   `migrations applied (schema version 14): none, the schema was up to date`.
 2. Start the server with `FASTMOCK_DATABASE_MIGRATE=skip`. It applies nothing and checks at start-up that every
    migration it needs is applied and unchanged; otherwise it stops with a message such as
    `the database schema is older than this FastMock version expects (version 4): migration(s) 4 (admin queries)
@@ -72,7 +75,7 @@ To keep DDL rights away from the server, or to migrate once per release instead 
    ([What is stored where](#what-is-stored-where)). When you grant rights per table rather than with
    `ALTER DEFAULT PRIVILEGES`, grant them on every table a new release adds, for example `fm_api_tokens` with
    access control ([upgrade notes](access-control.md#upgrade-notes)); otherwise the feature that uses it answers
-   `503`.
+   `503`. The mail migrations below add four tables and a sequence.
 
 With the Helm chart, set `storage.database.migrations.mode: job`: a pre-install/pre-upgrade hook Job runs step 1
 with the image of the release, optionally with the owner's credentials from
@@ -118,6 +121,26 @@ spec:
 
 With the Helm chart, add `FASTMOCK_DATABASE_MIGRATE=skip` through `extraEnv`; the chart does not create the Job.
 
+### Mail migrations
+
+The release that adds [mail](../guide/mail.md) brings migrations 11 to 14; the schema version becomes 14. They
+are additive and are applied whether or not mail is enabled:
+
+| Version | Name | Change |
+|---|---|---|
+| 11 | `mail` | Tables `fm_mail_messages`, `fm_mail_mailboxes`, `fm_mail_folders`, `fm_mail_entries` and the sequence `fm_mail_uid_validity` (seeded with the current Unix time, so IMAP `UIDVALIDITY` values only grow). |
+| 12 | `mail_messages_space_index` | Index on `fm_mail_messages (space, received_at, id)`, built concurrently. |
+| 13 | `mail_messages_received_index` | Index on `fm_mail_messages (received_at, id)`, built concurrently. |
+| 14 | `mail_entries_message_index` | Index on `fm_mail_entries (message_id)`, built concurrently. |
+
+On a new installation the tables are empty, so the index builds take no time. When migrations run separately and
+the server user gets rights per table:
+
+```sql
+GRANT SELECT, INSERT, UPDATE, DELETE ON fm_mail_messages, fm_mail_mailboxes, fm_mail_folders, fm_mail_entries TO fastmock;
+GRANT USAGE ON SEQUENCE fm_mail_uid_validity TO fastmock;
+```
+
 ## Writing migrations
 
 FastMock runs old and new versions side by side during a rolling upgrade, so every migration must work with the
@@ -150,9 +173,9 @@ supports (see its [versioning policy](https://www.postgresql.org/support/version
 | Feature | Where | Since |
 |---|---|---|
 | `starts_with(text, text)` | journal path filter, audit action prefix filter | 11 |
-| `generated always as identity` | `fm_journal.id`, `fm_audit.id` | 10 |
-| `insert ... on conflict`, `for update skip locked`, `jsonb - text`, `create index if not exists` | stubs and data upserts, callback claiming, listing data without a field, migration `0004` | 9.5 |
-| `LISTEN`/`NOTIFY`, `gin` index on `text[]`, partial indexes, `jsonb` | stub reload, tag queries, journal and outbox indexes | 9.4 |
+| `generated always as identity` | `fm_journal.id`, `fm_audit.id`, mail mailboxes and folders | 10 |
+| `insert ... on conflict`, `for update skip locked`, `jsonb - text`, `create index if not exists`, `create sequence if not exists` | stubs and data upserts, callback claiming, listing data without a field, migrations `0004` and `0011` | 9.5 |
+| `LISTEN`/`NOTIFY`, `gin` index on `text[]`, partial indexes, `jsonb`, aggregate `filter (where ...)` | stub reload, tag queries, journal and outbox indexes, mail usage gauges | 9.4 |
 
 `starts_with` is the only reason for 11; every other construct works on 10. No extension is required.
 
@@ -170,11 +193,18 @@ primary. Valkey Cluster mode is not supported. Commands used:
 | `EVALSHA`, `SCRIPT LOAD` | atomic compare-and-set, counter and queue pop (Lua) | 2.6 |
 | `SCAN ... MATCH ... COUNT` | listing keys by prefix | 2.8 |
 | `UNLINK` | deleting keys by prefix | 4.0 |
+| `PUBLISH`, `PSUBSCRIBE`, `PING` in subscribe mode | mail events between replicas (only with mail enabled) | 2.0 |
+| `EXISTS`, `INCR`, `PEXPIRE` and `SET ... PX` (inside a script) | failed-login counters of SMTP AUTH, IMAP and POP3 (only with mail enabled) | 2.6.12 |
 | `AUTH <user> <password>` | ACL user (`FASTMOCK_VALKEY_USERNAME`) | 6.0 |
 | TLS (`rediss://`) | encrypted connections | 6.0 |
 
 `GETEX`, `HEXPIRE`, `SET ... GET`, Redis Functions and modules are not used. `CLIENT SETINFO` (7.2) is sent by
 the client library at connect time; errors from it are ignored, so it needs no ACL permission.
+
+With mail enabled, an ACL user also needs the channel rule `&<prefix>mail:events:*` (for example
+`&fastmock:mail:events:*`) and `+publish +psubscribe`: Valkey denies every channel to new ACL users by default,
+and without the rule the server stops at start-up with `subscribing to mail events in Valkey`. Every replica opens
+one extra connection for the subscription.
 
 Minimum versions: **Redis 4.0** without TLS and ACL users, **Redis 6.0** with TLS or an ACL user (ACL rules
 also apply to the commands the Lua scripts call). **Every Valkey release** (7.2 and later) supports everything

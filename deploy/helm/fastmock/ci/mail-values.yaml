@@ -1,0 +1,57 @@
+replicaCount: 1
+
+admin:
+  tokensSecret:
+    name: fastmock-admin-tokens
+
+storage:
+  mode: memory
+
+access:
+  spaces:
+    - name: billing
+      mailDomains: [billing.example.test, "*.billing.example.test"]
+    - name: payments
+      hosts: [psp.example.com]
+      mailDomains: [payments.example.test]
+  bindings:
+    - subject: token:ci-billing
+      role: editor
+      spaces: [billing]
+
+mail:
+  enabled: true
+  hostname: mail.example.test
+  ports:
+    smtp: 2525
+    smtps: 4650
+    imap: 1143
+    imaps: 1993
+    pop3: 1110
+    pop3s: 1995
+  tls:
+    existingSecret: fastmock-mail-tls
+  requireAuth: true
+  smtpUsers:
+    existingSecret: fastmock-mail-users
+  limits:
+    maxMessageBytes: 5242880
+    maxMessages: 500
+    maxBytes: 104857600
+    maxMailboxes: 2000
+    loginFailureLimit: 10
+    maxAge: 2d
+    maxConnections: 64
+    maxConnectionsPerIp: 16
+    idleTimeout: 1m
+    sessionTimeout: 15m
+  service:
+    annotations:
+      example.com/purpose: mail-capture
+
+networkPolicy:
+  enabled: true
+  mailFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: apps

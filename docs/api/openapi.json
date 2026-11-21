@@ -3489,6 +3489,2459 @@
         ]
       }
     },
+    "/__admin/mail/chaos": {
+      "get": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Mail chaos rules of a space",
+        "description": "The rules of one area (the space, or the global area) with their counters. Needs `mail:read` there.",
+        "operationId": "getMailChaos",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rules and counters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailChaosView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires mail:read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Replace the mail chaos rules of a space",
+        "description": "Stores the rules of one area and starts their counters from zero. Rules are evaluated in order at their stage; the first rule whose match holds and that fires (after `every`, `probability` and `times`) decides. Stages before routing (`connect`, `tls`, `ehlo`) use the global area's rules; `auth` and `mail` the space named like the AUTH user (else global); `rcpt` the space of the recipient; `data` the spaces the message is routed to. Rules with stage `provider` apply to the provider HTTP APIs. Needs `mail:write`.",
+        "operationId": "putMailChaos",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MailChaosBody"
+              },
+              "example": {
+                "rules": [
+                  {
+                    "id": "third-fails",
+                    "stage": "data",
+                    "every": 3,
+                    "times": 1,
+                    "action": {
+                      "reply": {
+                        "code": 451,
+                        "enhanced": "4.3.0",
+                        "text": "Try again later"
+                      }
+                    }
+                  },
+                  {
+                    "stage": "rcpt",
+                    "match": {
+                      "rcptTo": {
+                        "contains": "slow@"
+                      }
+                    },
+                    "action": {
+                      "delay": "2s"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Rules stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailChaosView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires mail:write",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Remove the mail chaos rules of a space",
+        "description": "Removes the rules of one area and their counters. Needs `mail:write`.",
+        "operationId": "clearMailChaos",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires mail:write",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/__admin/mail/inbound": {
+      "post": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Post an inbound message to provider webhooks",
+        "description": "Builds the provider's inbound payload for a message (SendGrid Inbound Parse multipart, Mailgun route form/JSON/MIME, Postmark inbound JSON, SES receipt in an SNS envelope) and queues it for the inbound webhooks of that provider in the space. The message is not stored. Send JSON (`InboundBody`), or the raw message with `Content-Type: message/rfc822` and `provider` in the query. SNS envelopes are not signed. Needs `mail:write`.",
+        "operationId": "sendMailInbound",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space whose inbound webhooks receive the message.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "description": "With `Content-Type: message/rfc822`: the provider (`ses`, `sendgrid`, `mailgun`, `postmark`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "webhookId",
+            "in": "query",
+            "description": "With `Content-Type: message/rfc822`: only this webhook.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InboundBody"
+              },
+              "example": {
+                "provider": "postmark",
+                "message": {
+                  "from": "Customer <customer@example.com>",
+                  "to": [
+                    "support@inbound.example.test"
+                  ],
+                  "subject": "Help",
+                  "text": "Hello"
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboundResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid message or provider",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires mail:write",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, unknown space, or no inbound webhook of the provider",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The message exceeds the mail message size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/__admin/mail/mailboxes": {
+      "get": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "IMAP/POP3 mailboxes",
+        "description": "Addresses that have a mailbox (created by the first message filed to them, or by setting a password) in `space`, or in every area the caller may read, sorted by area (the global area first) and address, paged with `cursor`.",
+        "operationId": "listMailboxes",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to list. Without it, every area the caller may read (`mail:read`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, 1 to 1000 (default 100).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`nextCursor` of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Mailboxes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailboxList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid limit or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or an unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/__admin/mail/mailboxes/{address}/password": {
+      "put": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Set a mailbox password",
+        "description": "Sets the IMAP/POP3 password of a mailbox in `space` (the global area, or the caller's only space when it is bound to spaces), creating the mailbox. Needs `mail:write` and `mail:read` there. The address is stored lowercase without its plus tag. Only a salted hash is stored. Records the audit event `mail.mailbox.password.set` (without the password).",
+        "operationId": "setMailboxPassword",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "description": "Mailbox address",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordBody"
+              },
+              "example": {
+                "password": "change-me"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Set"
+          },
+          "400": {
+            "description": "Invalid address or password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or an unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Remove a mailbox password",
+        "description": "Removes the password of a mailbox in `space`; logins then need a managed token with `mail:read`. Needs `mail:write` and `mail:read` there. Records the audit event `mail.mailbox.password.delete`.",
+        "operationId": "deleteMailboxPassword",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "description": "Mailbox address",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "400": {
+            "description": "Invalid address",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, an unknown space, or no password is set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/__admin/mail/messages": {
+      "get": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "List and search captured messages",
+        "description": "Summaries of the messages in the areas the caller may read (`mail:read`), newest first unless `order=oldest`, paged with `cursor`.",
+        "operationId": "listMailMessages",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to list. Without it, every area the caller may read (`mail:read`); the global area only for\ncallers holding `mail:read` globally.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "description": "Search: `from:` `to:` `cc:` `subject:` `has:attachment` `label:` `after:` `before:` (dates as\n`YYYY-MM-DD` or RFC 3339) and free text on the subject and text, values with spaces in double\nquotes; all terms must hold. At most 1024 bytes and 32 terms.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "from:billing subject:\"monthly invoice\" has:attachment"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, 1 to 500 (default 50).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`nextCursor` of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "description": "`newest` (default) or `oldest` first.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of messages",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query, limit, order or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or an unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Inject a message",
+        "description": "Stores a message in `space` as if it had been received (`source: inject`) and files it into the IMAP/POP3 INBOX of each recipient (or of `mailbox`). Send `application/json` (`ComposeRequest`: the message is built from the fields; header fields must be single printable lines, and `From`, `To`, `Cc`, `Subject` and the MIME structure headers cannot be set through `headers`) or `message/rfc822` (the raw message, envelope from `mailFrom`/`rcptTo` or its headers). Labels come from plus addresses and the `X-FastMock-Labels` header. The message may not exceed `FASTMOCK_MAIL_MAX_MESSAGE_BYTES`. Publishes `message.received` and records the audit event `mail.inject`.",
+        "operationId": "injectMailMessage",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space the message goes to. Without it, the global area, or the caller's only space when it is\nbound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mailbox",
+            "in": "query",
+            "description": "File the message into this address's INBOX instead of the INBOX of each recipient (for a JSON\nbody, its `mailbox` field wins).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mailFrom",
+            "in": "query",
+            "description": "`message/rfc822` only: the envelope sender (default: the `From` address).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rcptTo",
+            "in": "query",
+            "description": "`message/rfc822` only: envelope recipients, comma-separated (default: the `To`, `Cc` and `Bcc`\naddresses).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComposeRequest"
+              },
+              "example": {
+                "from": "Shop <shop@example.com>",
+                "to": [
+                  "alice@example.test"
+                ],
+                "subject": "Your code",
+                "text": "Your code is 123456",
+                "headers": {
+                  "X-FastMock-Labels": "otp"
+                }
+              }
+            },
+            "message/rfc822": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Injected"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid message: addresses, header fields (line breaks are refused), base64, or no recipients",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or an unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The message exceeds FASTMOCK_MAIL_MAX_MESSAGE_BYTES",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Neither application/json nor message/rfc822",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Delete messages",
+        "description": "Deletes the messages matching `query` (all without it) in `space`, or in every area where the caller holds `mail:delete`; publishes `message.deleted` per area and records the audit event `mail.messages.delete`.",
+        "operationId": "deleteMailMessages",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to clear. Without it, every area where the caller holds `mail:delete`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "description": "Only messages matching this search (syntax of `GET /mail/messages`); all without it.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted messages",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailDeleted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or an unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/__admin/mail/messages/wait": {
+      "post": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Wait for messages",
+        "description": "Long-polls until `count` messages matching `match` have arrived in `space` (or the areas the caller may read) and answers 200 with them, or 408 with what was seen when `timeoutMs` (at most 60 s) runs out. Messages stored before the request count only with `includeExisting`, `since` or `lookbackMs`. Works on any replica (events travel through Valkey with PostgreSQL storage; the store is also re-read every few seconds there, so a lost event delays a match but does not miss it). The wait stops when the client disconnects, and answers 503 when the server shuts down. Matchers use the stub string matcher syntax (`equalTo`, `contains`, `matches`, `caseInsensitive`, `and`/`or`/`not`, `absent`, ...).",
+        "operationId": "waitForMail",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitBody"
+              },
+              "example": {
+                "match": {
+                  "to": {
+                    "contains": "alice@"
+                  },
+                  "subject": {
+                    "contains": "Verify"
+                  }
+                },
+                "count": 1,
+                "timeoutMs": 10000
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The matching messages arrived",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid match, count or timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or an unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Timed out; `count` matching messages were seen",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitTimeout"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "More than 10000 stored messages to check",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Too many waits are reading stored messages, or the server is shutting down",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/__admin/mail/messages/{id}": {
+      "get": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "One message",
+        "description": "The envelope, summary, labels, source and provider fields of a stored message with its header fields in order, decoded addresses, the text body, whether it has an HTML body (served by `/html`, never inline here) and its attachments (`partId` for `/parts/{partId}`).",
+        "operationId": "getMailMessage",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Message id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailMessageView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, no such message, or one the caller cannot read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Delete a message",
+        "description": "Removes the message and its IMAP/POP3 mailbox entries, publishes `message.deleted` and records the audit event `mail.message.delete`.",
+        "operationId": "deleteMailMessage",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Message id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may read the message but lacks mail:delete",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or no such message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/__admin/mail/messages/{id}/codes": {
+      "get": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Codes in a message",
+        "description": "One-time codes found in the subject and the text body (HTML converted when there is no text part). The `regex` crate matches in linear time; 2 MiB of text are scanned.",
+        "operationId": "getMailMessageCodes",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Message id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space of the message.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pattern",
+            "in": "query",
+            "description": "Regular expression (Rust `regex` syntax, at most 256 bytes, compiled within a size limit); with a\ncapture group the first group is the code. Default `\\b\\d{4,8}\\b` (4 to 8 digit codes).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "code:\\s*([A-Z0-9]{6})"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Codes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailCodes"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The pattern is too long, invalid or too large once compiled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or no such message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/__admin/mail/messages/{id}/html": {
+      "get": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "The HTML body, sandboxed",
+        "description": "The HTML body with `cid:` references to parts of the message replaced by `data:` URIs (4 MiB of encoded parts in total; references beyond it stay `cid:`). Served with `Content-Security-Policy: sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'` (`img-src data: https:` with `images=allow`) and `X-Content-Type-Options: nosniff`, so scripts, forms, frames and requests are blocked. Show it in an `<iframe sandbox>` without `allow-scripts` and `allow-same-origin`.",
+        "operationId": "getMailMessageHtml",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Message id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space of the message.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "images",
+            "in": "query",
+            "description": "`block` (default): only `data:` images (inline `cid:` parts) load. `allow`: remote images over\nHTTPS load too (`img-src data: https:`), which tells their senders the message was opened.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "HTML body",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid `images` value",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, no such message, or the message has no HTML body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/__admin/mail/messages/{id}/labels": {
+      "put": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Replace the labels of a message",
+        "description": "Labels are stored lowercase, sorted and without duplicates. Records the audit event `mail.message.labels`.",
+        "operationId": "setMailMessageLabels",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Message id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LabelsBody"
+              },
+              "example": {
+                "labels": [
+                  "otp",
+                  "signup"
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The message with its new labels",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailEntry"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid label, or more than 32",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may read the message but lacks mail:write",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or no such message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/__admin/mail/messages/{id}/links": {
+      "get": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Links in a message",
+        "description": "Every http(s) URL of the text and HTML bodies, de-duplicated in order of appearance: HTML anchors (with their text) first, then URLs written in the text. At most 1000; 2 MiB of each body are scanned. FastMock never follows them.",
+        "operationId": "getMailMessageLinks",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Message id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Links",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailLinks"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or no such message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/__admin/mail/messages/{id}/parts/{partId}": {
+      "get": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Download a part",
+        "description": "The decoded content of an attachment or inline part (`partId` from the message's `attachments`), as a download (`Content-Disposition: attachment` with a sanitised file name), with its content type when well-formed (else `application/octet-stream`), `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox; default-src 'none'`.",
+        "operationId": "getMailMessagePart",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Message id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "partId",
+            "in": "path",
+            "description": "Part id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Part content",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, no such message or part",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/__admin/mail/messages/{id}/raw": {
+      "get": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "The message as received",
+        "description": "The raw MIME message (`message/rfc822`) as a download named `<id>.eml`.",
+        "operationId": "getMailMessageRaw",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Message id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Raw message",
+            "content": {
+              "message/rfc822": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or no such message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/__admin/mail/messages/{id}/text": {
+      "get": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "The text body",
+        "description": "The text body; for a message with only an HTML body, the HTML converted to text.",
+        "operationId": "getMailMessageText",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Message id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Text body",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, no such message, or the message has no body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/__admin/mail/messages/{id}/transcript": {
+      "get": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "The SMTP session of a message",
+        "operationId": "getMailMessageTranscript",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Message id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session transcript",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailTranscript"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or no such message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/__admin/mail/stream": {
+      "get": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Live mail events",
+        "description": "Server-sent events of `space` (or of every area the caller may read): `message.received` (data: `MailEvent` with the message's `entry`) and `message.deleted` (data: `MailEvent` with the deleted `ids`). Starts with the comment `: ready`, sends `: heartbeat` comments while idle, ends when the server shuts down, after `maxSeconds` (at most one hour; reconnect to go on) or when a check every 30 seconds finds that the caller may no longer read mail there (token revoked or expired, binding removed, session ended), and sends `resync` (data `{\"missed\": n}`) when this stream fell behind: list the messages again. A caller may hold 8 streams at once. Each event is checked against the caller's `mail:read` permission for its area. With PostgreSQL storage the stream also re-reads the last 5 minutes of messages every few seconds and sends `message.received` for those whose event was lost (`mailboxes` is empty then); each message is announced once.",
+        "operationId": "streamMailEvents",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to follow. Without it, every area the caller may read.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "heartbeatSeconds",
+            "in": "query",
+            "description": "Seconds between heartbeat comments (`: heartbeat`), 1 to 60 (default 15); keeps proxies from\nclosing an idle stream.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "maxSeconds",
+            "in": "query",
+            "description": "Seconds after which the server ends the stream, 1 to 3600 (default 3600); reconnect to go on.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Event stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailEvent"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid heartbeatSeconds or maxSeconds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or an unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The caller already holds 8 event streams",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Too many event streams are open",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/__admin/mail/verify": {
+      "post": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Verify how many messages were received",
+        "description": "Counts the stored messages of `space` (or of the areas the caller may read) matching `match`. Without `count`/`atLeast`/`atMost` the expectation is `atLeast: 1`. Answers 200 when it holds and 422 with the count and the closest non-matching messages (which matchers failed) when it does not.",
+        "operationId": "verifyMail",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MailVerifyBody"
+              },
+              "example": {
+                "match": {
+                  "to": {
+                    "equalTo": "alice@example.test"
+                  },
+                  "subject": {
+                    "contains": "Welcome"
+                  }
+                },
+                "count": 1
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Expectation met",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailVerifyResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid match or expectation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or an unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Expectation not met (`MailVerifyResult`), or more than 10000 stored messages to check (`ErrorBody`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailVerifyResult"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Too many verifications are reading stored messages",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/__admin/mail/webhooks": {
+      "get": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Provider webhooks of a space",
+        "description": "The webhooks, the expected provider API keys (SHA-256 digests) and the SendGrid verification key of one area. Signing keys are never returned and URL passwords are shown as `***`. Needs `mail:read`.",
+        "operationId": "getMailWebhooks",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailWebhooksView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires mail:read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Replace the provider webhooks of a space",
+        "description": "Stores the webhooks and expected API keys of one area. Events webhooks receive the provider's delivery events after each message sent through that provider's API in this area (`delivered`, or `bounce`, `complaint`, `deferred`, `dropped` for recipients with that local part); inbound webhooks receive the provider's inbound payload from `POST /__admin/mail/inbound`. Deliveries go through the callbacks outbox (retries, `/__admin/callbacks`). `signingKey` is write-only; a webhook `PUT` again with the same id without it (or with `***` as URL password) keeps the stored value. Signing keys and URL passwords are stored encrypted with the secret `mail-webhook-key` (required with PostgreSQL storage). The first `PUT` creates the space's SendGrid key pair. Needs `mail:write`.",
+        "operationId": "putMailWebhooks",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MailWebhooksBody"
+              },
+              "example": {
+                "webhooks": [
+                  {
+                    "id": "sg-events",
+                    "provider": "sendgrid",
+                    "kind": "events",
+                    "url": "https://app.example.com/hooks/sendgrid",
+                    "events": [
+                      "delivered",
+                      "bounce"
+                    ]
+                  },
+                  {
+                    "id": "mg-inbound",
+                    "provider": "mailgun",
+                    "kind": "inbound",
+                    "url": "https://app.example.com/hooks/mailgun",
+                    "signingKey": "key-example"
+                  }
+                ],
+                "apiKeys": {
+                  "sendgrid": [
+                    "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+                  ]
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailWebhooksView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires mail:write",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Remove the provider webhooks of a space",
+        "description": "Removes the webhooks, expected API keys and the SendGrid key pair of one area; queued deliveries stay in the outbox. Needs `mail:write`.",
+        "operationId": "clearMailWebhooks",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires mail:write",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/__admin/plugins": {
       "get": {
         "tags": [
@@ -7590,7 +10043,8 @@
         "required": [
           "name",
           "pathPrefixes",
-          "hosts"
+          "hosts",
+          "mailDomains"
         ],
         "properties": {
           "name": {
@@ -7615,6 +10069,16 @@
             "description": "Hosts the space's stubs must match (empty: no restriction).",
             "example": [
               "psp.example.com"
+            ]
+          },
+          "mailDomains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Mail domains whose captured messages go to the space (`*.domain` for subdomains).",
+            "example": [
+              "billing.example.com"
             ]
           }
         }
@@ -8241,6 +10705,43 @@
           "failed"
         ]
       },
+      "ChaosAction": {
+        "type": "object",
+        "description": "What a firing rule does: optionally wait (`delay`), then one of `reply`, `disconnect` or\n`providerError`, or continue normally after a delay alone.",
+        "properties": {
+          "reply": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ChaosReply"
+              }
+            ]
+          },
+          "delay": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`500ms`, `2s`, `1m` (at most 10 minutes).",
+            "example": "2s"
+          },
+          "disconnect": {
+            "type": "boolean",
+            "description": "Close the connection without a reply."
+          },
+          "providerError": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Stage `provider` only: the error the provider API answers with, in the provider's format\n(for example `MessageRejected`, `rateLimit`, `invalidKey`).",
+            "example": "rateLimit"
+          }
+        },
+        "additionalProperties": false
+      },
       "ChaosBody": {
         "type": "object",
         "required": [
@@ -8254,6 +10755,116 @@
             }
           }
         }
+      },
+      "ChaosCounters": {
+        "type": "object",
+        "description": "How often a rule matched and fired since its rules were stored.",
+        "required": [
+          "id",
+          "matched",
+          "fired"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "matched": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Events that met stage and match.",
+            "minimum": 0
+          },
+          "fired": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Times the rule fired (with `times`, attempts beyond it are counted too).",
+            "minimum": 0
+          }
+        }
+      },
+      "ChaosMatch": {
+        "type": "object",
+        "description": "Conditions of a rule, written with the stub string matchers; all given ones must hold. `rcptTo`\nholds when one recipient matches (at `rcpt`: the recipient of that command).",
+        "properties": {
+          "rcptTo": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StringMatcher",
+                "description": "Stages `rcpt`, `data`, `provider`."
+              }
+            ]
+          },
+          "mailFrom": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StringMatcher",
+                "description": "Stages `mail`, `rcpt`, `data`, `provider`."
+              }
+            ]
+          },
+          "authUser": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StringMatcher",
+                "description": "Stages `auth`, `mail`, `rcpt`, `data`; a session without AUTH has no user."
+              }
+            ]
+          },
+          "provider": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StringMatcher",
+                "description": "Stage `provider`: the provider name (`ses`, `sendgrid`, ...)."
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChaosReply": {
+        "type": "object",
+        "description": "An SMTP reply sent instead of the normal one.",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32",
+            "description": "400-599. 421 also closes the connection.",
+            "example": 451,
+            "minimum": 0
+          },
+          "enhanced": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Enhanced status code whose class matches the code; default `<class>.0.0`.",
+            "example": "4.3.0"
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Default `FastMock chaos rule <id>`.",
+            "example": "Try again later"
+          }
+        },
+        "additionalProperties": false
       },
       "ChaosRule": {
         "type": "object",
@@ -8344,6 +10955,20 @@
           }
         }
       },
+      "ChaosStage": {
+        "type": "string",
+        "description": "Where a rule applies.",
+        "enum": [
+          "connect",
+          "tls",
+          "ehlo",
+          "auth",
+          "mail",
+          "rcpt",
+          "data",
+          "provider"
+        ]
+      },
       "ChunkedDribbleDelay": {
         "type": "object",
         "required": [
@@ -8384,6 +11009,111 @@
             "type": "string"
           }
         }
+      },
+      "ComposeAttachment": {
+        "type": "object",
+        "required": [
+          "name",
+          "base64"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "invoice.pdf"
+          },
+          "contentType": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Default `application/octet-stream`.",
+            "example": "application/pdf"
+          },
+          "base64": {
+            "type": "string",
+            "description": "The content, base64."
+          },
+          "contentId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Makes the part inline, referenced from the HTML as `cid:<contentId>`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ComposeRequest": {
+        "type": "object",
+        "description": "A message to build (`POST /__admin/mail/messages` with JSON).",
+        "required": [
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "`addr@example.com` or `Name <addr@example.com>`.",
+            "example": "Shop <shop@example.com>"
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "alice@example.test"
+            ]
+          },
+          "cc": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "html": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "headers": {
+            "type": "object",
+            "description": "Further header fields; `Message-ID` and `Date` replace the generated ones.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ComposeAttachment"
+            }
+          },
+          "mailbox": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Mailbox (address) to file the message into instead of the recipients' INBOXes; read by the admin\nAPI, not part of the MIME message."
+          }
+        },
+        "additionalProperties": false
       },
       "ContractRun": {
         "type": "object",
@@ -8778,6 +11508,57 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "Envelope": {
+        "type": "object",
+        "description": "The SMTP envelope, or what stands for it for messages that did not come over SMTP.",
+        "required": [
+          "mailFrom",
+          "rcptTo"
+        ],
+        "properties": {
+          "mailFrom": {
+            "type": "string",
+            "description": "Reverse path of `MAIL FROM`; empty for the null sender `<>`.",
+            "example": "noreply@example.com"
+          },
+          "rcptTo": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Recipients of this stored copy. A message routed to several spaces lists here only the recipients\nof the copy's space.",
+            "example": [
+              "alice@billing.example.com"
+            ]
+          },
+          "helo": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "EHLO or HELO name."
+          },
+          "clientIp": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Address of the SMTP or HTTP client.",
+            "example": "198.51.100.7"
+          },
+          "tls": {
+            "type": "boolean",
+            "description": "The session used TLS (SMTPS, or STARTTLS before the message)."
+          },
+          "authUser": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "User name given with SMTP AUTH; never the password."
           }
         }
       },
@@ -9338,6 +12119,97 @@
           }
         }
       },
+      "InboundBody": {
+        "type": "object",
+        "description": "`POST /__admin/mail/inbound` with JSON: the provider and the message, built from fields\n(`message`) or given raw (`raw` text or `rawBase64`).",
+        "required": [
+          "provider"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "`ses`, `sendgrid`, `mailgun` or `postmark`.",
+            "example": "sendgrid"
+          },
+          "webhookId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Only this inbound webhook; default all inbound webhooks of the provider in the space."
+          },
+          "message": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ComposeRequest"
+              }
+            ]
+          },
+          "raw": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The MIME message as text."
+          },
+          "rawBase64": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The MIME message, base64."
+          },
+          "mailFrom": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Envelope sender; default the From address."
+          },
+          "rcptTo": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Envelope recipients; default the To, Cc and Bcc addresses."
+          }
+        },
+        "additionalProperties": false
+      },
+      "InboundDelivery": {
+        "type": "object",
+        "required": [
+          "webhookId",
+          "callbackId"
+        ],
+        "properties": {
+          "webhookId": {
+            "type": "string"
+          },
+          "callbackId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The callback job (`/__admin/callbacks`)."
+          }
+        }
+      },
+      "InboundResult": {
+        "type": "object",
+        "required": [
+          "deliveries"
+        ],
+        "properties": {
+          "deliveries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InboundDelivery"
+            }
+          }
+        }
+      },
       "InfoResponse": {
         "type": "object",
         "required": [
@@ -9395,6 +12267,21 @@
               "type": "string"
             },
             "description": "Stored stubs the caller can read that break the rules of their space (outside its path prefixes or\nhosts, or in a space the access file no longer defines), typically after the access file changed.\nThey stay stored; fix or delete them."
+          }
+        }
+      },
+      "Injected": {
+        "type": "object",
+        "required": [
+          "messages"
+        ],
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailEntry"
+            },
+            "description": "The stored message (one entry)."
           }
         }
       },
@@ -9633,6 +12520,26 @@
           }
         }
       },
+      "LabelsBody": {
+        "type": "object",
+        "required": [
+          "labels"
+        ],
+        "properties": {
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The new labels (replacing the current ones): 1 to 64 letters, digits or `- _ . : /` each,\ncase-insensitive, at most 32.",
+            "example": [
+              "otp",
+              "signup"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "LogNormalDelay": {
         "type": "object",
         "required": [
@@ -9668,6 +12575,1044 @@
               "null"
             ],
             "description": "The provider's end-session URL; the UI navigates there to end the IdP session too."
+          }
+        }
+      },
+      "MailAddress": {
+        "type": "object",
+        "description": "A mailbox of an address header.",
+        "required": [
+          "address"
+        ],
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "Billing"
+          },
+          "address": {
+            "type": "string",
+            "example": "billing@example.com"
+          }
+        }
+      },
+      "MailAttachment": {
+        "type": "object",
+        "description": "An attachment or inline part.",
+        "required": [
+          "partId",
+          "contentType",
+          "size",
+          "inline"
+        ],
+        "properties": {
+          "partId": {
+            "type": "string",
+            "description": "For `/__admin/mail/messages/{id}/parts/{partId}`.",
+            "example": "3"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "invoice.pdf"
+          },
+          "contentType": {
+            "type": "string",
+            "example": "application/pdf"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Decoded size in bytes.",
+            "minimum": 0
+          },
+          "contentId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`Content-ID` without angle brackets, for `cid:` references."
+          },
+          "inline": {
+            "type": "boolean",
+            "description": "Marked to be shown inside the message."
+          }
+        }
+      },
+      "MailChaosBody": {
+        "type": "object",
+        "required": [
+          "rules"
+        ],
+        "properties": {
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailChaosRule"
+            },
+            "description": "Evaluated in order; the first rule that fires wins. At most 100."
+          }
+        }
+      },
+      "MailChaosRule": {
+        "type": "object",
+        "description": "A mail chaos rule.",
+        "required": [
+          "stage",
+          "action"
+        ],
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Letters, digits, `.`, `_`, `-` (at most 64); `rule-<n>` (its position) when left out.",
+            "example": "third-message-fails"
+          },
+          "stage": {
+            "$ref": "#/components/schemas/ChaosStage"
+          },
+          "match": {
+            "$ref": "#/components/schemas/ChaosMatch"
+          },
+          "action": {
+            "$ref": "#/components/schemas/ChaosAction"
+          },
+          "times": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Fire at most this many times.",
+            "minimum": 0
+          },
+          "every": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Fire only on every n-th matching event (the n-th, 2n-th, ...).",
+            "minimum": 0
+          },
+          "probability": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Chance to fire, 0-100 (percent)."
+          },
+          "seed": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "With `probability`: decide from the seed and the number of the matching event instead of at\nrandom, so a run repeats.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "MailChaosView": {
+        "type": "object",
+        "required": [
+          "rules",
+          "counters"
+        ],
+        "properties": {
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The space; absent for the global area.",
+            "example": "billing"
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailChaosRule"
+            },
+            "description": "The rules, each with its id."
+          },
+          "counters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChaosCounters"
+            },
+            "description": "How often each rule matched and fired since the rules were stored, over all replicas."
+          }
+        }
+      },
+      "MailCodes": {
+        "type": "object",
+        "required": [
+          "codes",
+          "pattern"
+        ],
+        "properties": {
+          "codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Distinct codes in order of appearance (subject first, then the text), at most 100."
+          },
+          "pattern": {
+            "type": "string",
+            "description": "The pattern used.",
+            "example": "\\b\\d{4,8}\\b"
+          }
+        }
+      },
+      "MailDeleted": {
+        "type": "object",
+        "required": [
+          "deleted",
+          "ids"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        }
+      },
+      "MailDetail": {
+        "type": "object",
+        "description": "The parsed parts of `GET /__admin/mail/messages/{id}`; the envelope, labels and source come from the\nstored message.",
+        "required": [
+          "headers",
+          "from",
+          "to",
+          "cc",
+          "bcc",
+          "replyTo",
+          "hasHtml",
+          "attachments"
+        ],
+        "properties": {
+          "headers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailHeader"
+            },
+            "description": "Header fields of the message in order."
+          },
+          "from": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailAddress"
+            }
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailAddress"
+            }
+          },
+          "cc": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailAddress"
+            }
+          },
+          "bcc": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailAddress"
+            }
+          },
+          "replyTo": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailAddress"
+            }
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "messageId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The text body (HTML converted when the message has no text part)."
+          },
+          "hasHtml": {
+            "type": "boolean",
+            "description": "The message has an HTML body, served by `/html`."
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailAttachment"
+            }
+          },
+          "unparsed": {
+            "type": "boolean",
+            "description": "The message could not be parsed; only the raw form is available."
+          }
+        }
+      },
+      "MailEntry": {
+        "type": "object",
+        "description": "A message as lists, searches and events show it.",
+        "required": [
+          "id",
+          "receivedAt",
+          "source",
+          "envelope",
+          "summary",
+          "labels"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "billing"
+          },
+          "receivedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "source": {
+            "$ref": "#/components/schemas/MailSource"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "sendgrid"
+          },
+          "envelope": {
+            "$ref": "#/components/schemas/Envelope"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/MailSummary"
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "providerExtras": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProviderExtras"
+              }
+            ]
+          }
+        }
+      },
+      "MailEvent": {
+        "type": "object",
+        "description": "A change to the stored mail of one area (a space or the global area). It travels between replicas as\nJSON.",
+        "required": [
+          "type",
+          "ids"
+        ],
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/MailEventKind"
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "The message received, or the messages deleted."
+          },
+          "mailboxes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`message.received`: mailbox addresses whose INBOX got the message (IMAP IDLE)."
+          },
+          "entry": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/MailEntry",
+                "description": "`message.received`: the message's summary."
+              }
+            ]
+          }
+        }
+      },
+      "MailEventKind": {
+        "type": "string",
+        "enum": [
+          "message.received",
+          "message.deleted"
+        ]
+      },
+      "MailEventName": {
+        "type": "string",
+        "description": "A delivery event. FastMock emits `delivered` unless the recipient's local part (without `+tag`) is\n`bounce`, `complaint`, `deferred` or `dropped`; `open` and `click` are accepted in the configuration\nbut not emitted.",
+        "enum": [
+          "delivered",
+          "bounce",
+          "complaint",
+          "deferred",
+          "dropped",
+          "open",
+          "click"
+        ]
+      },
+      "MailHeader": {
+        "type": "object",
+        "description": "A header field as written in the message, its value decoded (RFC 2047) and unfolded.",
+        "required": [
+          "name",
+          "value"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Subject"
+          },
+          "value": {
+            "type": "string",
+            "example": "Your invoice"
+          }
+        }
+      },
+      "MailLink": {
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "example": "https://example.com/verify?t=1"
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Text of the HTML anchor, when the link comes from one.",
+            "example": "Verify your address"
+          }
+        }
+      },
+      "MailLinks": {
+        "type": "object",
+        "required": [
+          "links"
+        ],
+        "properties": {
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailLink"
+            }
+          }
+        }
+      },
+      "MailList": {
+        "type": "object",
+        "required": [
+          "messages"
+        ],
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailEntry"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` to read the next page; absent on the last page."
+          }
+        }
+      },
+      "MailMatch": {
+        "type": "object",
+        "description": "Conditions on a message; all given ones must hold. Address fields hold when one address matches\n(its address alone or `Name <address>`); multi-value matchers (`includes`, `hasExactly`) see the\nbare addresses. `to` covers the `To` header and the envelope recipients, so Bcc recipients match.",
+        "properties": {
+          "from": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StringMatcher"
+              }
+            ]
+          },
+          "to": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StringMatcher"
+              }
+            ]
+          },
+          "cc": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StringMatcher"
+              }
+            ]
+          },
+          "subject": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StringMatcher"
+              }
+            ]
+          },
+          "text": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StringMatcher",
+                "description": "The text body (HTML converted when there is no text part)."
+              }
+            ]
+          },
+          "html": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StringMatcher",
+                "description": "The HTML body as written."
+              }
+            ]
+          },
+          "headers": {
+            "type": "object",
+            "description": "Header fields by name (case-insensitive), as for stub request headers; a field present several\ntimes matches when one occurrence matches.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StringMatcher"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "hasAttachment": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "attachmentName": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StringMatcher",
+                "description": "One attachment's file name."
+              }
+            ]
+          },
+          "label": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StringMatcher",
+                "description": "One label."
+              }
+            ]
+          },
+          "source": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StringMatcher",
+                "description": "`smtp`, `provider` or `inject`."
+              }
+            ]
+          },
+          "provider": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StringMatcher"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "MailMessageView": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/MailEntry"
+          },
+          {
+            "$ref": "#/components/schemas/MailDetail"
+          },
+          {
+            "type": "object",
+            "required": [
+              "urls"
+            ],
+            "properties": {
+              "urls": {
+                "$ref": "#/components/schemas/MessageUrls"
+              }
+            }
+          }
+        ],
+        "description": "A stored message with its parsed headers, bodies and parts."
+      },
+      "MailNearMiss": {
+        "type": "object",
+        "description": "A stored message that fails some matchers.",
+        "required": [
+          "id",
+          "receivedAt",
+          "from",
+          "to",
+          "score",
+          "mismatches"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "receivedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailAddress"
+            }
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "score": {
+            "type": "number",
+            "format": "double",
+            "description": "Share of the matchers that matched, 0..1."
+          },
+          "mismatches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The matchers that failed: `from`, `subject`, `headers.x-mailer`, `hasAttachment`, ...",
+            "example": [
+              "subject"
+            ]
+          }
+        }
+      },
+      "MailSource": {
+        "type": "string",
+        "description": "How a message reached FastMock.",
+        "enum": [
+          "smtp",
+          "provider",
+          "inject"
+        ]
+      },
+      "MailSummary": {
+        "type": "object",
+        "description": "What lists and searches show of a message, parsed once when it is stored.",
+        "required": [
+          "size"
+        ],
+        "properties": {
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "Your invoice"
+          },
+          "from": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailAddress"
+            }
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailAddress"
+            }
+          },
+          "cc": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailAddress"
+            }
+          },
+          "date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The `Date` header."
+          },
+          "messageId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `Message-ID` header, without angle brackets."
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Size of the raw message in bytes.",
+            "minimum": 0
+          },
+          "hasAttachments": {
+            "type": "boolean"
+          },
+          "attachmentNames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "File names of the attachments, in document order."
+          },
+          "hasText": {
+            "type": "boolean"
+          },
+          "hasHtml": {
+            "type": "boolean"
+          },
+          "preview": {
+            "type": "string",
+            "description": "The start of the text (or of the HTML converted to text), at most 200 characters."
+          },
+          "unparsed": {
+            "type": "boolean",
+            "description": "The message could not be parsed as MIME (too large, or no header block); it is kept raw."
+          }
+        }
+      },
+      "MailTranscript": {
+        "type": "object",
+        "required": [
+          "transcript"
+        ],
+        "properties": {
+          "transcript": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TranscriptLine"
+            },
+            "description": "SMTP commands (credentials masked, DATA replaced by its size) and replies; empty for messages\nthat did not come over SMTP."
+          }
+        }
+      },
+      "MailVerifyBody": {
+        "type": "object",
+        "properties": {
+          "match": {
+            "$ref": "#/components/schemas/MailMatch",
+            "description": "Conditions on the message; all given ones must hold. Empty: any message."
+          },
+          "count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Exactly this many matching messages.",
+            "minimum": 0
+          },
+          "atLeast": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "atMost": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "since": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Only messages received at or after this time."
+          }
+        },
+        "additionalProperties": false
+      },
+      "MailVerifyResult": {
+        "type": "object",
+        "required": [
+          "verified",
+          "count",
+          "expected",
+          "details",
+          "nearMisses"
+        ],
+        "properties": {
+          "verified": {
+            "type": "boolean"
+          },
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Matching messages found.",
+            "minimum": 0
+          },
+          "expected": {
+            "type": "string",
+            "description": "The expectation, e.g. `exactly 2`, `at least 1`, `between 1 and 3`."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "details": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "nearMisses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailNearMiss"
+            },
+            "description": "The closest non-matching messages, best first (only on failure, at most 5)."
+          }
+        }
+      },
+      "MailWebhooksBody": {
+        "type": "object",
+        "description": "Body of `PUT /__admin/mail/webhooks`.",
+        "properties": {
+          "webhooks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WebhookInput"
+            },
+            "description": "At most 20."
+          },
+          "apiKeys": {
+            "type": "object",
+            "description": "Expected API keys per provider (`ses`, `sendgrid`, `mailgun`, `postmark`, `resend`, `brevo`) as\nlowercase SHA-256 hex digests, at most 20 each. A provider listed here accepts only these keys in\nthis space (SES: the access key id); others accept any key.",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "example": {
+              "sendgrid": [
+                "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "MailWebhooksView": {
+        "type": "object",
+        "required": [
+          "webhooks",
+          "apiKeys"
+        ],
+        "properties": {
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The space; absent for the global area.",
+            "example": "billing"
+          },
+          "webhooks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WebhookView"
+            }
+          },
+          "apiKeys": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "sendgridPublicKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The space's SendGrid verification key (base64 DER `SubjectPublicKeyInfo`), for the application's\nEvent Webhook and Inbound Parse verification settings. Absent until webhooks are first stored."
+          }
+        }
+      },
+      "MailboxList": {
+        "type": "object",
+        "required": [
+          "mailboxes"
+        ],
+        "properties": {
+          "mailboxes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailboxView"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` to read the next page; absent on the last page."
+          }
+        }
+      },
+      "MailboxView": {
+        "type": "object",
+        "required": [
+          "address",
+          "folders",
+          "hasPassword"
+        ],
+        "properties": {
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "billing"
+          },
+          "address": {
+            "type": "string",
+            "description": "Lowercase mailbox address (plus tags removed); the IMAP/POP3 user name.",
+            "example": "alice@billing.example.test"
+          },
+          "folders": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "INBOX"
+            ]
+          },
+          "hasPassword": {
+            "type": "boolean",
+            "description": "A password was set with `PUT /mail/mailboxes/{address}/password` (it is never returned)."
           }
         }
       },
@@ -9737,6 +13682,50 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "MessageUrls": {
+        "type": "object",
+        "description": "Admin API paths of a message's renditions.",
+        "required": [
+          "raw",
+          "transcript",
+          "links",
+          "codes",
+          "parts"
+        ],
+        "properties": {
+          "raw": {
+            "type": "string",
+            "example": "/__admin/mail/messages/01936b4e-8c1a-7d2e-9f00-1a2b3c4d5e6f/raw"
+          },
+          "html": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Present when the message has an HTML body; render it only in a sandboxed `<iframe>`."
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "transcript": {
+            "type": "string"
+          },
+          "links": {
+            "type": "string"
+          },
+          "codes": {
+            "type": "string"
+          },
+          "parts": {
+            "type": "string",
+            "description": "Append the `partId` of an attachment.",
+            "example": "/__admin/mail/messages/01936b4e-8c1a-7d2e-9f00-1a2b3c4d5e6f/parts/"
           }
         }
       },
@@ -10102,6 +14091,20 @@
           "IDS"
         ]
       },
+      "PasswordBody": {
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string",
+            "description": "1 to 1024 bytes; stored as a salted PBKDF2-HMAC-SHA256 hash, never returned or logged.",
+            "example": "change-me"
+          }
+        },
+        "additionalProperties": false
+      },
       "PermissionsView": {
         "type": "object",
         "required": [
@@ -10255,6 +14258,43 @@
           "user",
           "anonymous"
         ]
+      },
+      "ProviderExtras": {
+        "type": "object",
+        "description": "Fields of a message sent through a provider API.",
+        "properties": {
+          "providerMessageId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Id the provider API answered with (SES `MessageId`, SendGrid `X-Message-Id`, ...)."
+          },
+          "templateId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "templateData": {},
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "testMode": {
+            "type": "boolean",
+            "description": "Sent in the provider's sandbox or test mode."
+          }
+        }
       },
       "ProxyDef": {
         "type": "object",
@@ -11293,6 +15333,7 @@
           "name",
           "pathPrefixes",
           "hosts",
+          "mailDomains",
           "permissions"
         ],
         "properties": {
@@ -11319,6 +15360,16 @@
               "type": "string"
             },
             "description": "Hosts the space's stubs must match (empty: no restriction)."
+          },
+          "mailDomains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Mail domains whose captured messages go to the space (`*.domain` for subdomains).",
+            "example": [
+              "billing.example.com"
+            ]
           },
           "permissions": {
             "type": "array",
@@ -11876,6 +15927,36 @@
           "microcks"
         ]
       },
+      "TranscriptDirection": {
+        "type": "string",
+        "description": "Who wrote a transcript line.",
+        "enum": [
+          "client",
+          "server"
+        ]
+      },
+      "TranscriptLine": {
+        "type": "object",
+        "description": "One line of an SMTP session: a command (credentials masked, DATA replaced by its size) or a reply.",
+        "required": [
+          "at",
+          "direction",
+          "text"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "direction": {
+            "$ref": "#/components/schemas/TranscriptDirection"
+          },
+          "text": {
+            "type": "string",
+            "example": "MAIL FROM:<noreply@example.com> SIZE=1024"
+          }
+        }
+      },
       "TriggerResult": {
         "type": "object",
         "required": [
@@ -12082,7 +16163,109 @@
             "items": {
               "type": "string"
             },
-            "description": "Compiled-in optional features and capabilities."
+            "description": "Compiled-in optional features and capabilities; with the mail module enabled also `mail`, and\n`mail.imap`, `mail.pop3` (when their listeners are on) and `mail.providers`."
+          }
+        }
+      },
+      "WaitBody": {
+        "type": "object",
+        "properties": {
+          "match": {
+            "$ref": "#/components/schemas/MailMatch",
+            "description": "Conditions on the message; all given ones must hold. Empty: any message."
+          },
+          "count": {
+            "type": "integer",
+            "description": "Matching messages to wait for, 1 to 500 (default 1).",
+            "minimum": 0
+          },
+          "timeoutMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How long to wait, 0 to 60000 ms (default 10000).",
+            "minimum": 0
+          },
+          "includeExisting": {
+            "type": "boolean",
+            "description": "Count matching messages already stored, whenever they arrived."
+          },
+          "since": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Count stored messages received at or after this time too (ignored with `includeExisting`)."
+          },
+          "lookbackMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Without `since`: count stored messages received up to this many milliseconds before the request\n(default 0: only messages arriving from now on).",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "WaitResult": {
+        "type": "object",
+        "required": [
+          "messages",
+          "count"
+        ],
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailEntry"
+            },
+            "description": "The first `count` matching messages, oldest first."
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "WaitTimeout": {
+        "type": "object",
+        "required": [
+          "error",
+          "details",
+          "count",
+          "expected",
+          "messages"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "example": "timed out after 10000 ms: 0 of 1 matching messages received"
+          },
+          "details": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "count": {
+            "type": "integer",
+            "description": "Matching messages seen before the time ran out.",
+            "minimum": 0
+          },
+          "expected": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailEntry"
+            }
           }
         }
       },
@@ -12125,6 +16308,123 @@
           }
         },
         "additionalProperties": false
+      },
+      "WebhookInput": {
+        "type": "object",
+        "description": "A webhook as `PUT /__admin/mail/webhooks` takes it.",
+        "required": [
+          "provider",
+          "kind",
+          "url"
+        ],
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Letters, digits, `.`, `_`, `-` (at most 64); `webhook-<n>` when left out. A webhook keeps its\nstored `signingKey` and URL password when `PUT` again with the same id without them.",
+            "example": "sendgrid-events"
+          },
+          "provider": {
+            "type": "string",
+            "description": "`ses`, `sendgrid`, `mailgun` or `postmark`.",
+            "example": "sendgrid"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/WebhookKind"
+          },
+          "url": {
+            "type": "string",
+            "description": "`http(s)://` URL of the application; user info (`https://user:pass@host/`) is sent as basic\nauthentication (Postmark style). Checked against the callback egress policy.",
+            "example": "https://app.example.com/hooks/sendgrid"
+          },
+          "signingKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Write-only. SendGrid: a P-256 private key (PKCS#8, PEM or base64 DER) to sign with instead of the\nspace's generated key. Mailgun: the HTTP webhook signing key for the HMAC. `\"\"` removes a stored\nkey."
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailEventName"
+            },
+            "description": "Events to send (`kind: events`); all when empty."
+          },
+          "raw": {
+            "type": "boolean",
+            "description": "SendGrid inbound: post the full MIME message (`email` field) instead of parsed fields."
+          },
+          "topicArn": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "SES: the SNS topic ARN in notifications (default `arn:aws:sns:us-east-1:123456789012:fastmock-ses`)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "WebhookKind": {
+        "type": "string",
+        "enum": [
+          "events",
+          "inbound"
+        ]
+      },
+      "WebhookView": {
+        "type": "object",
+        "required": [
+          "id",
+          "provider",
+          "kind",
+          "url",
+          "events",
+          "hasSigningKey"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/WebhookKind"
+          },
+          "url": {
+            "type": "string",
+            "description": "The URL with its password replaced by `***`."
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailEventName"
+            }
+          },
+          "hasSigningKey": {
+            "type": "boolean",
+            "description": "A signing key is stored (never shown)."
+          },
+          "publicKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "SendGrid: the public key that verifies this webhook's signatures (base64 DER)."
+          },
+          "raw": {
+            "type": "boolean"
+          },
+          "topicArn": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       },
       "WireMockImport": {
         "type": "object",
@@ -12276,6 +16576,10 @@
     {
       "name": "tokens",
       "description": "Managed admin tokens with expiry and revocation"
+    },
+    {
+      "name": "mail",
+      "description": "Captured mail: search and read messages, wait for and verify them, inject and delete them, live events, IMAP/POP3 mailbox passwords"
     },
     {
       "name": "services"

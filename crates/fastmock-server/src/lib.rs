@@ -12,6 +12,14 @@ pub mod files;
 pub mod grpc;
 pub mod imports;
 pub mod journal_api;
+pub mod mail_api;
+pub mod mail_chaos_api;
+pub mod mail_listeners;
+pub mod mail_providers;
+pub mod mail_setup;
+pub mod mail_webhook_secrets;
+pub mod mail_webhooks;
+pub mod mail_webhooks_api;
 pub mod oidc;
 pub mod openapi_doc;
 pub mod outbox;
@@ -141,6 +149,7 @@ pub async fn build(
         None => access::AccessConfig::default(),
     };
     engine.set_ownership(access.ownership());
+    let mail = mail_setup::build(&cfg, &access, pg.as_ref()).await?;
     let problems = spaces::ownership_problems(&access, engine.snapshot().iter().map(|c| &c.stub));
     for p in problems.iter().take(50) {
         tracing::warn!(stub_id = %p.stub_id, space = %p.space, reason = %p.reason, "stored stub breaks the rules of its space; fix or delete it");
@@ -224,7 +233,7 @@ pub async fn build(
     tokio::spawn(journal_writer(stores.journal.clone(), journal_rx));
     let app = AppState {
         cfg: cfg.clone(),
-        stores,
+        stores: stores.clone(),
         engine,
         auth,
         redactor,
@@ -245,6 +254,11 @@ pub async fn build(
         scans: Arc::new(tokio::sync::Semaphore::new(cfg.journal_scan_concurrency)),
         tokens: Arc::new(tokens::TokenService::new(token_store, cfg.token_cache_ttl)),
         oidc,
+        mail_chaos: mail.as_ref().map(|_| mail_chaos_api::build(&stores)),
+        mail_sealer: mail
+            .as_ref()
+            .map(|_| Arc::new(mail_webhook_secrets::Sealer::from_config(&cfg))),
+        mail,
     };
     if let Err(e) = app.grpc.reload(&app).await {
         tracing::warn!(error = %e, "loading gRPC descriptors failed");
@@ -252,6 +266,9 @@ pub async fn build(
     let mut data: Router<AppState> = Router::new();
     for (mount, r) in data_routes {
         data = data.nest_service(&mount, r);
+    }
+    if app.mail.is_some() {
+        data = data.nest_service(mail_providers::PREFIX, mail_providers::service(app.clone()));
     }
     let data = data
         .fallback(dataplane::stub_handler)
@@ -313,6 +330,13 @@ pub async fn maintenance(app: AppState, mut shutdown: watch::Receiver<bool>) {
                 tracing::error!(error = %e, "audit retention failed");
             }
             tokens::maintain(&app).await;
+            if let Some(mail) = &app.mail {
+                match mail.sweep(Utc::now()).await {
+                    Ok(n) if n > 0 => tracing::info!(deleted = n, "mail retention applied"),
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(error = %e, "mail retention failed"),
+                }
+            }
         }
     }
 }
@@ -388,9 +412,15 @@ pub async fn serve() -> anyhow::Result<()> {
     }
     let hrt = app.cfg.header_read_timeout;
     let drain = Duration::from_secs(20);
+    let mail_listeners = mail_listeners::start(&app, rx.clone()).await?;
     tokio::join!(
         tls::serve(data_listener, data, tls_cfg, rx.clone(), hrt, drain),
         tls::serve(admin_listener, admin, None, rx.clone(), hrt, drain),
+        async {
+            if let Some(m) = mail_listeners {
+                m.wait().await;
+            }
+        },
     );
     let _ = tokio::time::timeout(Duration::from_secs(15), async {
         let _ = worker.await;

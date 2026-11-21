@@ -73,6 +73,198 @@ spec:
                 items:
                   type: string
                 type: array
+              mail:
+                description: 'Mail capture: SMTP, IMAP and POP3 listeners with their Service.'
+                nullable: true
+                properties:
+                  allowPlaintextAuth:
+                    default: false
+                    description: Offer AUTH/LOGIN before TLS even when a certificate is set.
+                    type: boolean
+                  enabled:
+                    default: false
+                    type: boolean
+                  hostname:
+                    description: Name in the SMTP greeting, default `localhost`.
+                    nullable: true
+                    pattern: ^[A-Za-z0-9.-]{1,253}$
+                    type: string
+                  limits:
+                    description: Mail limits; unset values keep the server defaults.
+                    nullable: true
+                    properties:
+                      idleTimeout:
+                        description: '`FASTMOCK_MAIL_IDLE_TIMEOUT`, default `30s`.'
+                        nullable: true
+                        pattern: ^[0-9]+(ms|s|m|h|d)?$
+                        type: string
+                      imapIdleTimeout:
+                        description: '`FASTMOCK_MAIL_IMAP_IDLE_TIMEOUT`, default `30m`.'
+                        nullable: true
+                        pattern: ^[0-9]+(ms|s|m|h|d)?$
+                        type: string
+                      loginFailureLimit:
+                        description: |-
+                          `FASTMOCK_MAIL_LOGIN_FAILURE_LIMIT`: failed logins per client address or user name within 5
+                          minutes before logins are refused for a while, default 5; `0` turns this off.
+                        format: int64
+                        minimum: 0.0
+                        nullable: true
+                        type: integer
+                      maxAge:
+                        description: '`FASTMOCK_MAIL_MAX_AGE`, default `7d`.'
+                        nullable: true
+                        pattern: ^[0-9]+(ms|s|m|h|d)?$
+                        type: string
+                      maxBytes:
+                        description: |-
+                          `FASTMOCK_MAIL_MAX_BYTES` of raw messages per space, default 268435456 (256 MiB); at least the
+                          message size limit.
+                        format: int64
+                        minimum: 1.0
+                        nullable: true
+                        type: integer
+                      maxConnections:
+                        description: '`FASTMOCK_MAIL_MAX_CONNECTIONS` over all mail listeners, default 256.'
+                        format: int64
+                        minimum: 1.0
+                        nullable: true
+                        type: integer
+                      maxConnectionsPerIp:
+                        description: '`FASTMOCK_MAIL_MAX_CONNECTIONS_PER_IP`, default 32.'
+                        format: int64
+                        minimum: 1.0
+                        nullable: true
+                        type: integer
+                      maxMailboxes:
+                        description: '`FASTMOCK_MAIL_MAX_MAILBOXES` per space, default 10000.'
+                        format: int64
+                        minimum: 1.0
+                        nullable: true
+                        type: integer
+                      maxMessageBytes:
+                        description: '`FASTMOCK_MAIL_MAX_MESSAGE_BYTES`, default 10 MiB.'
+                        format: int64
+                        maximum: 536870912.0
+                        minimum: 1.0
+                        nullable: true
+                        type: integer
+                      maxMessages:
+                        description: '`FASTMOCK_MAIL_MAX_MESSAGES` per space, default 1000.'
+                        format: int64
+                        minimum: 1.0
+                        nullable: true
+                        type: integer
+                      sessionTimeout:
+                        description: '`FASTMOCK_MAIL_SESSION_TIMEOUT`, default `10m`.'
+                        nullable: true
+                        pattern: ^[0-9]+(ms|s|m|h|d)?$
+                        type: string
+                    type: object
+                  ports:
+                    default:
+                      smtp: 2525
+                      smtps: 0
+                      imap: 0
+                      imaps: 0
+                      pop3: 0
+                      pop3s: 0
+                    description: Mail listener ports; `0` turns a listener off. Every port also goes into the `<name>-mail` Service.
+                    properties:
+                      imap:
+                        default: 0
+                        description: IMAP (with STARTTLS when a certificate is set).
+                        format: int32
+                        maximum: 65535.0
+                        minimum: 0.0
+                        type: integer
+                      imaps:
+                        default: 0
+                        description: IMAP with implicit TLS; needs `tlsSecretRef`.
+                        format: int32
+                        maximum: 65535.0
+                        minimum: 0.0
+                        type: integer
+                      pop3:
+                        default: 0
+                        description: POP3 (with STLS when a certificate is set).
+                        format: int32
+                        maximum: 65535.0
+                        minimum: 0.0
+                        type: integer
+                      pop3s:
+                        default: 0
+                        description: POP3 with implicit TLS; needs `tlsSecretRef`.
+                        format: int32
+                        maximum: 65535.0
+                        minimum: 0.0
+                        type: integer
+                      smtp:
+                        default: 2525
+                        description: SMTP (with STARTTLS when a certificate is set), default 2525.
+                        format: int32
+                        maximum: 65535.0
+                        minimum: 0.0
+                        type: integer
+                      smtps:
+                        default: 0
+                        description: SMTP with implicit TLS; needs `tlsSecretRef`.
+                        format: int32
+                        maximum: 65535.0
+                        minimum: 0.0
+                        type: integer
+                    type: object
+                  requireAuth:
+                    default: false
+                    description: SMTP clients must authenticate (a user of `usersSecretRef` or a managed token with `mail:write`).
+                    type: boolean
+                  service:
+                    description: The `<name>-mail` Service.
+                    nullable: true
+                    properties:
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        type: object
+                      type:
+                        description: '`ClusterIP` (default), `NodePort` or `LoadBalancer`.'
+                        nullable: true
+                        pattern: ^(ClusterIP|NodePort|LoadBalancer)$
+                        type: string
+                    type: object
+                  tlsSecretRef:
+                    description: Certificate for SMTPS/IMAPS/POP3S and STARTTLS/STLS, mounted read-only.
+                    nullable: true
+                    properties:
+                      certKey:
+                        default: tls.crt
+                        description: Key of the PEM certificate chain, default `tls.crt`.
+                        type: string
+                      keyKey:
+                        default: tls.key
+                        description: Key of the PEM private key, default `tls.key`.
+                        type: string
+                      name:
+                        description: 'Secret in the namespace of the FastMock; it must carry the label `fastmock.franshub.io/allow-mount: "true"`.'
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  usersSecretRef:
+                    description: SMTP users, passed as `FASTMOCK_MAIL_SMTP_USERS`.
+                    nullable: true
+                    properties:
+                      key:
+                        default: users
+                        description: Key holding `user:sha256hex` entries (comma or newline separated), default `users`.
+                        type: string
+                      name:
+                        description: 'Secret in the namespace of the FastMock; it must carry the label `fastmock.franshub.io/allow-mount: "true"`.'
+                        type: string
+                    required:
+                    - name
+                    type: object
+                type: object
               oidc:
                 description: SSO sign-in (OIDC) for the UI and bearer JWTs for the admin API.
                 nullable: true

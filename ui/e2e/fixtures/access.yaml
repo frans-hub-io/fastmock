@@ -1,6 +1,6 @@
 roles:
   - name: team-lead
-    permissions: [stubs:*, imports:run, journal:read, files:read, callbacks:read, state:read, contracts:read, tokens:read, tokens:write]
+    permissions: [stubs:*, imports:run, journal:read, files:read, callbacks:read, state:read, contracts:read, mail:read, tokens:read, tokens:write]
 spaces:
   - name: payments
     description: Payment provider mocks

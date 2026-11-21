@@ -28,7 +28,7 @@ pub fn csp(connect_src: &str, style_nonce: Option<&str>) -> String {
         None => "'self'".to_string(),
     };
     format!(
-        "default-src 'none'; script-src 'self'; style-src {style}; img-src 'self' data:; font-src 'self' data:; \
+        "default-src 'none'; script-src 'self'; style-src {style}; img-src 'self' data: https:; font-src 'self' data:; \
          connect-src {connect_src}; manifest-src 'self'; \
          base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'"
     )
@@ -171,6 +171,9 @@ async fn ui_config(State(app): State<AppState>, headers: HeaderMap) -> Response 
     if let Some(u) = app.cfg.ui_data_plane_origins.first() {
         body["dataPlaneUrl"] = json!(u);
     }
+    for (k, v) in mail_config(app.cfg.mail.as_ref()) {
+        body[k] = v;
+    }
     respond(
         StatusCode::OK,
         "application/json",
@@ -178,6 +181,31 @@ async fn ui_config(State(app): State<AppState>, headers: HeaderMap) -> Response 
         &connect_sources(&app.cfg, &headers),
         Cow::Owned(body.to_string().into_bytes()),
     )
+}
+
+/// The mail fields of `/ui/config.json`: listener ports (`null` when off), the configured
+/// `FASTMOCK_MAIL_HOSTNAME` (`null` while it is the default) and whether IMAP, POP3 and SMTP accept
+/// logins before TLS (`null` without mail).
+fn mail_config(mail: Option<&fastmock_mail::MailConfig>) -> [(&'static str, serde_json::Value); 8] {
+    let l = mail.map(|m| &m.listeners);
+    let port = |a: Option<std::net::SocketAddr>| json!(a.map(|a| a.port()));
+    let default_host = fastmock_mail::MailConfig::default().hostname;
+    [
+        ("mailSmtpPort", port(l.and_then(|l| l.smtp))),
+        ("mailSmtpsPort", port(l.and_then(|l| l.smtps))),
+        ("mailImapPort", port(l.and_then(|l| l.imap))),
+        ("mailImapsPort", port(l.and_then(|l| l.imaps))),
+        ("mailPop3Port", port(l.and_then(|l| l.pop3))),
+        ("mailPop3sPort", port(l.and_then(|l| l.pop3s))),
+        (
+            "mailHostname",
+            json!(mail.map(|m| &m.hostname).filter(|h| **h != default_host)),
+        ),
+        (
+            "mailPlaintextAuth",
+            json!(mail.map(|m| m.tls.is_none() || m.allow_plaintext_auth)),
+        ),
+    ]
 }
 
 async fn ui_path(
@@ -242,6 +270,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mail_config_lists_ports_host_and_login_rule() {
+        let v = |m: Option<&fastmock_mail::MailConfig>| {
+            serde_json::Value::Object(
+                mail_config(m)
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v))
+                    .collect(),
+            )
+        };
+        let off = v(None);
+        for k in [
+            "mailSmtpPort",
+            "mailSmtpsPort",
+            "mailImapPort",
+            "mailImapsPort",
+            "mailPop3Port",
+            "mailPop3sPort",
+            "mailHostname",
+            "mailPlaintextAuth",
+        ] {
+            assert_eq!(off[k], serde_json::Value::Null, "{k}: {off}");
+        }
+
+        let mut m = fastmock_mail::MailConfig::default();
+        let plain = v(Some(&m));
+        assert_eq!(plain["mailSmtpPort"], 2525);
+        assert_eq!(plain["mailImapsPort"], serde_json::Value::Null);
+        assert_eq!(
+            plain["mailHostname"],
+            serde_json::Value::Null,
+            "default host"
+        );
+        assert_eq!(plain["mailPlaintextAuth"], true, "no TLS: plain logins");
+
+        m.hostname = "mail.example.test".into();
+        m.listeners.smtps = Some("0.0.0.0:4650".parse().unwrap());
+        m.listeners.imap = Some("0.0.0.0:1143".parse().unwrap());
+        m.listeners.imaps = Some("0.0.0.0:1993".parse().unwrap());
+        m.listeners.pop3s = Some("0.0.0.0:1995".parse().unwrap());
+        m.tls = Some(fastmock_mail::config::MailTlsFiles {
+            cert_file: "cert.pem".into(),
+            key_file: "key.pem".into(),
+            from_server: false,
+        });
+        let tls = v(Some(&m));
+        assert_eq!(tls["mailSmtpsPort"], 4650);
+        assert_eq!(tls["mailImapPort"], 1143);
+        assert_eq!(tls["mailImapsPort"], 1993);
+        assert_eq!(tls["mailPop3Port"], serde_json::Value::Null);
+        assert_eq!(tls["mailPop3sPort"], 1995);
+        assert_eq!(tls["mailHostname"], "mail.example.test");
+        assert_eq!(tls["mailPlaintextAuth"], false, "TLS first");
+        m.allow_plaintext_auth = true;
+        assert_eq!(v(Some(&m))["mailPlaintextAuth"], true);
+    }
+
+    #[test]
     fn hashed_assets_are_immutable_and_the_rest_revalidates() {
         assert_eq!(cache_control("assets/index-abc123.js"), IMMUTABLE);
         assert_eq!(cache_control("favicon.svg"), NO_CACHE);
@@ -279,6 +364,13 @@ mod tests {
         assert!(p.contains("connect-src 'self' http://mock.example.com:8080;"));
         assert!(!p.contains('*'));
         assert!(p.contains("frame-ancestors 'none'"));
+    }
+
+    #[test]
+    fn csp_allows_remote_images_for_opted_in_mail_views() {
+        let p = csp("'self'", None);
+        assert!(p.contains("img-src 'self' data: https:;"), "{p}");
+        assert!(!p.contains("img-src 'self' data: http:"), "{p}");
     }
 
     #[test]

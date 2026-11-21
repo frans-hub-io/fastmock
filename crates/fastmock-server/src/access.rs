@@ -35,6 +35,9 @@ pub enum Permission {
     TokensRead,
     TokensWrite,
     AccessRead,
+    MailRead,
+    MailWrite,
+    MailDelete,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,7 +48,7 @@ pub enum ScopeKind {
 
 use Permission::*;
 
-pub const ALL_PERMISSIONS: [Permission; 28] = [
+pub const ALL_PERMISSIONS: [Permission; 31] = [
     StubsRead,
     StubsWrite,
     StubsPurge,
@@ -74,6 +77,9 @@ pub const ALL_PERMISSIONS: [Permission; 28] = [
     TokensRead,
     TokensWrite,
     AccessRead,
+    MailRead,
+    MailWrite,
+    MailDelete,
 ];
 
 impl Permission {
@@ -107,6 +113,9 @@ impl Permission {
             TokensRead => "tokens:read",
             TokensWrite => "tokens:write",
             AccessRead => "access:read",
+            MailRead => "mail:read",
+            MailWrite => "mail:write",
+            MailDelete => "mail:delete",
         }
     }
 
@@ -211,6 +220,7 @@ pub fn viewer_permissions() -> PermSet {
         GrpcRead,
         ContractsRead,
         InfoRead,
+        MailRead,
     ])
 }
 
@@ -227,6 +237,8 @@ pub fn editor_permissions() -> PermSet {
         GrpcWrite,
         ContractsDetails,
         ContractsWrite,
+        MailWrite,
+        MailDelete,
     ]))
 }
 
@@ -271,6 +283,8 @@ pub struct SpaceDef {
     pub path_prefixes: Vec<String>,
     /// Hosts the space's stubs must match (empty: no restriction).
     pub hosts: Vec<String>,
+    /// Mail domains whose messages go to the space (lowercase; `*.domain` for subdomains).
+    pub mail_domains: Vec<String>,
 }
 
 /// The `spaces` entry that stands for every space of the access file, current and future.
@@ -402,6 +416,8 @@ struct SpaceDoc {
     path_prefixes: Vec<String>,
     #[serde(default)]
     hosts: Vec<String>,
+    #[serde(default)]
+    mail_domains: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -553,6 +569,14 @@ impl AccessConfig {
                 .map(|h| check_host(h))
                 .collect::<anyhow::Result<Vec<_>>>()
                 .map_err(|e| anyhow::anyhow!("{at}: {e}"))?;
+            let mut mail_domains: Vec<String> = Vec::new();
+            for d in &s.mail_domains {
+                let d = fastmock_mail::routing::check_domain(d)
+                    .map_err(|e| anyhow::anyhow!("{at}: {e}"))?;
+                if !mail_domains.contains(&d) {
+                    mail_domains.push(d);
+                }
+            }
             cfg.spaces.insert(
                 s.name.clone(),
                 SpaceDef {
@@ -560,6 +584,7 @@ impl AccessConfig {
                     description: s.description,
                     path_prefixes: s.path_prefixes,
                     hosts,
+                    mail_domains,
                 },
             );
         }
@@ -648,6 +673,21 @@ impl AccessConfig {
                         );
                     }
                 }
+                for da in &a.mail_domains {
+                    if let Some(db) = b
+                        .mail_domains
+                        .iter()
+                        .find(|db| fastmock_mail::routing::domains_overlap(da, db))
+                    {
+                        bail!(
+                            "space {} and space {} overlap: mail domain `{da}` of space {} and `{db}` of space {}; each mail domain belongs to one space",
+                            a.name,
+                            b.name,
+                            a.name,
+                            b.name
+                        );
+                    }
+                }
             }
         }
         Ok(())
@@ -665,6 +705,17 @@ impl AccessConfig {
             }
         }
         o
+    }
+
+    /// The mail domains owned by spaces, for routing captured mail.
+    pub fn mail_domains(&self) -> fastmock_mail::MailDomains {
+        let mut d = fastmock_mail::MailDomains::default();
+        for s in self.spaces.values() {
+            for m in &s.mail_domains {
+                d.add(&s.name, m);
+            }
+        }
+        d
     }
 
     /// Permissions of a built-in or custom role.
@@ -944,6 +995,18 @@ pub fn route_rule(method: &Method, full_path: &str) -> Option<(Permission, Scope
         ("GET", ["tokens", "self"]) | ("DELETE", ["tokens", _]) => global(InfoRead),
         ("GET", ["tokens", _]) => natural(TokensRead),
         ("GET", ["access"]) => global(AccessRead),
+        ("GET", ["mail", "messages"]) => natural(MailRead),
+        ("POST", ["mail", "messages"]) => natural(MailWrite),
+        ("DELETE", ["mail", "messages"]) => natural(MailDelete),
+        ("POST", ["mail", "messages", "wait"]) | ("POST", ["mail", "verify"]) => natural(MailRead),
+        ("GET", ["mail", "messages", _, ..]) => natural(MailRead),
+        ("DELETE", ["mail", "messages", _]) => natural(MailDelete),
+        ("PUT", ["mail", "messages", _, "labels"]) => natural(MailWrite),
+        ("GET", ["mail", "stream"]) => natural(MailRead),
+        ("GET", ["mail", "chaos" | "webhooks" | "mailboxes"]) => natural(MailRead),
+        ("PUT" | "DELETE", ["mail", "chaos" | "webhooks"]) => natural(MailWrite),
+        ("PUT" | "DELETE", ["mail", "mailboxes", _, "password"]) => natural(MailWrite),
+        ("POST", ["mail", "inbound"]) => natural(MailWrite),
         ("GET", ["plugins", _, ..]) => global(StubsRead),
         (_, ["plugins", _, ..]) => global(StubsWrite),
         _ => None,
@@ -1378,6 +1441,119 @@ bindings:
         assert_eq!(route_rule(&Method::OPTIONS, "/__admin/stubs"), None);
     }
 
+    #[test]
+    fn mail_permissions_follow_the_design() {
+        let v = viewer_permissions();
+        let e = editor_permissions();
+        assert!(v.contains(MailRead) && !v.contains(MailWrite) && !v.contains(MailDelete));
+        assert!(e.contains(MailRead) && e.contains(MailWrite) && e.contains(MailDelete));
+        assert!(PermSet::all().contains(MailDelete));
+        for p in [MailRead, MailWrite, MailDelete] {
+            assert_eq!(p.scope(), ScopeKind::Space, "{p}");
+            assert_eq!(p.resource(), "mail");
+        }
+        assert_eq!(minimal_role(MailRead), "viewer");
+        assert_eq!(minimal_role(MailDelete), "editor");
+        let c = AccessConfig::parse(
+            "roles: [{name: mailer, permissions: [\"mail:*\"]}]\nspaces: [{name: billing}]\nbindings: [{subject: 'token:m', role: mailer, spaces: [billing]}]",
+        )
+        .unwrap();
+        assert_eq!(
+            c.role("mailer").unwrap().names(),
+            vec!["mail:read", "mail:write", "mail:delete"]
+        );
+        let g = Grants::from_bindings(&c.bindings_for(PrincipalKind::Token, "m", &[]), &c);
+        assert!(g.allowed(MailDelete, Some("billing")));
+        assert!(!g.allowed(MailRead, None));
+    }
+
+    #[test]
+    fn mail_route_rules() {
+        let r = |m: Method, p: &str| route_rule(&m, p);
+        let space = |p: Permission| Some((p, ScopeKind::Space));
+        for (m, p, want) in [
+            (Method::GET, "/__admin/mail/messages", MailRead),
+            (Method::POST, "/__admin/mail/messages", MailWrite),
+            (Method::DELETE, "/__admin/mail/messages", MailDelete),
+            (Method::POST, "/__admin/mail/messages/wait", MailRead),
+            (Method::POST, "/__admin/mail/verify", MailRead),
+            (Method::GET, "/__admin/mail/messages/x", MailRead),
+            (Method::HEAD, "/__admin/mail/messages/x/raw", MailRead),
+            (Method::GET, "/__admin/mail/messages/x/parts/3", MailRead),
+            (Method::GET, "/__admin/mail/messages/x/codes", MailRead),
+            (Method::DELETE, "/__admin/mail/messages/x", MailDelete),
+            (Method::PUT, "/__admin/mail/messages/x/labels", MailWrite),
+            (Method::GET, "/__admin/mail/stream", MailRead),
+            (Method::GET, "/__admin/mail/chaos", MailRead),
+            (Method::PUT, "/__admin/mail/chaos", MailWrite),
+            (Method::DELETE, "/__admin/mail/webhooks", MailWrite),
+            (Method::GET, "/__admin/mail/mailboxes", MailRead),
+            (
+                Method::PUT,
+                "/__admin/mail/mailboxes/a@example.test/password",
+                MailWrite,
+            ),
+            (
+                Method::DELETE,
+                "/__admin/mail/mailboxes/a@example.test/password",
+                MailWrite,
+            ),
+            (Method::POST, "/__admin/mail/inbound", MailWrite),
+        ] {
+            assert_eq!(r(m.clone(), p), space(want), "{m} {p}");
+        }
+        assert_eq!(r(Method::PUT, "/__admin/mail/messages/x"), None);
+        assert_eq!(r(Method::POST, "/__admin/mail/messages/x/raw"), None);
+        assert_eq!(r(Method::GET, "/__admin/mail"), None);
+    }
+
+    #[test]
+    fn mail_domains_parse_route_and_must_not_overlap() {
+        let c = AccessConfig::parse(
+            r#"
+spaces:
+  - name: billing
+    mailDomains: [Billing.Example.TEST., "*.invoices.example.test", billing.example.test]
+  - name: crm
+    mailDomains: [crm.example.test, invoices.example.test]
+  - name: plain
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            c.space("billing").unwrap().mail_domains,
+            vec!["billing.example.test", "*.invoices.example.test"]
+        );
+        assert!(c.space("plain").unwrap().mail_domains.is_empty());
+        let d = c.mail_domains();
+        assert_eq!(d.owner("billing.example.test"), Some("billing"));
+        assert_eq!(d.owner("eu.invoices.example.test"), Some("billing"));
+        assert_eq!(d.owner("invoices.example.test"), Some("crm"));
+        assert_eq!(d.owner("other.example"), None);
+        let e = AccessConfig::parse(
+            "spaces: [{name: a, mailDomains: [\"*.example.test\"]}, {name: b, mailDomains: [x.example.test]}]",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            e.contains("space a and space b overlap: mail domain `*.example.test` of space a and `x.example.test` of space b"),
+            "{e}"
+        );
+        let e = AccessConfig::parse("spaces: [{name: a, mailDomains: [\"bad domain\"]}]")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("spaces[0] (a)") && e.contains("bad domain"),
+            "{e}"
+        );
+        assert!(
+            AccessConfig::parse(
+                "spaces: [{name: a, mailDomains: [a.example.test]}, {name: b, mailDomains: [\"*.a.example.test\"]}]"
+            )
+            .is_ok()
+        );
+    }
+
     const ALL_SPACES_DOC: &str = r#"
 roles:
   - name: tester
@@ -1605,7 +1781,7 @@ bindings:
 
     /// `(method, path)` of every `.route(…)` in the sources of the core admin routers.
     fn router_routes() -> Vec<(String, String)> {
-        const SOURCES: [&str; 10] = [
+        const SOURCES: [&str; 11] = [
             include_str!("admin.rs"),
             include_str!("admin_core.rs"),
             include_str!("asyncmock.rs"),
@@ -1613,6 +1789,7 @@ bindings:
             include_str!("files.rs"),
             include_str!("imports.rs"),
             include_str!("journal_api.rs"),
+            include_str!("mail_api.rs"),
             include_str!("services.rs"),
             include_str!("snapshot.rs"),
             include_str!("tokens.rs"),

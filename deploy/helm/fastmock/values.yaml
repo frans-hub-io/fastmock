@@ -100,6 +100,44 @@ messaging:
       partitions: 1
       replication: -1
 
+mail:
+  enabled: false
+  hostname: ""
+  ports:
+    smtp: 2525
+    smtps: ""
+    imap: ""
+    imaps: ""
+    pop3: ""
+    pop3s: ""
+  tls:
+    existingSecret: ""
+    certKey: tls.crt
+    keyKey: tls.key
+  requireAuth: false
+  smtpUsers:
+    existingSecret: ""
+    key: users
+  allowPlaintextAuth: false
+  limits:
+    maxMessageBytes: 10485760
+    maxRecipients: 100
+    maxMessages: 1000
+    maxBytes: 268435456
+    maxMailboxes: 10000
+    maxAge: 7d
+    maxConnections: 256
+    maxConnectionsPerIp: 32
+    maxAuthFailures: 3
+    loginFailureLimit: 5
+    idleTimeout: 30s
+    dataTimeout: 60s
+    sessionTimeout: 10m
+    imapIdleTimeout: 30m
+  service:
+    type: ClusterIP
+    annotations: {}
+
 shutdownDelay: 5s
 terminationGracePeriodSeconds: 45
 
@@ -315,6 +353,7 @@ networkPolicy:
   enabled: false
   adminFrom: []
   dataFrom: []
+  mailFrom: []
   storage: true
   egress:
     enabled: false

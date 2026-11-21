@@ -655,6 +655,408 @@
           "legendFormat": "{{kind}} {{result}}"
         }
       ]
+    },
+    {
+      "id": 18,
+      "type": "stat",
+      "title": "Mail messages/s",
+      "gridPos": {
+        "x": 0,
+        "y": 52,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(fastmock_mail_messages_total{namespace=~\"$namespace\"}[$__rate_interval]))"
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "type": "stat",
+      "title": "Mail connections",
+      "gridPos": {
+        "x": 6,
+        "y": 52,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(fastmock_mail_connections{namespace=~\"$namespace\"})"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "stat",
+      "title": "Mail rejected/s",
+      "gridPos": {
+        "x": 12,
+        "y": 52,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(fastmock_mail_rejected_total{namespace=~\"$namespace\"}[$__rate_interval]))"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "type": "stat",
+      "title": "Stored mail",
+      "gridPos": {
+        "x": 18,
+        "y": 52,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(max by (space) (fastmock_mail_messages{namespace=~\"$namespace\"}))"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Mail messages by source",
+      "gridPos": {
+        "x": 0,
+        "y": 56,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (source, provider) (rate(fastmock_mail_messages_total{namespace=~\"$namespace\"}[$__rate_interval]))",
+          "legendFormat": "{{source}} {{provider}}"
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Mail sessions by result",
+      "gridPos": {
+        "x": 12,
+        "y": 56,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (result) (rate(fastmock_mail_smtp_sessions_total{namespace=~\"$namespace\"}[$__rate_interval]))",
+          "legendFormat": "smtp {{result}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (result) (rate(fastmock_mail_imap_sessions_total{namespace=~\"$namespace\"}[$__rate_interval]))",
+          "legendFormat": "imap {{result}}"
+        },
+        {
+          "refId": "C",
+          "expr": "sum by (result) (rate(fastmock_mail_pop3_sessions_total{namespace=~\"$namespace\"}[$__rate_interval]))",
+          "legendFormat": "pop3 {{result}}"
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Mail rejections and chaos",
+      "gridPos": {
+        "x": 0,
+        "y": 64,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (reason) (rate(fastmock_mail_rejected_total{namespace=~\"$namespace\"}[$__rate_interval]))",
+          "legendFormat": "rejected {{reason}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (stage) (rate(fastmock_mail_chaos_injections_total{namespace=~\"$namespace\"}[$__rate_interval]))",
+          "legendFormat": "chaos {{stage}}"
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "type": "timeseries",
+      "title": "Mail provider APIs and webhooks",
+      "gridPos": {
+        "x": 12,
+        "y": 64,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (provider, status_class) (rate(fastmock_mail_provider_requests_total{namespace=~\"$namespace\"}[$__rate_interval]))",
+          "legendFormat": "{{provider}} {{status_class}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (provider, kind) (rate(fastmock_mail_webhooks_total{namespace=~\"$namespace\"}[$__rate_interval]))",
+          "legendFormat": "webhook {{provider}} {{kind}}"
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "Stored mail by space",
+      "gridPos": {
+        "x": 0,
+        "y": 72,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (space) (fastmock_mail_messages{namespace=~\"$namespace\"})",
+          "legendFormat": "{{space}}"
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "type": "timeseries",
+      "title": "Mail storage by space",
+      "gridPos": {
+        "x": 12,
+        "y": 72,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (space) (fastmock_mail_storage_bytes{namespace=~\"$namespace\"})",
+          "legendFormat": "{{space}}"
+        }
+      ]
+    },
+    {
+      "id": 28,
+      "type": "timeseries",
+      "title": "Mail waits, streams and events",
+      "gridPos": {
+        "x": 0,
+        "y": 80,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(fastmock_mail_waits_active{namespace=~\"$namespace\"})",
+          "legendFormat": "waits active"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(fastmock_mail_streams_active{namespace=~\"$namespace\"})",
+          "legendFormat": "streams active"
+        },
+        {
+          "refId": "C",
+          "expr": "sum by (result) (rate(fastmock_mail_waits_total{namespace=~\"$namespace\"}[$__rate_interval]))",
+          "legendFormat": "waits {{result}}/s"
+        },
+        {
+          "refId": "D",
+          "expr": "sum(rate(fastmock_mail_events_reconnects_total{namespace=~\"$namespace\"}[$__rate_interval]))",
+          "legendFormat": "event reconnects/s"
+        }
+      ]
     }
   ]
 }

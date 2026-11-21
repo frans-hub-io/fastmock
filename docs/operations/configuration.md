@@ -246,6 +246,56 @@ certificate without its key, an unreadable or empty PEM file, or SASL or TLS set
 use stop the server with an error naming the variable. See [Kafka messages](../guide/kafka.md) and
 [Secure connections](../guide/kafka.md#secure-connections).
 
+## Mail
+
+Mail capture is off by default. While `FASTMOCK_MAIL_ENABLED` is not `true`, every other `FASTMOCK_MAIL_*`
+variable is ignored. See [Mail](../guide/mail.md).
+
+| Variable | Type | Default | Effect |
+|---|---|---|---|
+| `FASTMOCK_MAIL_ENABLED` | boolean | `false` | Turns on the SMTP, IMAP and POP3 listeners, the provider APIs under `/__mail/` on the data port and the `/__admin/mail/*` routes. |
+| `FASTMOCK_MAIL_SMTP_LISTEN` | address | `0.0.0.0:2525` | SMTP with STARTTLS when a certificate is configured. An empty value turns it off. |
+| `FASTMOCK_MAIL_SMTPS_LISTEN` | address | off | SMTP over implicit TLS, for example `0.0.0.0:4650`. Needs a certificate. |
+| `FASTMOCK_MAIL_IMAP_LISTEN` | address | off | IMAP with STARTTLS when a certificate is configured, for example `0.0.0.0:1143`. |
+| `FASTMOCK_MAIL_IMAPS_LISTEN` | address | off | IMAP over implicit TLS, for example `0.0.0.0:1993`. Needs a certificate. |
+| `FASTMOCK_MAIL_POP3_LISTEN` | address | off | POP3 with STLS when a certificate is configured, for example `0.0.0.0:1110`. |
+| `FASTMOCK_MAIL_POP3S_LISTEN` | address | off | POP3 over implicit TLS, for example `0.0.0.0:1995`. Needs a certificate. |
+| `FASTMOCK_MAIL_TLS_CERT_FILE` | path | `FASTMOCK_TLS_CERT_FILE` | PEM certificate chain for STARTTLS, STLS and the implicit-TLS listeners. Set together with `FASTMOCK_MAIL_TLS_KEY_FILE`; when neither is set, the data-plane certificate is used if there is one. |
+| `FASTMOCK_MAIL_TLS_KEY_FILE` | path | `FASTMOCK_TLS_KEY_FILE` | PEM private key of that certificate. |
+| `FASTMOCK_MAIL_HOSTNAME` | string | `localhost` | Host name in the SMTP greeting, the `EHLO` reply and the POP3 greeting. |
+| `FASTMOCK_MAIL_ALLOW_PLAINTEXT_AUTH` | boolean | `false` | Offer SMTP AUTH and accept IMAP and POP3 logins before TLS even when a certificate is configured. Without a certificate, plaintext logins are always possible. |
+| `FASTMOCK_MAIL_SMTP_REQUIRE_AUTH` | boolean | `false` | SMTP clients must authenticate with a user of `FASTMOCK_MAIL_SMTP_USERS` or a managed token holding `mail:write`; otherwise any credentials, and none, are accepted. |
+| `FASTMOCK_MAIL_SMTP_USERS` | list | none | SMTP users as `user:hash` entries. Use a salted `pbkdf2-sha256$<iterations>$<salt>$<hash>` value (recommended; the format of mailbox passwords); the hex SHA-256 of the password (`fastmock hash-token`) is still accepted. A malformed or duplicate entry is a start-up error. |
+| `FASTMOCK_MAIL_MAX_MESSAGE_BYTES` | bytes | `10485760` (10 MiB) | Largest message, advertised as SMTP `SIZE`; also the limit of injected and provider messages and of IMAP `APPEND`. At most 512 MiB. |
+| `FASTMOCK_MAIL_MAX_RECIPIENTS` | integer | `100` | Recipients per SMTP message. |
+| `FASTMOCK_MAIL_MAX_LINE_BYTES` | integer | `4096` | Longest command line (SMTP, IMAP, POP3); at least 512. |
+| `FASTMOCK_MAIL_IDLE_TIMEOUT` | duration | `30s` | Wait for the next command, including the first one after the greeting. |
+| `FASTMOCK_MAIL_DATA_TIMEOUT` | duration | `60s` | Wait for the next chunk of SMTP `DATA` or `BDAT`. |
+| `FASTMOCK_MAIL_SESSION_TIMEOUT` | duration | `10m` | Longest SMTP, IMAP or POP3 session. Time spent in IMAP `IDLE` does not count. Mail clients reconnect when it ends. |
+| `FASTMOCK_MAIL_IMAP_IDLE_TIMEOUT` | duration | `30m` | Longest IMAP `IDLE` command. |
+| `FASTMOCK_MAIL_MAX_CONNECTIONS` | integer | `256` | Open connections over all mail listeners per replica. |
+| `FASTMOCK_MAIL_MAX_CONNECTIONS_PER_IP` | integer | `32` | Open mail connections per client address; at most `FASTMOCK_MAIL_MAX_CONNECTIONS`. |
+| `FASTMOCK_MAIL_MAX_AUTH_FAILURES` | integer | `3` | Failed logins per connection before it is closed. |
+| `FASTMOCK_MAIL_LOGIN_FAILURE_LIMIT` | integer | `5` | Failed SMTP AUTH, IMAP and POP3 logins per client address and per user name within 5 minutes; after that, logins from that address or for that user are refused without checking the password for 30 seconds, doubling with each further failure up to 15 minutes. Counted across connections, and across replicas through Valkey with `FASTMOCK_STORAGE=postgres`. `0` turns this off. |
+| `FASTMOCK_MAIL_MAX_MESSAGES` | integer | `1000` | Messages kept per space (and in the global area); the oldest are removed first. |
+| `FASTMOCK_MAIL_MAX_BYTES` | bytes | `268435456` (256 MiB) | Raw message bytes kept per space (and in the global area); the oldest messages are removed first, the newest one always stays. At least `FASTMOCK_MAIL_MAX_MESSAGE_BYTES`. |
+| `FASTMOCK_MAIL_MAX_MAILBOXES` | integer | `10000` | IMAP/POP3 mailboxes per space (and in the global area). Messages to further addresses are still stored and shown in the admin API, but get no mailbox; the first refusal per space is logged. Mailboxes without messages and without a password are removed by the retention sweep. |
+| `FASTMOCK_MAIL_MAX_AGE` | duration | `7d` | Messages older than this are removed (checked once a minute). |
+
+Checked at start-up: mail listeners must use ports of their own (not each other's, `FASTMOCK_LISTEN` or
+`FASTMOCK_ADMIN_LISTEN`); implicit-TLS listeners need a certificate; the certificate and key must be readable;
+limits and timeouts must be greater than zero. The error names the variable, for example
+`FASTMOCK_MAIL_SMTPS_LISTEN needs a certificate: set FASTMOCK_MAIL_TLS_CERT_FILE and FASTMOCK_MAIL_TLS_KEY_FILE (or FASTMOCK_TLS_CERT_FILE and FASTMOCK_TLS_KEY_FILE)`.
+With `FASTMOCK_STORAGE=postgres`, messages are stored in PostgreSQL and mail events use Valkey publish/subscribe
+([Database](database.md#valkey-and-redis)).
+
+Provider webhook signing keys and URL passwords are stored encrypted with the secret `mail-webhook-key`
+(`FASTMOCK_SECRET_MAIL_WEBHOOK_KEY`, or the file `mail-webhook-key` in `FASTMOCK_SECRETS_DIR`): use a long random
+value, for example the output of `openssl rand -base64 32`, and the same value on every replica. With
+`FASTMOCK_STORAGE=postgres` it is required for webhooks that have a signing key or a URL password; with memory
+storage a random key of the process is used when it is not set. Changing the key makes stored webhook secrets
+unreadable: set them again with `PUT /__admin/mail/webhooks`.
+
 ## Plugins
 
 | Variable | Type | Default | Effect |

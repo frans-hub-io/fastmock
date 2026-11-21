@@ -125,5 +125,22 @@ mod tests {
             oidc["properties"]["clientSecretRef"]["properties"]["key"]["default"],
             "client-secret"
         );
+        let mail = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]
+            ["mail"]["properties"];
+        assert_eq!(mail["ports"]["properties"]["smtp"]["default"], 2525);
+        assert_eq!(mail["ports"]["properties"]["imap"]["maximum"], 65535.0);
+        assert_eq!(
+            mail["tlsSecretRef"]["properties"]["certKey"]["default"],
+            "tls.crt"
+        );
+        assert_eq!(
+            mail["usersSecretRef"]["properties"]["key"]["default"],
+            "users"
+        );
+        let spec: crate::crd::FastMockSpec =
+            serde_json::from_value(serde_json::json!({"mail": {"enabled": true}})).unwrap();
+        let m = spec.mail.unwrap();
+        assert_eq!((m.ports.smtp, m.ports.imap), (2525, 0));
+        assert!(!m.require_auth);
     }
 }

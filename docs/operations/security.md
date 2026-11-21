@@ -16,6 +16,7 @@ security model and how to harden a deployment. To report a vulnerability, see [S
 - [Redaction](#redaction)
 - [Template sandbox](#template-sandbox)
 - [Resource limits](#resource-limits)
+- [Mail](#mail)
 - [Audit log](#audit-log)
 - [Containers and Kubernetes](#containers-and-kubernetes)
 - [Supply chain](#supply-chain)
@@ -220,7 +221,9 @@ inline or third-party scripts) and renders data as text, never as HTML. Publish 
   ```
 
   Add `+select` when the URL selects a database other than `0`. The key pattern must match
-  `FASTMOCK_VALKEY_PREFIX`.
+  `FASTMOCK_VALKEY_PREFIX`. With [mail](../guide/mail.md) enabled, also allow its event channel and the
+  publish/subscribe commands: `&fastmock:mail:events:* +publish +psubscribe` (the channel pattern follows the
+  prefix too; new Valkey users have no channel access by default).
 - Mount CA files, client certificates and keys from Secrets; FastMock reads them once at start-up, so a rotated
   certificate needs a restart.
 
@@ -317,11 +320,51 @@ Templates are Handlebars with a fixed set of helpers:
 | Kafka publications in flight | 256 per replica | fixed |
 | proxied response body | 16 MiB | fixed |
 | recorded stubs per session | 1,000 | `FASTMOCK_RECORDING_MAX_STUBS` |
+| mail message size / recipients | 10 MiB / 100 | `FASTMOCK_MAIL_MAX_MESSAGE_BYTES`, `FASTMOCK_MAIL_MAX_RECIPIENTS` |
+| mail connections / per client address | 256 / 32 | `FASTMOCK_MAIL_MAX_CONNECTIONS`, `FASTMOCK_MAIL_MAX_CONNECTIONS_PER_IP` |
+| mail session / idle time | 10 min / 30 s | `FASTMOCK_MAIL_SESSION_TIMEOUT`, `FASTMOCK_MAIL_IDLE_TIMEOUT` |
 
 Importers (OpenAPI, AsyncAPI, WireMock, MockServer, Postman, HAR, WSDL, GraphQL schemas, Microcks artifacts) have
 their own size, count and depth limits, listed on their pages. Panics in request handlers are caught and turned
 into `500 {"error":"internal error"}` (`fastmock_panics_total`); errors returned to clients never contain stack
 traces, file paths or SQL.
+
+## Mail
+
+The [mail module](../guide/mail.md) is off until `FASTMOCK_MAIL_ENABLED=true`. When it is on:
+
+- **It never relays.** FastMock has no outgoing SMTP, relay or forwarding; every accepted message is stored and
+  nothing else. Links in messages are extracted, never followed. Provider webhooks are the only outgoing traffic,
+  and they go through the callbacks outbox and the [egress policy](#egress-policy).
+- **Listeners.** Mail ports are separate from the HTTP and admin ports (the server refuses to start otherwise).
+  Publish them only to the networks that send test mail, with a NetworkPolicy like the data port; in Kubernetes
+  the chart and the operator put them on a Service of their own.
+- **TLS.** With a certificate (`FASTMOCK_MAIL_TLS_CERT_FILE`, or the data-plane certificate), SMTP offers
+  STARTTLS, IMAP STARTTLS and POP3 STLS, and logins are accepted only after TLS unless
+  `FASTMOCK_MAIL_ALLOW_PLAINTEXT_AUTH=true`. Keep that switch off wherever credentials matter. After STARTTLS the
+  session state is reset, a second STARTTLS is refused, and a connection that sends data behind the STARTTLS
+  command is closed. The implicit-TLS listeners (`*_SMTPS_*`, `*_IMAPS_*`, `*_POP3S_*`) need a certificate.
+- **Authentication.** SMTP accepts any credentials by default, which suits a test network. Set
+  `FASTMOCK_MAIL_SMTP_REQUIRE_AUTH=true` with `FASTMOCK_MAIL_SMTP_USERS` (SHA-256 hashes) or managed tokens
+  holding `mail:write` when the SMTP port is reachable from more than the applications under test. IMAP and POP3
+  always require a managed token with `mail:read` or a mailbox password; mailbox passwords are stored as salted
+  PBKDF2 hashes and are never returned. Failed logins are answered after a delay and close the connection after
+  `FASTMOCK_MAIL_MAX_AUTH_FAILURES`.
+- **Credentials are never logged or stored.** SMTP passwords, tokens and mailbox passwords do not appear in logs,
+  the audit log or the SMTP transcript (AUTH lines are masked, message bodies are replaced by their size). Webhook
+  signing keys and URL passwords are write-only in the API.
+- **Viewing HTML.** Message HTML is served only by `/__admin/mail/messages/{id}/html` with
+  `Content-Security-Policy: sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'` and
+  `X-Content-Type-Options: nosniff`: no scripts, forms, frames or network requests, a unique origin, and no remote
+  images unless a viewer asks for them with `images=allow`. Show it only in an `<iframe sandbox>` without
+  `allow-scripts` and `allow-same-origin`. Raw messages and attachments are served as downloads with sanitised
+  file names and `Content-Security-Policy: sandbox; default-src 'none'`.
+- **Access.** Captured mail is scoped by space with `mail:read`, `mail:write` and `mail:delete`
+  ([Access control](access-control.md#permissions)); messages of the global area need the permission globally.
+  Mail often holds personal data and one-time codes, so keep `FASTMOCK_MAIL_MAX_AGE` short.
+- **Limits.** Message size, recipients, line length, connections (global and per client address), session and
+  idle time, MIME depth and parts, search, wait and stream concurrency are bounded; see
+  [Mail: limits](../guide/mail.md#limits-and-retention) and [Configuration](configuration.md#mail).
 
 ## Audit log
 
@@ -389,6 +432,9 @@ FastMock sends no telemetry anywhere unless you configure an OTLP endpoint.
       topics contract tests must read (empty disables reading).
 - [ ] `FASTMOCK_UI_DATA_PLANE_URL` set to the public data-plane origin when the UI is exposed.
 - [ ] Journal and callback retention as short as your tests allow.
+- [ ] With mail: mail ports reachable only from the applications under test; a certificate configured and
+      `FASTMOCK_MAIL_ALLOW_PLAINTEXT_AUTH` off; `FASTMOCK_MAIL_SMTP_REQUIRE_AUTH=true` on shared networks;
+      `FASTMOCK_MAIL_MAX_AGE` as short as your tests allow.
 - [ ] PostgreSQL with `FASTMOCK_DATABASE_SSL_MODE=verify-full`, dedicated database and user; the server user
       without DDL rights when migrations run as a separate Job.
 - [ ] Valkey over `rediss://` with an ACL user limited to FastMock's prefix and commands.

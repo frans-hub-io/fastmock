@@ -12,6 +12,10 @@ use tracing::Instrument;
 use crate::state::AppState;
 use crate::telemetry;
 
+/// A callback job header that marks `body` as base64 of binary content (mail webhooks with binary
+/// attachments); the outbox decodes the body of mail webhook jobs and never sends the header.
+pub const BODY_BASE64_HEADER: &str = "x-fastmock-body-base64";
+
 #[derive(Clone)]
 pub struct EgressPolicy {
     pub allowed_hosts: Vec<String>,
@@ -280,7 +284,27 @@ async fn send(app: &AppState, policy: &EgressPolicy, job: &CallbackJob) -> Resul
         retryable: false,
     })?;
     let mut rb = app.http.request(method, url);
+    let mut base64_body = false;
+    let mail = job.source == crate::mail_webhooks::SOURCE;
     for (k, v) in &job.headers {
+        if mail && k.eq_ignore_ascii_case(BODY_BASE64_HEADER) {
+            base64_body = true;
+            continue;
+        }
+        if mail && k.eq_ignore_ascii_case(crate::mail_webhook_secrets::SEALED_AUTH_HEADER) {
+            let plain = app
+                .mail_sealer
+                .as_ref()
+                .and_then(|s| s.open(v))
+                .ok_or(Failure {
+                    message: "the webhook credentials cannot be opened (mail-webhook-key changed?)"
+                        .into(),
+                    status: None,
+                    retryable: false,
+                })?;
+            rb = rb.header(reqwest::header::AUTHORIZATION, plain);
+            continue;
+        }
         if fastmock_core::outbound::blocked_outbound_header(k)
             || k.eq_ignore_ascii_case("traceparent")
         {
@@ -295,7 +319,17 @@ async fn send(app: &AppState, policy: &EgressPolicy, job: &CallbackJob) -> Resul
     {
         rb = rb.header("traceparent", tp);
     }
-    if !job.body.is_empty() {
+    if base64_body {
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(job.body.as_bytes())
+            .map_err(|_| Failure {
+                message: "invalid base64 body".into(),
+                status: None,
+                retryable: false,
+            })?;
+        rb = rb.body(bytes);
+    } else if !job.body.is_empty() {
         rb = rb.body(job.body.clone());
     }
     let resp = rb.send().await.map_err(|e| Failure {

@@ -71,6 +71,40 @@ data:
   FASTMOCK_JOURNAL_SCAN_TIMEOUT: {{ .Values.journal.scanTimeout | quote }}
   FASTMOCK_JOURNAL_SCAN_MAX_WORK: {{ .Values.journal.scanMaxWork | int64 | quote }}
   FASTMOCK_JOURNAL_SCAN_CONCURRENCY: {{ .Values.journal.scanConcurrency | int64 | quote }}
+  {{- $mail := .Values.mail | default dict }}
+  {{- if $mail.enabled }}
+  FASTMOCK_MAIL_ENABLED: "true"
+  {{- $listeners := include "fastmock.mailListeners" . | fromJsonArray }}
+  {{- $smtp := false }}
+  {{- range $listeners }}
+  {{ .var }}: {{ printf "0.0.0.0:%d" (int .port) | quote }}
+  {{- if eq .name "smtp" }}{{ $smtp = true }}{{ end }}
+  {{- end }}
+  {{- if not $smtp }}
+  FASTMOCK_MAIL_SMTP_LISTEN: ""
+  {{- end }}
+  {{- with $mail.hostname }}
+  FASTMOCK_MAIL_HOSTNAME: {{ . | quote }}
+  {{- end }}
+  {{- if dig "tls" "existingSecret" "" $mail }}
+  FASTMOCK_MAIL_TLS_CERT_FILE: "/etc/fastmock/tls/mail/tls.crt"
+  FASTMOCK_MAIL_TLS_KEY_FILE: "/etc/fastmock/tls/mail/tls.key"
+  {{- end }}
+  FASTMOCK_MAIL_SMTP_REQUIRE_AUTH: {{ $mail.requireAuth | default false | toString | quote }}
+  FASTMOCK_MAIL_ALLOW_PLAINTEXT_AUTH: {{ $mail.allowPlaintextAuth | default false | toString | quote }}
+  {{- with $mail.limits }}
+  {{- range $key, $var := dict "maxMessageBytes" "MAX_MESSAGE_BYTES" "maxRecipients" "MAX_RECIPIENTS" "maxMessages" "MAX_MESSAGES" "maxBytes" "MAX_BYTES" "maxMailboxes" "MAX_MAILBOXES" "loginFailureLimit" "LOGIN_FAILURE_LIMIT" "maxConnections" "MAX_CONNECTIONS" "maxConnectionsPerIp" "MAX_CONNECTIONS_PER_IP" "maxAuthFailures" "MAX_AUTH_FAILURES" }}
+  {{- if hasKey $.Values.mail.limits $key }}
+  FASTMOCK_MAIL_{{ $var }}: {{ index $.Values.mail.limits $key | int64 | quote }}
+  {{- end }}
+  {{- end }}
+  {{- range $key, $var := dict "maxAge" "MAX_AGE" "idleTimeout" "IDLE_TIMEOUT" "dataTimeout" "DATA_TIMEOUT" "sessionTimeout" "SESSION_TIMEOUT" "imapIdleTimeout" "IMAP_IDLE_TIMEOUT" }}
+  {{- with index $.Values.mail.limits $key }}
+  FASTMOCK_MAIL_{{ $var }}: {{ . | quote }}
+  {{- end }}
+  {{- end }}
+  {{- end }}
+  {{- end }}
   FASTMOCK_SHUTDOWN_DELAY: {{ .Values.shutdownDelay | quote }}
   {{- with .Values.secrets.stubSecrets }}
   FASTMOCK_STUB_SECRETS: {{ join "," . | quote }}

@@ -168,6 +168,57 @@ which serves the data port; expose the admin Service with your own HTTPRoute on 
 client secret is part of the pod template checksum: updating it in the Secret rolls the pods at the next
 reconcile, that is within the 5-minute resync or at once when the `FastMock` changes. With `storage.mode: memory` sessions live in the single pod.
 
+### Mail
+
+`spec.mail` turns on [mail capture](../guide/mail.md): SMTP, IMAP and POP3 listeners, the provider APIs and the
+mail admin API. The operator sets the `FASTMOCK_MAIL_*` variables, adds the container ports and creates the
+Service `<name>-mail`.
+
+```yaml
+apiVersion: fastmock.franshub.io/v1alpha1
+kind: FastMock
+metadata:
+  name: payments
+  namespace: team-payments
+spec:
+  replicas: 2
+  storage:
+    mode: postgres
+    database: {name: payments-mock-storage, key: database-url}
+    valkey: {name: payments-mock-storage, key: valkey-url}
+  adminTokensSecret: {name: payments-mock-tokens, key: tokens}
+  mail:
+    enabled: true
+    ports:
+      smtp: 2525
+      imap: 1143
+    tlsSecretRef: {name: payments-mock-mail-tls}
+    limits:
+      maxAge: 1d
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `mail.enabled` | `false` | `FASTMOCK_MAIL_ENABLED`. |
+| `mail.ports.smtp` | `2525` | SMTP port; `0` turns it off. |
+| `mail.ports.smtps`, `.imap`, `.imaps`, `.pop3`, `.pop3s` | `0` (off) | The other listeners; the implicit-TLS ones need `tlsSecretRef`. |
+| `mail.hostname` | `localhost` | `FASTMOCK_MAIL_HOSTNAME`. |
+| `mail.tlsSecretRef` | none | `{name, certKey, keyKey}` of a Secret with the certificate and key (`tls.crt`, `tls.key` by default), mounted read-only. |
+| `mail.requireAuth` | `false` | `FASTMOCK_MAIL_SMTP_REQUIRE_AUTH`. |
+| `mail.usersSecretRef` | none | `{name, key}` of a Secret with the `user:hash` entries of `FASTMOCK_MAIL_SMTP_USERS` (`pbkdf2-sha256$...` recommended, hex SHA-256 accepted; `key` defaults to `users`). |
+| `mail.allowPlaintextAuth` | `false` | `FASTMOCK_MAIL_ALLOW_PLAINTEXT_AUTH`. |
+| `mail.limits` | server defaults | `maxMessageBytes`, `maxMessages`, `maxBytes`, `maxMailboxes`, `maxAge`, `maxConnections`, `maxConnectionsPerIp`, `loginFailureLimit`, `idleTimeout`, `sessionTimeout`, `imapIdleTimeout`, mapped to the `FASTMOCK_MAIL_*` variables of the same names (`loginFailureLimit` is `FASTMOCK_MAIL_LOGIN_FAILURE_LIMIT`, `0` turns it off; `maxBytes` must be at least `maxMessageBytes`). Other mail settings go through `env`. |
+| `mail.service` | `ClusterIP` | `{type, annotations}` of the `<name>-mail` Service (`ClusterIP`, `NodePort` or `LoadBalancer`). |
+
+Both Secrets need the label `fastmock.franshub.io/allow-mount: "true"` like the others ([Policies](#policies)), and
+their content is part of the pod checksum, so a renewed certificate or a changed user list rolls the pods. Mail
+settings the server would refuse (a mail port used twice or equal to 8080 or 9090, an implicit-TLS port without
+`tlsSecretRef`, invalid limits) set `Ready=False` with reason `InvalidSpec` and a message naming the field, for
+example `mail.ports.smtps needs a certificate: set mail.tlsSecretRef`. Mail domains of spaces go into the access
+file (`mailDomains`, [Access file](#access-file)). With `storage.mode: postgres`, provider webhooks with a signing
+key or a URL password need the secret `mail-webhook-key` (a long random value, the same for every replica) in the
+Secret of `secretsSecret`.
+
 ### Fields
 
 | Field | Default | Meaning |
@@ -189,6 +240,7 @@ reconcile, that is within the 5-minute resync or at once when the `FastMock` cha
 | `otelEndpoint` | none | OTLP endpoint; sets `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_SERVICE_NAME=fastmock-<name>`. |
 | `resources` | requests `100m`/`64Mi`, limits `2`/`512Mi` | Container resources. |
 | `route` | none | `{hostnames, parentRefs}`: creates an HTTPRoute `<name>` for the **data** port. Removing the field deletes the route. |
+| `mail` | off | [Mail capture](#mail): listeners, certificate, SMTP users, limits and the mail Service. |
 
 ### What the operator creates
 
@@ -203,6 +255,7 @@ All objects are named after the `FastMock`, owned by it (deleted with it) and la
 | ServiceAccount | `<name>` | Without token automount. |
 | Deployment | `<name>` | Hardened pod (non-root 65532, read-only root FS, no capabilities, seccomp), probes on `/healthz` and `/readyz`, rolling update with `maxUnavailable: 0`. A checksum of configuration, tokens and the access file rolls the pods when they change. With `access`, the ConfigMap is mounted read-only at `/etc/fastmock/access`. |
 | Service | `<name>` (port 8080), `<name>-admin` (port 9090) | Data and admin ports. |
+| Service | `<name>-mail` | The enabled mail ports, when `spec.mail.enabled` is true. |
 | PodDisruptionBudget | `<name>` | When `replicas > 1`. |
 | HTTPRoute | `<name>` | When `route` is set (needs Gateway API CRDs). |
 
@@ -369,7 +422,7 @@ settings, it enforces three policies:
    `registry.example.com/fastmock@sha256:...` but not `registry.example.com/fastmock-other`. Without explicit
    prefixes only the repository of the default image is allowed. Otherwise: `ImageNotAllowed`.
 2. **Secret opt-in.** Every Secret named in `storage.database`, `storage.valkey`, `adminTokensSecret`,
-   `secretsSecret`, `oidc.clientSecretRef` and `imagePullSecrets` must have the label `fastmock.franshub.io/allow-mount: "true"`. A Secret owner
+   `secretsSecret`, `oidc.clientSecretRef`, `mail.tlsSecretRef`, `mail.usersSecretRef` and `imagePullSecrets` must have the label `fastmock.franshub.io/allow-mount: "true"`. A Secret owner
    thereby agrees that FastMock pods may mount it. Otherwise: `SecretNotAllowed`. The same label is required on
    the ConfigMaps named in `access.configMapRef` and `oidc.caConfigMapRef` (otherwise `ConfigMapNotAllowed`),
    since their content decides who may do what on the server and which identity provider it trusts.
@@ -377,7 +430,9 @@ settings, it enforces three policies:
    `FASTMOCK_ADMIN_TOKENS_FILE`, `FASTMOCK_ACCESS_FILE`, `FASTMOCK_ADMIN_ALLOWED_ORIGINS`, `FASTMOCK_SECRETS_DIR`, `FASTMOCK_SECRET_*`,
    `FASTMOCK_CALLBACK_DENIED_CIDRS`, `FASTMOCK_CALLBACK_ALLOWED_HOSTS`, `FASTMOCK_DATABASE_URL`,
    `FASTMOCK_VALKEY_URL`, `FASTMOCK_VALKEY_PREFIX`, `FASTMOCK_STORAGE`, `FASTMOCK_LISTEN`,
-   `FASTMOCK_ADMIN_LISTEN`, any `FASTMOCK_OIDC_*` or any `LD_*` variable (names are compared case-insensitively). Use the dedicated
+   `FASTMOCK_ADMIN_LISTEN`, `FASTMOCK_MAIL_ENABLED`, the `FASTMOCK_MAIL_*_LISTEN` variables,
+   `FASTMOCK_MAIL_TLS_CERT_FILE`, `FASTMOCK_MAIL_TLS_KEY_FILE`, `FASTMOCK_MAIL_SMTP_USERS`, any `FASTMOCK_OIDC_*`
+   or any `LD_*` variable (names are compared case-insensitively). Use the dedicated
    fields instead. Otherwise: `EnvNotAllowed`.
 
 Combine these with a namespace-level policy engine (Kyverno, Gatekeeper) or `watchNamespace` if only some
@@ -443,7 +498,9 @@ version of the same chart. Existing `FastMock`s are re-applied with the new oper
 roll only if the generated Deployment changed. Changing the default server image (`server.image.tag`) rolls
 every `FastMock` that does not pin `spec.image`. When the new server image adds access control, read its
 [upgrade notes](access-control.md#upgrade-notes), and set `spec.access` or `spec.oidc` only after every replica
-runs the new image.
+runs the new image. The same applies to `spec.mail`: apply the new CRD first (older CRDs drop the field), let every
+replica run an image with mail, then enable it; see the [mail upgrade notes](helm.md#upgrade-notes) for the
+`editor` role and the Valkey ACL.
 
 Uninstalling the chart leaves the CRDs and therefore all `FastMock`/`MockApi` resources and their objects in
 place. Delete the resources first if you want everything removed; deleting the CRDs deletes all resources of

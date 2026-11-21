@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 pub const STUBS_CHANNEL: &str = "fastmock_stubs";
 
-fn no_nul(s: &str) -> String {
+pub(crate) fn no_nul(s: &str) -> String {
     if s.contains('\0') {
         s.replace('\0', "\u{FFFD}")
     } else {

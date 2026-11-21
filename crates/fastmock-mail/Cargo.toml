@@ -1,0 +1,41 @@
+[package]
+name = "fastmock-mail"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aho-corasick = "1"
+anyhow.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+fastmock-core.workspace = true
+form_urlencoded = "1"
+handlebars.workspace = true
+hex.workspace = true
+imap-codec = { version = "=2.0.0-alpha.10", features = ["starttls", "ext_id", "ext_utf8", "ext_namespace"] }
+imap-types = "=2.0.0-alpha.8"
+mail-builder.workspace = true
+mail-parser.workspace = true
+metrics.workspace = true
+rand.workspace = true
+regex.workspace = true
+ring = "0.17"
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+smtp-proto = "=0.2.5"
+subtle.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tracing.workspace = true
+utoipa.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+rcgen = { version = "0.14", features = ["pem"] }

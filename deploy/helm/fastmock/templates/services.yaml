@@ -32,3 +32,29 @@ spec:
     - name: admin
       port: {{ .Values.service.adminPort }}
       targetPort: admin
+{{- $mailListeners := include "fastmock.mailListeners" . | fromJsonArray }}
+{{- if $mailListeners }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "fastmock.fullname" . }}-mail
+  labels:
+    {{- include "fastmock.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mail
+  {{- with .Values.mail.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.mail.service.type | default "ClusterIP" }}
+  selector:
+    {{- include "fastmock.selector" . | nindent 4 }}
+  ports:
+    {{- range $mailListeners }}
+    - name: {{ .name }}
+      port: {{ int .port }}
+      targetPort: {{ .name }}
+      protocol: TCP
+    {{- end }}
+{{- end }}

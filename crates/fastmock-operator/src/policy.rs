@@ -19,6 +19,16 @@ const DENIED_ENV: &[&str] = &[
     "FASTMOCK_STORAGE",
     "FASTMOCK_LISTEN",
     "FASTMOCK_ADMIN_LISTEN",
+    "FASTMOCK_MAIL_ENABLED",
+    "FASTMOCK_MAIL_SMTP_LISTEN",
+    "FASTMOCK_MAIL_SMTPS_LISTEN",
+    "FASTMOCK_MAIL_IMAP_LISTEN",
+    "FASTMOCK_MAIL_IMAPS_LISTEN",
+    "FASTMOCK_MAIL_POP3_LISTEN",
+    "FASTMOCK_MAIL_POP3S_LISTEN",
+    "FASTMOCK_MAIL_TLS_CERT_FILE",
+    "FASTMOCK_MAIL_TLS_KEY_FILE",
+    "FASTMOCK_MAIL_SMTP_USERS",
 ];
 
 const DENIED_ENV_PREFIXES: &[&str] = &["FASTMOCK_SECRET_", "FASTMOCK_OIDC_", "LD_"];
@@ -123,6 +133,14 @@ pub fn referenced_secrets(spec: &FastMockSpec) -> Vec<(String, String)> {
             "oidc.clientSecretRef".to_string(),
             o.client_secret_ref.name.clone(),
         ));
+    }
+    if let Some(m) = spec.mail_on() {
+        if let Some(r) = &m.tls_secret_ref {
+            out.push(("mail.tlsSecretRef".to_string(), r.name.clone()));
+        }
+        if let Some(r) = &m.users_secret_ref {
+            out.push(("mail.usersSecretRef".to_string(), r.name.clone()));
+        }
     }
     for s in &spec.image_pull_secrets {
         out.push(("imagePullSecrets".to_string(), s.clone()));
@@ -229,12 +247,15 @@ mod tests {
             ),
             ("FASTMOCK_OIDC_ISSUER".to_string(), "https://x".to_string()),
             ("RUST_LOG".to_string(), "debug".to_string()),
+            ("FASTMOCK_MAIL_SMTP_USERS".to_string(), "a:b".to_string()),
+            ("FASTMOCK_MAIL_MAX_RECIPIENTS".to_string(), "10".to_string()),
         ]);
         let denied = denied_env_keys(&env);
         assert_eq!(
             denied,
             vec![
                 "FASTMOCK_AUTH_DISABLED",
+                "FASTMOCK_MAIL_SMTP_USERS",
                 "FASTMOCK_OIDC_ISSUER",
                 "FASTMOCK_SECRET_DB",
                 "FASTMOCK_VALKEY_PREFIX",
@@ -283,6 +304,27 @@ mod tests {
             names,
             vec!["payments-secrets", "db", "tokens", "sso", "pull"]
         );
+    }
+
+    #[test]
+    fn mail_secrets_are_referenced_only_while_mail_is_on() {
+        let mut spec: FastMockSpec = serde_json::from_value(serde_json::json!({
+            "mail": {
+                "enabled": true,
+                "tlsSecretRef": {"name": "mail-tls"},
+                "usersSecretRef": {"name": "mail-users"}
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            referenced_secrets(&spec),
+            vec![
+                ("mail.tlsSecretRef".to_string(), "mail-tls".to_string()),
+                ("mail.usersSecretRef".to_string(), "mail-users".to_string())
+            ]
+        );
+        spec.mail.as_mut().unwrap().enabled = false;
+        assert!(referenced_secrets(&spec).is_empty());
     }
 
     #[test]

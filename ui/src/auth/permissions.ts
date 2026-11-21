@@ -45,6 +45,7 @@ const VIEWER = [
   'grpc:read',
   'contracts:read',
   'info:read',
+  'mail:read',
 ];
 const EDITOR = [
   ...VIEWER,
@@ -59,6 +60,8 @@ const EDITOR = [
   'grpc:write',
   'contracts:details',
   'contracts:write',
+  'mail:write',
+  'mail:delete',
 ];
 
 /** Permission sets of the built-in roles, for servers that report only a role. */

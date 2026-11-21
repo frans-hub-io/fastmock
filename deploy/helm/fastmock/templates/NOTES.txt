@@ -1,0 +1,22 @@
+FastMock {{ .Chart.AppVersion }} is installed as {{ include "fastmock.fullname" . }} in {{ .Release.Namespace }}.
+
+Mocks:     http://{{ include "fastmock.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+Admin API: http://{{ include "fastmock.fullname" . }}-admin.{{ .Release.Namespace }}.svc:{{ .Values.service.adminPort }}/__admin
+{{- $mailListeners := include "fastmock.mailListeners" . | fromJsonArray }}
+{{- if .Values.mail.enabled }}
+
+Mail capture is on. FastMock stores every message and never delivers mail.
+{{- if $mailListeners }}
+Point applications at {{ include "fastmock.fullname" . }}-mail.{{ .Release.Namespace }}.svc:
+{{- range $mailListeners }}
+  {{ .name | upper | printf "%-6s" }} port {{ int .port }}{{ if .tls }} (implicit TLS){{ end }}
+{{- end }}
+{{- else }}
+No mail listener is enabled; messages arrive only through the provider APIs and the admin API.
+{{- end }}
+{{- if not .Values.mail.requireAuth }}
+SMTP accepts any credentials; set mail.requireAuth=true to check them.
+{{- end }}
+Provider APIs answer under /__mail/<provider>/ on the mock port; read messages with
+GET /__admin/mail/messages on the admin API.
+{{- end }}

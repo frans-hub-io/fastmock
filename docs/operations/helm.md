@@ -1,7 +1,7 @@
 # Helm chart
 
 `deploy/helm/fastmock` installs one FastMock instance: a Deployment, separate Services for the data and admin
-ports, and optionally PostgreSQL, Valkey and Kafka from maintained dependency charts, Gateway API routes, a
+ports (and for the mail ports when [mail](#mail) is on), and optionally PostgreSQL, Valkey and Kafka from maintained dependency charts, Gateway API routes, a
 PodDisruptionBudget, an HPA, NetworkPolicies, a ServiceMonitor and a PrometheusRule. It needs Kubernetes 1.30 or
 newer.
 
@@ -33,6 +33,7 @@ For many instances managed declaratively, see the [operator](operator.md) instea
 - [Secure connections](#secure-connections)
 - [TLS and mTLS](#tls-and-mtls)
 - [NetworkPolicy](#networkpolicy)
+- [Mail](#mail)
 - [Upgrade notes](#upgrade-notes)
 
 ## Install
@@ -259,6 +260,27 @@ helm uninstall fastmock -n mocks
 Keep `limits.maxInflightBodyBytes` well below the memory limit: request bodies are held in memory while a
 request is processed.
 
+### Mail
+
+| Key | Default | Meaning |
+|---|---|---|
+| `mail.enabled` | `false` | `FASTMOCK_MAIL_ENABLED`; see [Mail](#mail). |
+| `mail.ports.smtp` | `2525` | SMTP port of the pod and of the `<fullname>-mail` Service; `""` turns SMTP off. |
+| `mail.ports.smtps`, `.imap`, `.imaps`, `.pop3`, `.pop3s` | `""` (off) | Ports of the other listeners, for example `4650`, `1143`, `1993`, `1110`, `1995`. The implicit-TLS ones need `mail.tls.existingSecret`. |
+| `mail.hostname` | `""` (`localhost`) | `FASTMOCK_MAIL_HOSTNAME`. |
+| `mail.tls.existingSecret` | `""` | Secret with the certificate and key for STARTTLS, STLS and the implicit-TLS ports, mounted read-only at `/etc/fastmock/tls/mail/`. |
+| `mail.tls.certKey`, `.keyKey` | `tls.crt`, `tls.key` | Keys inside that Secret (a `kubernetes.io/tls` Secret from cert-manager works as is). |
+| `mail.requireAuth` | `false` | `FASTMOCK_MAIL_SMTP_REQUIRE_AUTH`. |
+| `mail.smtpUsers.existingSecret`, `.key` | `""`, `users` | Secret with the `user:hash` entries of `FASTMOCK_MAIL_SMTP_USERS` (`pbkdf2-sha256$...` recommended, hex SHA-256 accepted). |
+| `mail.allowPlaintextAuth` | `false` | `FASTMOCK_MAIL_ALLOW_PLAINTEXT_AUTH`. |
+| `mail.limits.maxMessageBytes`, `.maxRecipients`, `.maxMessages`, `.maxAge` | `10485760`, `100`, `1000`, `7d` | `FASTMOCK_MAIL_MAX_MESSAGE_BYTES`, `_MAX_RECIPIENTS`, `_MAX_MESSAGES`, `_MAX_AGE`. |
+| `mail.limits.maxBytes`, `.maxMailboxes` | `268435456`, `10000` | `FASTMOCK_MAIL_MAX_BYTES` (raw bytes kept per space, at least `maxMessageBytes`), `_MAX_MAILBOXES` (mailboxes per space). |
+| `mail.limits.maxConnections`, `.maxConnectionsPerIp`, `.maxAuthFailures` | `256`, `32`, `3` | `FASTMOCK_MAIL_MAX_CONNECTIONS`, `_MAX_CONNECTIONS_PER_IP`, `_MAX_AUTH_FAILURES`. |
+| `mail.limits.loginFailureLimit` | `5` | `FASTMOCK_MAIL_LOGIN_FAILURE_LIMIT`: failed logins per client address and per user name within 5 minutes before logins are refused for a backoff; `0` turns it off. |
+| `mail.limits.idleTimeout`, `.dataTimeout`, `.sessionTimeout`, `.imapIdleTimeout` | `30s`, `60s`, `10m`, `30m` | `FASTMOCK_MAIL_IDLE_TIMEOUT`, `_DATA_TIMEOUT`, `_SESSION_TIMEOUT`, `_IMAP_IDLE_TIMEOUT`. |
+| `mail.service.type`, `.annotations` | `ClusterIP`, `{}` | The `<fullname>-mail` Service. |
+| `networkPolicy.mailFrom` | `[]` (any) | `from` peers allowed on the mail ports. |
+
 ### Telemetry
 
 | Key | Default | Meaning |
@@ -480,12 +502,54 @@ The **admin port** is plain HTTP inside the cluster; publish it only through a G
 With `networkPolicy.enabled: true` the chart creates one policy for FastMock pods:
 
 - **ingress** on the data port from `dataFrom` (or anywhere when empty), on the admin port from `adminFrom` (or
-  anywhere when empty). Set `adminFrom`.
+  anywhere when empty), and with [mail](#mail) on the mail ports from `mailFrom` (or anywhere when empty). Set
+  `adminFrom`.
 - **egress** (with `egress.enabled`): DNS to `kube-dns`, the databases installed with the release (including the CloudNativePG cluster on port 5432), and your `egress.rules`. Callback
   receivers, proxy targets, Kafka, external PostgreSQL/Valkey and the OTLP collector must be covered by rules.
 
 With `postgresql.enabled` or `valkey.enabled`, `networkPolicy.storage: true` adds a second policy that lets only FastMock pods of the
 release reach them.
+
+## Mail
+
+With `mail.enabled: true` the chart sets the `FASTMOCK_MAIL_*` variables, adds the mail ports to the container and
+creates a Service `<fullname>-mail` (`ClusterIP` by default) with one port per enabled listener, so applications
+in the cluster send to `<fullname>-mail:2525`. The provider APIs use the data Service (`/__mail/...`) and the mail
+admin API the admin Service; neither needs extra values. See [Mail](../guide/mail.md).
+
+```yaml
+mail:
+  enabled: true
+  ports:
+    smtp: 2525
+    imap: 1143
+  tls:
+    existingSecret: fastmock-mail-tls
+  limits:
+    maxAge: 1d
+access:
+  spaces:
+    - name: billing
+      mailDomains: [billing.example.test]
+networkPolicy:
+  enabled: true
+  mailFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: billing
+```
+
+The chart refuses to render when a mail port equals the data or admin port, when two mail listeners share a
+port, or when an implicit-TLS port is set without `mail.tls.existingSecret`. Messages are stored in PostgreSQL in
+`postgres` mode, so every replica answers waits and IMAP logins for messages accepted by another one; with a
+restricted Valkey ACL user, add the mail event channel and the failed-login keys
+([Database](database.md#valkey-and-redis)). Keep the mail Service `ClusterIP` unless systems outside the cluster
+must send to it, and limit `networkPolicy.mailFrom` to the namespaces of the applications under test.
+
+Provider webhooks with a signing key or a URL password need the secret `mail-webhook-key` in `postgres` mode: add
+a long random value under that key to the Secret of `secrets.existingSecret` (mounted as `FASTMOCK_SECRETS_DIR`),
+for example with `kubectl create secret generic fastmock-secrets --from-literal=mail-webhook-key="$(openssl rand -base64 32)"`.
+Every replica must use the same value.
 
 ## Access control
 
@@ -579,6 +643,13 @@ start-up: after rotating it, `kubectl rollout restart deploy/<fullname>`.
   table needs grants when migrations run separately with per-table rights, audit log lines and auth failure
   metrics changed, and new `/__admin/auth/*` routes must pass a WAF or route allow-list when OIDC is used.
   Upgrade every replica before setting `access` or `oidc`.
+- **Mail**: the release that adds [mail](../guide/mail.md) adds migrations 11 to 14 (four tables, a
+  sequence and three indexes; [Database](database.md#mail-migrations)) and the `mail:*` permissions: `editor` now
+  includes `mail:write` and `mail:delete`, so custom roles that copy editor's permission list need `mail:*` to keep
+  creating editor tokens ([access control upgrade notes](access-control.md#upgrade-notes)). With `mail.enabled`
+  in `postgres` mode and a restricted Valkey ACL user, add the channel rule `&<prefix>mail:events:*` and
+  `+publish +psubscribe`; otherwise the pods stop at start-up. With per-table grants, grant the new tables before
+  upgrading.
 - **0.1.0**: first release. `FASTMOCK_STUB_SECRETS` (`secrets.stubSecrets`) is required for stub HMAC
   signatures; stubs that reference other secrets produce failed callbacks with
   `secret ... is not configured`.

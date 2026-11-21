@@ -5,6 +5,7 @@ pub mod fakedata;
 pub mod graphql;
 pub mod har;
 pub mod jsonpath;
+pub mod mail;
 pub mod matcher;
 pub mod memory;
 pub mod microcks;

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/fastmock-core", "crates/fastmock-store", "crates/fastmock-kafka", "crates/fastmock-server", "crates/fastmock-operator"]
+members = ["crates/fastmock-core", "crates/fastmock-store", "crates/fastmock-kafka", "crates/fastmock-mail", "crates/fastmock-server", "crates/fastmock-operator"]
 
 [workspace.package]
 version = "0.1.0"
@@ -52,6 +52,9 @@ utoipa = { version = "5", features = ["chrono", "uuid", "preserve_order", "axum_
 fastmock-core = { path = "crates/fastmock-core" }
 fastmock-store = { path = "crates/fastmock-store" }
 fastmock-kafka = { path = "crates/fastmock-kafka" }
+fastmock-mail = { path = "crates/fastmock-mail" }
+mail-builder = { version = "=2.0.1", default-features = false }
+mail-parser = { version = "=1.0.1", features = ["full_encoding"] }
 apache-avro = "0.22"
 rskafka = { version = "0.6", default-features = false, features = ["transport-tls"] }
 webpki-roots = "1"
