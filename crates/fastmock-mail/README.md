@@ -19,7 +19,9 @@ matching. The crate has no HTTP dependency; `fastmock-server` wires it in. FastM
 | `src/compose.rs` | `ComposeRequest` + `compose` (mail-builder) for JSON injection and provider payloads. |
 | `src/config.rs` | `MailConfig` (all `FASTMOCK_MAIL_*` values with defaults and `validate`); the server reads the environment in `fastmock-server/src/config.rs` (`mail_settings`). |
 | `src/tls.rs` | `server_config(&MailTlsFiles)`: rustls config for SMTPS/IMAPS/POP3S and STARTTLS/STLS. |
-| `src/smtp/` | SMTP listener (B1). |
+| `src/smtp/` | SMTP sessions (B1): `SmtpServer::serve` runs one session over any stream (state machine in `session.rs`, SASL in `sasl.rs`, `smtp-proto` behind `codec::SmtpCodec`); `TokenCheck` is implemented by the server for managed tokens. |
+| `src/chaos.rs` | Mail chaos (M6): `MailChaosRule` model and `validate`, `MailChaos` (cache, counters, `evaluate`, `evaluate_provider` for C3) over `ChaosBackend` (server: `mail_chaos_api::StoreChaosBackend`; tests: `MemoryChaosBackend`). |
+| `fuzz/` | cargo-fuzz targets `smtp_session` and `smtp_codec` (own workspace, not built by CI). |
 
 Server side: `AppState::mail: Option<Arc<MailService>>` (`None` unless `FASTMOCK_MAIL_ENABLED=true`),
 built in `fastmock-server/src/mail_setup.rs`; the maintenance loop calls `MailService::sweep` every minute.
@@ -64,11 +66,15 @@ Permissions `mail:read`, `mail:write`, `mail:delete` (space-scoped) and the rout
   cannot contain `_`): `publish` sends JSON of `MailEvent`, one listener task per process `PSUBSCRIBE`s and
   calls `MailEventHub::deliver`, `subscribe` reads from that hub. Select them in
   `fastmock-server/src/mail_setup.rs` `backends` (the `Postgres` arm).
-- **C1 IMAP / C2 POP3**: mailbox state through `MailStore::mailbox_*` (sequence numbers are positions in UID
+- **C1 IMAP / C2 POP3**: bind listeners next to SMTP in `fastmock-server/src/mail_listeners.rs` and share its
+  `ConnectionLimits` (global and per IP over all mail listeners) and shutdown handling;
+  mailbox state through `MailStore::mailbox_*` (sequence numbers are positions in UID
   order); IDLE through `events.subscribe` (`MailEvent::mailboxes` lists the INBOX addresses that got a
   message); passwords through `mailbox_password`/`set_mailbox_password` (hash chosen by C2); APPEND stores
   with `accept` (`MailSource::Inject`, `Destination::Area`, `mailboxes` override).
-- **C3 providers**: `compose` for JSON payloads, `Incoming { source: Provider, provider, provider_extras }`,
+- **C3 providers**: provider errors through `AppState::mail_chaos` → `MailChaos::evaluate_provider(area, provider,
+  mail_from, rcpt_to)`: sleep `delay`, then answer `ChaosEffect::ProviderError(name)` in the provider's format.
+  `compose` for JSON payloads, `Incoming { source: Provider, provider, provider_extras }`,
   `Destination::Area` for `@<space>` URLs, else `Destination::Route`.
 - **C4 UI**: `features` of `/__admin/version` lists `mail`, `mail.imap`, `mail.pop3`, `mail.providers`;
   `/__admin/spaces` lists `mailDomains`; permission names are in `ui/src/auth/permissions.ts`.

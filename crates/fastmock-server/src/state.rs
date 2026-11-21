@@ -44,6 +44,8 @@ pub struct AppState {
     pub oidc: Option<Arc<crate::oidc::Oidc>>,
     /// The mail module; `None` unless `FASTMOCK_MAIL_ENABLED=true`.
     pub mail: Option<Arc<fastmock_mail::MailService>>,
+    /// Mail chaos rules and counters; present with the mail module.
+    pub mail_chaos: Option<Arc<fastmock_mail::chaos::MailChaos>>,
 }
 
 pub struct StubSecrets {

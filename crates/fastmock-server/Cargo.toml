@@ -17,6 +17,7 @@ default = []
 [dependencies]
 rust-embed = { version = "8.11", features = ["debug-embed"] }
 anyhow.workspace = true
+async-trait.workspace = true
 axum = { workspace = true, features = ["ws"] }
 base64.workspace = true
 bytes.workspace = true

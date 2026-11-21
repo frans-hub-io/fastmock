@@ -609,6 +609,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/__admin/mail/chaos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Mail chaos rules of a space
+         * @description The rules of one area (the space, or the global area) with their counters. Needs `mail:read` there.
+         */
+        get: operations["getMailChaos"];
+        /**
+         * Replace the mail chaos rules of a space
+         * @description Stores the rules of one area and starts their counters from zero. Rules are evaluated in order at their stage; the first rule whose match holds and that fires (after `every`, `probability` and `times`) decides. Stages before routing (`connect`, `tls`, `ehlo`) use the global area's rules; `auth` and `mail` the space named like the AUTH user (else global); `rcpt` the space of the recipient; `data` the spaces the message is routed to. Rules with stage `provider` apply to the provider HTTP APIs. Needs `mail:write`.
+         */
+        put: operations["putMailChaos"];
+        post?: never;
+        /**
+         * Remove the mail chaos rules of a space
+         * @description Removes the rules of one area and their counters. Needs `mail:write`.
+         */
+        delete: operations["clearMailChaos"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/__admin/plugins": {
         parameters: {
             query?: never;
@@ -1564,8 +1592,71 @@ export interface components {
         };
         /** @enum {string} */
         CallbackStatus: "pending" | "sent" | "failed";
+        /**
+         * @description What a firing rule does: optionally wait (`delay`), then one of `reply`, `disconnect` or
+         *     `providerError`, or continue normally after a delay alone.
+         */
+        ChaosAction: {
+            reply?: null | components["schemas"]["ChaosReply"];
+            /**
+             * @description `500ms`, `2s`, `1m` (at most 10 minutes).
+             * @example 2s
+             */
+            delay?: string | null;
+            /** @description Close the connection without a reply. */
+            disconnect?: boolean;
+            /**
+             * @description Stage `provider` only: the error the provider API answers with, in the provider's format
+             *     (for example `MessageRejected`, `rateLimit`, `invalidKey`).
+             * @example rateLimit
+             */
+            providerError?: string | null;
+        };
         ChaosBody: {
             rules: components["schemas"]["ChaosRule"][];
+        };
+        /** @description How often a rule matched and fired since its rules were stored. */
+        ChaosCounters: {
+            id: string;
+            /**
+             * Format: int64
+             * @description Events that met stage and match.
+             */
+            matched: number;
+            /**
+             * Format: int64
+             * @description Times the rule fired (with `times`, attempts beyond it are counted too).
+             */
+            fired: number;
+        };
+        /**
+         * @description Conditions of a rule, written with the stub string matchers; all given ones must hold. `rcptTo`
+         *     holds when one recipient matches (at `rcpt`: the recipient of that command).
+         */
+        ChaosMatch: {
+            rcptTo?: null | components["schemas"]["StringMatcher"];
+            mailFrom?: null | components["schemas"]["StringMatcher"];
+            authUser?: null | components["schemas"]["StringMatcher"];
+            provider?: null | components["schemas"]["StringMatcher"];
+        };
+        /** @description An SMTP reply sent instead of the normal one. */
+        ChaosReply: {
+            /**
+             * Format: int32
+             * @description 400-599. 421 also closes the connection.
+             * @example 451
+             */
+            code: number;
+            /**
+             * @description Enhanced status code whose class matches the code; default `<class>.0.0`.
+             * @example 4.3.0
+             */
+            enhanced?: string | null;
+            /**
+             * @description Default `FastMock chaos rule <id>`.
+             * @example Try again later
+             */
+            text?: string | null;
         };
         ChaosRule: {
             id: string;
@@ -1586,6 +1677,11 @@ export interface components {
             /** @description Number of active rules. */
             rules: number;
         };
+        /**
+         * @description Where a rule applies.
+         * @enum {string}
+         */
+        ChaosStage: "connect" | "tls" | "ehlo" | "auth" | "mail" | "rcpt" | "data" | "provider";
         ChunkedDribbleDelay: {
             /** Format: int32 */
             numberOfChunks: number;
@@ -1972,6 +2068,53 @@ export interface components {
             loggedOut: boolean;
             /** @description The provider's end-session URL; the UI navigates there to end the IdP session too. */
             logoutUrl?: string | null;
+        };
+        MailChaosBody: {
+            /** @description Evaluated in order; the first rule that fires wins. At most 100. */
+            rules: components["schemas"]["MailChaosRule"][];
+        };
+        /** @description A mail chaos rule. */
+        MailChaosRule: {
+            /**
+             * @description Letters, digits, `.`, `_`, `-` (at most 64); `rule-<n>` (its position) when left out.
+             * @example third-message-fails
+             */
+            id?: string | null;
+            stage: components["schemas"]["ChaosStage"];
+            match?: components["schemas"]["ChaosMatch"];
+            action: components["schemas"]["ChaosAction"];
+            /**
+             * Format: int64
+             * @description Fire at most this many times.
+             */
+            times?: number | null;
+            /**
+             * Format: int64
+             * @description Fire only on every n-th matching event (the n-th, 2n-th, ...).
+             */
+            every?: number | null;
+            /**
+             * Format: double
+             * @description Chance to fire, 0-100 (percent).
+             */
+            probability?: number | null;
+            /**
+             * Format: int64
+             * @description With `probability`: decide from the seed and the number of the matching event instead of at
+             *     random, so a run repeats.
+             */
+            seed?: number | null;
+        };
+        MailChaosView: {
+            /**
+             * @description The space; absent for the global area.
+             * @example billing
+             */
+            space?: string | null;
+            /** @description The rules, each with its id. */
+            rules: components["schemas"]["MailChaosRule"][];
+            /** @description How often each rule matched and fired since the rules were stored, over all replicas. */
+            counters: components["schemas"]["ChaosCounters"][];
         };
         MessageDef: {
             topic: string;
@@ -5287,6 +5430,206 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getMailChaos: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rules and counters */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailChaosView"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Requires mail:read */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, or unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    putMailChaos: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "rules": [
+                 *         {
+                 *           "id": "third-fails",
+                 *           "stage": "data",
+                 *           "every": 3,
+                 *           "times": 1,
+                 *           "action": {
+                 *             "reply": {
+                 *               "code": 451,
+                 *               "enhanced": "4.3.0",
+                 *               "text": "Try again later"
+                 *             }
+                 *           }
+                 *         },
+                 *         {
+                 *           "stage": "rcpt",
+                 *           "match": {
+                 *             "rcptTo": {
+                 *               "contains": "slow@"
+                 *             }
+                 *           },
+                 *           "action": {
+                 *             "delay": "2s"
+                 *           }
+                 *         }
+                 *       ]
+                 *     }
+                 */
+                "application/json": components["schemas"]["MailChaosBody"];
+            };
+        };
+        responses: {
+            /** @description Rules stored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailChaosView"];
+                };
+            };
+            /** @description Invalid rule */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Requires mail:write */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, or unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    clearMailChaos: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Requires mail:write */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Mail is not enabled, or unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
             };
         };
     };

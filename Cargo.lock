@@ -1154,20 +1154,27 @@ name = "fastmock-mail"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64 0.22.1",
  "bytes",
  "chrono",
  "fastmock-core",
+ "hex",
  "mail-builder",
  "mail-parser",
  "metrics",
+ "rand 0.9.5",
  "rcgen",
  "regex",
  "rustls",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "smtp-proto",
+ "subtle",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "utoipa",
  "uuid",
@@ -4217,6 +4224,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3244542535d5de959d90ec55d1b5ff0fd2bb7b1310223907d5f11932847f7b59"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "smtp-proto"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "142a5a642c6bd7ffd7e1b525ad6a6e9921ccef992dba4663974f8519209a00c1"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

@@ -6,22 +6,29 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 base64.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 fastmock-core.workspace = true
+hex.workspace = true
 mail-builder.workspace = true
 mail-parser.workspace = true
 metrics.workspace = true
+rand.workspace = true
 regex.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+smtp-proto = "=0.2.5"
+subtle.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
 tracing.workspace = true
 utoipa.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
 rcgen = { version = "0.14", features = ["pem"] }
-tokio.workspace = true
