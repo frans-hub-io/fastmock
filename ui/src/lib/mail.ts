@@ -532,18 +532,18 @@ export function cleanRule(r: MailChaosRule): MailChaosRule {
 
 /* ---------- snippets ---------- */
 
-export function smtpSnippets(host: string, port: number): { id: string; label: string; code: string }[] {
+export function smtpSnippets(host: string, port: number, tls = false): { id: string; label: string; code: string }[] {
   const server = `${host}:${String(port)}`;
   return [
     {
       id: 'swaks',
       label: 'swaks',
-      code: `swaks --server ${server} \\\n  --from sender@example.com --to alice@example.test \\\n  --header 'Subject: Hello from swaks' --body 'It works.'`,
+      code: `swaks --server ${server}${tls ? ' --tls-on-connect' : ''} \\\n  --from sender@example.com --to alice@example.test \\\n  --header 'Subject: Hello from swaks' --body 'It works.'`,
     },
     {
       id: 'curl',
       label: 'curl',
-      code: `printf 'From: sender@example.com\\r\\nTo: alice@example.test\\r\\nSubject: Hello from curl\\r\\n\\r\\nIt works.\\r\\n' \\\n  | curl -s smtp://${server} --mail-from sender@example.com \\\n      --mail-rcpt alice@example.test -T -`,
+      code: `printf 'From: sender@example.com\\r\\nTo: alice@example.test\\r\\nSubject: Hello from curl\\r\\n\\r\\nIt works.\\r\\n' \\\n  | curl -s ${tls ? 'smtps' : 'smtp'}://${server} --mail-from sender@example.com \\\n      --mail-rcpt alice@example.test -T -`,
     },
     {
       id: 'python',
@@ -557,10 +557,110 @@ msg["To"] = "alice@example.test"
 msg["Subject"] = "Hello from Python"
 msg.set_content("It works.")
 
-with smtplib.SMTP("${host}", ${String(port)}) as smtp:
+with smtplib.${tls ? 'SMTP_SSL' : 'SMTP'}("${host}", ${String(port)}) as smtp:
     smtp.send_message(msg)`,
     },
   ];
+}
+
+/** Mail settings the server publishes in `/ui/config.json`; a port is missing when its listener is off. */
+export interface MailServerInfo {
+  /** The server publishes these fields (older servers publish none). */
+  published: boolean;
+  /** `FASTMOCK_MAIL_HOSTNAME`, when it is set. */
+  hostname?: string;
+  smtp?: number;
+  smtps?: number;
+  imap?: number;
+  imaps?: number;
+  pop3?: number;
+  pop3s?: number;
+  /** IMAP, POP3 and SMTP AUTH accept a password before TLS; `false` means STARTTLS/STLS or a TLS port first. */
+  plaintextAuth?: boolean;
+}
+
+const PORT_KEYS = { smtp: 'mailSmtpPort', smtps: 'mailSmtpsPort', imap: 'mailImapPort', imaps: 'mailImapsPort', pop3: 'mailPop3Port', pop3s: 'mailPop3sPort' } as const;
+
+export function mailServerInfo(cfg: Record<string, unknown>): MailServerInfo {
+  const out: MailServerInfo = { published: Object.values(PORT_KEYS).some((k) => k in cfg) };
+  for (const [name, key] of Object.entries(PORT_KEYS) as [keyof typeof PORT_KEYS, string][]) {
+    const v = cfg[key];
+    if (typeof v === 'number') out[name] = v;
+  }
+  if (typeof cfg.mailHostname === 'string' && cfg.mailHostname) out.hostname = cfg.mailHostname;
+  if (typeof cfg.mailPlaintextAuth === 'boolean') out.plaintextAuth = cfg.mailPlaintextAuth;
+  return out;
+}
+
+export interface MailEndpoint {
+  label: string;
+  port?: number;
+  tls: boolean;
+}
+
+/** The listeners of a protocol that are on: the plain one, then the one with implicit TLS. */
+export function mailEndpoints(info: MailServerInfo, proto: 'smtp' | 'imap' | 'pop3'): MailEndpoint[] {
+  const name = proto.toUpperCase();
+  const plain = info[proto];
+  const tls = info[`${proto}s`];
+  return [...(plain !== undefined ? [{ label: name, port: plain, tls: false }] : []), ...(tls !== undefined ? [{ label: `${name}S`, port: tls, tls: true }] : [])];
+}
+
+/** `IMAPS :1993`, or the bare label when the port is not known. */
+export function endpointText(e: MailEndpoint): string {
+  return e.port !== undefined ? `${e.label} :${String(e.port)}` : e.label;
+}
+
+/** One sentence on whether IMAP and POP3 logins need TLS first, or `null` when the server does not say. */
+export function loginRule(info: MailServerInfo, imap: boolean, pop3: boolean): string | null {
+  if (info.plaintextAuth === undefined || (!imap && !pop3)) return null;
+  if (info.plaintextAuth) return 'Plain-text logins are accepted: a client may send the password without TLS.';
+  const imapEps = imap ? mailEndpoints(info, 'imap') : [];
+  const pop3Eps = pop3 ? mailEndpoints(info, 'pop3') : [];
+  const eps = [...imapEps, ...pop3Eps];
+  const plain = eps.filter((e) => !e.tls).map(endpointText);
+  const tls = eps.filter((e) => e.tls).map(endpointText);
+  if (!plain.length) return `Logins only over TLS${tls.length ? `: ${tls.join(', ')}` : ''}.`;
+  const upgrade = [imapEps.some((e) => !e.tls) ? 'STARTTLS (IMAP)' : '', pop3Eps.some((e) => !e.tls) ? 'STLS (POP3)' : ''].filter(Boolean).join(' or ');
+  return `Plain-text logins are off: on ${plain.join(', ')} the client must start TLS with ${upgrade} before logging in${tls.length ? `, or connect to ${tls.join(', ')}` : ''}.`;
+}
+
+/** The address in `Name <addr>` or a bare address, lowercase; `undefined` without one. */
+export function bareAddress(s: string | undefined): string | undefined {
+  const m = /[^\s<>(),;:"]+@[^\s<>(),;:"]+/.exec(s ?? '');
+  return m ? m[0].toLowerCase() : undefined;
+}
+
+/** The domain of an address, lowercase and without a trailing dot. */
+export function domainOf(address: string): string | undefined {
+  const at = address.lastIndexOf('@');
+  const d = at < 0 ? '' : address.slice(at + 1).replace(/\.+$/, '').toLowerCase();
+  return d || undefined;
+}
+
+/** Whether a `mailDomains` entry (`billing.example.test` or `*.billing.example.test`) covers a domain. */
+function domainCovers(pattern: string, domain: string): boolean {
+  const p = pattern.trim().replace(/\.+$/, '').toLowerCase();
+  if (!p.startsWith('*.')) return p === domain;
+  const base = p.slice(1);
+  return domain.length > base.length && domain.endsWith(base);
+}
+
+/** The space whose `mailDomains` own a domain, as the server routes mail and resolves logins; `null` for none. */
+export function mailDomainOwner(domain: string, spaces: readonly { name: string; mailDomains?: readonly string[] }[]): string | null {
+  return spaces.find((s) => (s.mailDomains ?? []).some((p) => domainCovers(p, domain)))?.name ?? null;
+}
+
+/** The first recipient of a raw message: from the To, Cc and Bcc header fields. */
+export function rawRecipient(raw: string): string | undefined {
+  const head = raw.replace(/\r\n/g, '\n').split(/\n\n/, 1)[0] ?? '';
+  const fields = head.replace(/\n[ \t]+/g, ' ').split('\n');
+  for (const name of ['to', 'cc', 'bcc']) {
+    const f = fields.find((l) => l.toLowerCase().startsWith(`${name}:`));
+    const a = bareAddress(f?.slice(name.length + 1));
+    if (a) return a;
+  }
+  return undefined;
 }
 
 /**

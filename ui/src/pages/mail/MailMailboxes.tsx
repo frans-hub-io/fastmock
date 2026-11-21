@@ -1,8 +1,9 @@
 import { Alert, Button, Group, Modal, PasswordInput, SegmentedControl, Stack, Table, Text, TextInput } from '@mantine/core';
-import { IconAlertTriangle, IconInbox, IconKey, IconKeyOff, IconMailbox } from '@tabler/icons-react';
+import { IconAlertTriangle, IconInbox, IconKey, IconKeyOff, IconLock, IconMailbox } from '@tabler/icons-react';
+import { useMediaQuery } from '@mantine/hooks';
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
-import { mailApi, useMailFeature, useMailPorts, type MailboxView } from '../../api/mail';
+import { mailApi, useMailFeature, useMailServer, type MailboxView } from '../../api/mail';
 import { confirmAction, useApiMutation } from '../../api/mutations';
 import { useCan, useSpace, useSpaceQuery } from '../../auth/useAuth';
 import { Copy, DataTable, DetailList, SectionCard, ToneBadge } from '../../components/common';
@@ -11,7 +12,8 @@ import { SpaceBadge } from '../../components/spaces';
 import { EmptyState, ErrorState, LoadingState } from '../../components/States';
 import { missingText } from '../../auth/permissions';
 import { docsUrl } from '../../lib/docs';
-import { randomPassword } from '../../lib/mail';
+import { endpointText, loginRule, mailEndpoints, randomPassword, type MailEndpoint } from '../../lib/mail';
+import classes from './Mail.module.css';
 
 function PasswordDialog({ box, onClose }: { box: MailboxView | null; onClose: () => void }) {
   const [mode, setMode] = useState<'generate' | 'own'>('generate');
@@ -98,39 +100,76 @@ function PasswordDialog({ box, onClose }: { box: MailboxView | null; onClose: ()
   );
 }
 
-function LoginHelp() {
+function Endpoints({ on, list, name }: { on: boolean; list: MailEndpoint[]; name: string }) {
+  if (!on) return <ToneBadge tone="neutral">{name} off</ToneBadge>;
+  if (!list.length) return <ToneBadge tone="success">{name} on</ToneBadge>;
+  return (
+    <Group gap={6}>
+      {list.map((e) => (
+        <ToneBadge key={e.label} tone={e.tls ? 'info' : 'success'} testId={`mail-endpoint-${e.label.toLowerCase()}`}>
+          {e.tls && <IconLock size={12} aria-hidden />}
+          {endpointText(e)}
+          {e.tls ? ' · TLS' : ''}
+        </ToneBadge>
+      ))}
+    </Group>
+  );
+}
+
+function LoginHelp({ wide }: { wide: boolean }) {
   const { features } = useMailFeature();
-  const ports = useMailPorts();
-  const host = window.location.hostname || 'localhost';
+  const info = useMailServer();
   const imap = features.includes('mail.imap');
   const pop3 = features.includes('mail.pop3');
+  const rule = loginRule(info, imap, pop3);
   return (
     <SectionCard title="Reading mail over IMAP and POP3" icon={<IconInbox size={16} />} description="Every recipient address gets a mailbox when its first message arrives" testId="mailbox-help">
       <Stack gap="xs">
         <DetailList
-          columns={1}
+          columns={wide ? 1 : 2}
           items={[
-            { label: 'Server', value: <span className="mono">{host}</span> },
             {
-              label: 'Protocols',
-              value: (
-                <Group gap={6}>
-                  <ToneBadge tone={imap ? 'success' : 'neutral'}>IMAP {imap ? `on${ports.imap ? ` :${String(ports.imap)}` : ''}` : 'off'}</ToneBadge>
-                  <ToneBadge tone={pop3 ? 'success' : 'neutral'}>POP3 {pop3 ? `on${ports.pop3 ? ` :${String(ports.pop3)}` : ''}` : 'off'}</ToneBadge>
-                </Group>
+              label: 'Server',
+              value: info.hostname ? (
+                <span className="mono" data-testid="mailbox-help-host">
+                  {info.hostname}
+                </span>
+              ) : (
+                <span data-testid="mailbox-help-host">the FastMock mail Service or host</span>
               ),
             },
+            { label: 'IMAP', value: <Endpoints on={imap} list={mailEndpoints(info, 'imap')} name="IMAP" /> },
+            { label: 'POP3', value: <Endpoints on={pop3} list={mailEndpoints(info, 'pop3')} name="POP3" /> },
             { label: 'User name', value: 'the mailbox address, e.g. alice@example.test (plus tags removed)' },
             { label: 'Password', value: 'a managed FastMock token with mail:read in the mailbox’s space, or the mailbox password set here' },
+            { label: 'Logins', value: <span data-testid="mailbox-help-logins">{rule}</span>, hidden: !rule },
           ]}
         />
         {!imap && !pop3 && (
           <Text size="xs" c="dimmed">
-            Turn the listeners on with FASTMOCK_MAIL_IMAP_LISTEN and FASTMOCK_MAIL_POP3_LISTEN (see the mail guide).
+            Turn the listeners on with FASTMOCK_MAIL_IMAP_LISTEN, FASTMOCK_MAIL_IMAPS_LISTEN, FASTMOCK_MAIL_POP3_LISTEN or FASTMOCK_MAIL_POP3S_LISTEN (see the mail guide).
           </Text>
         )}
       </Stack>
     </SectionCard>
+  );
+}
+
+/** An address that wraps only before the `@`; a part longer than the cell ends in an ellipsis. */
+function Address({ address }: { address: string }) {
+  const at = address.lastIndexOf('@');
+  return (
+    <Text size="sm" fw={600} className={`mono ${classes.address}`} title={address}>
+      {at > 0 ? (
+        <>
+          {address.slice(0, at)}
+          <wbr />
+          {address.slice(at)}
+        </>
+      ) : (
+        address
+      )}
+    </Text>
   );
 }
 
@@ -146,11 +185,15 @@ export function MailMailboxes() {
     invalidate: [['mail', 'mailboxes']],
     success: (_d, b) => `Password of ${b.address} removed`,
   });
+  const wide = useMediaQuery('(min-width: 105em)');
   const boxes = (q.data?.mailboxes ?? []).filter((b) => !filter || b.address.includes(filter.trim().toLowerCase()));
   return (
     <Stack gap="md">
-      <div className="fm-aside-col">
-        <Stack gap="md">
+      <div className={classes.mailboxes}>
+        <div className={classes.mailboxesHelp}>
+          <LoginHelp wide={wide} />
+        </div>
+        <Stack gap="md" className={classes.mailboxesMain}>
           <TextInput placeholder="Filter by address" value={filter} onChange={(e) => setFilter(e.currentTarget.value)} aria-label="Filter mailboxes" />
           {q.isLoading ? (
             <LoadingState />
@@ -178,13 +221,11 @@ export function MailMailboxes() {
                   const writable = can('mail:write', b.space ?? null);
                   return (
                     <Table.Tr key={`${b.space ?? ''}/${b.address}`} data-testid="mailbox-row">
-                      <Table.Td>
-                        <Text size="sm" fw={600} className="mono break-all">
-                          {b.address}
-                        </Text>
+                      <Table.Td className={classes.addressCell}>
+                        <Address address={b.address} />
                       </Table.Td>
                       {spaces.enabled && (
-                        <Table.Td data-label="Space">
+                        <Table.Td data-label="Space" className={classes.badgeCell}>
                           <SpaceBadge space={b.space} />
                         </Table.Td>
                       )}
@@ -197,7 +238,9 @@ export function MailMailboxes() {
                           ))}
                         </Group>
                       </Table.Td>
-                      <Table.Td data-label="Password">{b.hasPassword ? <ToneBadge tone="success">set</ToneBadge> : <ToneBadge tone="neutral">token only</ToneBadge>}</Table.Td>
+                      <Table.Td data-label="Password" className={classes.badgeCell}>
+                        {b.hasPassword ? <ToneBadge tone="success">set</ToneBadge> : <ToneBadge tone="neutral">token only</ToneBadge>}
+                      </Table.Td>
                       <Table.Td>
                         <Group gap={4} justify="flex-end" wrap="nowrap">
                           {writable ? (
@@ -241,7 +284,6 @@ export function MailMailboxes() {
             </DataTable>
           )}
         </Stack>
-        <LoginHelp />
       </div>
       <PasswordDialog box={editing} onClose={() => setEditing(null)} />
     </Stack>

@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api, buildQuery, errorFromResponse, rawFetch } from './http';
 import { useVersion } from './features';
 import type { components } from './schema';
+import { mailServerInfo, type MailServerInfo } from '../lib/mail';
 
 type S = components['schemas'];
 
@@ -85,14 +86,8 @@ export function useMailFeature(): { state: MailFeature; features: string[] } {
   return { state: features.includes('mail') ? 'on' : 'off', features };
 }
 
-/** Optional mail listener ports the server may publish in `/ui/config.json`. */
-export interface MailPorts {
-  smtp?: number;
-  imap?: number;
-  pop3?: number;
-}
-
-export function useMailPorts(): MailPorts {
+/** The mail settings the server publishes in `/ui/config.json` (listener ports, host name, login rule). */
+export function useMailServer(): MailServerInfo {
   const q = useQuery({
     queryKey: ['ui-config'],
     queryFn: async () => {
@@ -106,7 +101,5 @@ export function useMailPorts(): MailPorts {
     },
     staleTime: Infinity,
   });
-  const cfg = (q.data ?? {});
-  const num = (k: string) => (typeof cfg[k] === 'number' ? cfg[k] : undefined);
-  return { smtp: num('mailSmtpPort'), imap: num('mailImapPort'), pop3: num('mailPop3Port') };
+  return mailServerInfo(q.data ?? {});
 }

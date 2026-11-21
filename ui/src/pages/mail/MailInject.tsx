@@ -4,10 +4,10 @@ import { useMediaQuery } from '@mantine/hooks';
 import { useState } from 'react';
 import { mailApi, type ComposeAttachment, type ComposeRequest } from '../../api/mail';
 import { useApiMutation } from '../../api/mutations';
-import { useSpaceChoice } from '../../auth/useAuth';
+import { useSpace, useSpaceChoice, useSpaceOptions } from '../../auth/useAuth';
 import { SpaceField } from '../../components/spaces';
 import { formatBytes } from '../../lib/format';
-import { composeIssues, fileToBase64, rawIssue, type ComposeIssues } from '../../lib/mail';
+import { bareAddress, composeIssues, domainOf, fileToBase64, mailDomainOwner, rawIssue, rawRecipient, type ComposeIssues } from '../../lib/mail';
 
 const EMPTY: ComposeRequest = { from: '', to: [], cc: [], subject: '', text: '', html: '', attachments: [] };
 
@@ -31,7 +31,10 @@ export function InjectDialog({ opened, onClose }: { opened: boolean; onClose: ()
   const [mailFrom, setMailFrom] = useState('');
   const [rcptTo, setRcptTo] = useState('');
   const [touched, setTouched] = useState(false);
-  const [space, setSpace] = useSpaceChoice('mail:write');
+  const [chosen, choose] = useSpaceChoice('mail:write');
+  const [picked, setPicked] = useState(false);
+  const spaces = useSpace();
+  const writable = useSpaceOptions('mail:write');
   const [fileError, setFileError] = useState<string | null>(null);
   const phone = useMediaQuery('(max-width: 47.99em)');
 
@@ -43,7 +46,19 @@ export function InjectDialog({ opened, onClose }: { opened: boolean; onClose: ()
     setRcptTo('');
     setTouched(false);
     setFileError(null);
+    setPicked(false);
   };
+
+  const recipient = mode === 'compose' ? bareAddress(c.to[0] ?? c.cc?.[0]) : (bareAddress(rcptTo) ?? rawRecipient(raw));
+  const domain = recipient ? domainOf(recipient) : undefined;
+  const owner = spaces.enabled && domain ? mailDomainOwner(domain, spaces.spaces) : null;
+  const space = !picked && owner && writable.includes(owner) ? owner : chosen;
+  const spaceHint =
+    spaces.enabled && recipient && domain && space !== owner
+      ? owner
+        ? `${domain} belongs to ${owner}: IMAP and POP3 logins as this address see only ${owner}.`
+        : `No space owns ${domain}: IMAP and POP3 log in to this copy as ${space ?? '_global'}/${recipient}.`
+      : null;
 
   const send = useApiMutation<{ compose?: ComposeRequest; raw?: string }>({
     fn: (v) => (v.compose ? mailApi.inject(v.compose, space) : mailApi.injectRaw(v.raw ?? '', { space, mailFrom, rcptTo })),
@@ -104,8 +119,24 @@ export function InjectDialog({ opened, onClose }: { opened: boolean; onClose: ()
               aria-label="Message format"
               data-testid="inject-mode"
             />
-            <SpaceField perm="mail:write" value={space} onChange={setSpace} description="Where the message is stored" />
+            <SpaceField
+              perm="mail:write"
+              value={space}
+              onChange={(v) => {
+                setPicked(true);
+                choose(v);
+              }}
+              description={owner && space === owner && !picked ? `Owner of ${domain ?? ''}` : 'Where the message is stored'}
+            />
           </Group>
+          {spaceHint && (
+            <Group gap={6} wrap="nowrap" align="flex-start" c="var(--fh-semantic-warning-fg)" data-testid="inject-space-hint">
+              <IconAlertTriangle size={14} style={{ flexShrink: 0, marginTop: 2 }} aria-hidden />
+              <Text size="xs" c="inherit">
+                {spaceHint}
+              </Text>
+            </Group>
+          )}
           {mode === 'compose' ? (
             <>
               <div className="fm-form-grid">

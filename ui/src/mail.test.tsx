@@ -7,7 +7,15 @@ import type { MailEntry, MailMessage } from './api/mail';
 import { visibleNav } from './components/nav';
 import {
   addTerm,
+  bareAddress,
   composeIssues,
+  domainOf,
+  loginRule,
+  mailDomainOwner,
+  mailEndpoints,
+  mailServerInfo,
+  rawRecipient,
+  smtpSnippets,
   isUnread,
   loadSeen,
   mailChaosIssues,
@@ -131,6 +139,53 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+const TLS_CONFIG = { mailSmtpPort: null, mailSmtpsPort: 4650, mailImapPort: 1143, mailImapsPort: 1993, mailPop3Port: null, mailPop3sPort: 1995, mailHostname: 'mail.example.test', mailPlaintextAuth: false };
+
+describe('mail server settings and domains', () => {
+  it('reads the published listeners, host name and login rule', () => {
+    expect(mailServerInfo({})).toEqual({ published: false });
+    const info = mailServerInfo(TLS_CONFIG);
+    expect(info).toEqual({ published: true, hostname: 'mail.example.test', smtps: 4650, imap: 1143, imaps: 1993, pop3s: 1995, plaintextAuth: false });
+    expect(mailEndpoints(info, 'imap')).toEqual([
+      { label: 'IMAP', port: 1143, tls: false },
+      { label: 'IMAPS', port: 1993, tls: true },
+    ]);
+    expect(mailEndpoints(info, 'smtp')).toEqual([{ label: 'SMTPS', port: 4650, tls: true }]);
+    expect(loginRule(info, true, true)).toBe('Plain-text logins are off: on IMAP :1143 the client must start TLS with STARTTLS (IMAP) before logging in, or connect to IMAPS :1993, POP3S :1995.');
+    expect(loginRule({ ...info, imap: undefined }, true, true)).toBe('Logins only over TLS: IMAPS :1993, POP3S :1995.');
+    expect(loginRule({ ...info, plaintextAuth: true }, true, false)).toMatch(/^Plain-text logins are accepted/);
+    expect(loginRule(mailServerInfo({ mailImapPort: 1143 }), true, false)).toBeNull();
+    expect(loginRule(info, false, false)).toBeNull();
+  });
+
+  it('builds SMTPS snippets with implicit TLS', () => {
+    const [swaks, curl, py] = smtpSnippets('mail.example.test', 4650, true);
+    expect(swaks?.code).toContain('swaks --server mail.example.test:4650 --tls-on-connect');
+    expect(curl?.code).toContain('curl -s smtps://mail.example.test:4650');
+    expect(py?.code).toContain('smtplib.SMTP_SSL("mail.example.test", 4650)');
+    expect(smtpSnippets('localhost', 2525)[1]?.code).toContain('smtp://localhost:2525');
+  });
+
+  it('finds the space that owns a recipient domain like the server does', () => {
+    const spaces = [
+      { name: 'billing', mailDomains: ['billing.example.test', '*.invoices.example.test'] },
+      { name: 'crm', mailDomains: ['crm.example.test'] },
+      { name: 'old' },
+    ];
+    expect(bareAddress('Support <Support@Billing.Example.TEST>')).toBe('support@billing.example.test');
+    expect(bareAddress('nobody')).toBeUndefined();
+    expect(domainOf('a@billing.example.test.')).toBe('billing.example.test');
+    expect(mailDomainOwner('billing.example.test', spaces)).toBe('billing');
+    expect(mailDomainOwner('eu.invoices.example.test', spaces)).toBe('billing');
+    expect(mailDomainOwner('invoices.example.test', spaces)).toBeNull();
+    expect(mailDomainOwner('crm.example.test', spaces)).toBe('crm');
+    expect(mailDomainOwner('example.test', spaces)).toBeNull();
+    expect(rawRecipient('From: a@example.com\r\nTo: "Support"\r\n <support@crm.example.test>\r\n\r\nTo: x@y.z')).toBe('support@crm.example.test');
+    expect(rawRecipient('From: a@example.com\nBcc: b@billing.example.test\n\nHi')).toBe('b@billing.example.test');
+    expect(rawRecipient('Subject: none\n\nTo: x@y.z')).toBeUndefined();
+  });
 });
 
 describe('mail helpers', () => {
@@ -333,7 +388,32 @@ describe('mail list', () => {
     renderApp(<AppRoutes />, '/mail');
     expect(await screen.findByTestId('mail-empty')).toHaveTextContent('No mail yet');
     expect(screen.getByTestId('smtp-snippet-swaks')).toHaveTextContent('swaks --server localhost:2525');
+    expect(screen.getByTestId('mail-empty-smtp')).toHaveTextContent('the FastMock mail Service or host, port 2525, the default');
     expect(screen.getByRole('link', { name: /Mail guide/ })).toHaveAttribute('href', 'https://fastmock.franshub.io/guide/mail/');
+  });
+
+  it('points the SMTP snippets at the published host and SMTPS port', async () => {
+    server({
+      route: (method, url) => {
+        if (url.pathname === '/ui/config.json') return { body: TLS_CONFIG };
+        return listRoute({})(method, url);
+      },
+    });
+    renderApp(<AppRoutes />, '/mail');
+    await waitFor(() => expect(screen.getByTestId('smtp-snippet-swaks')).toHaveTextContent('swaks --server mail.example.test:4650 --tls-on-connect'));
+    expect(screen.getByTestId('mail-empty-smtp')).toHaveTextContent('on mail.example.test, SMTPS :4650 (TLS)');
+  });
+
+  it('says so when no SMTP listener is on', async () => {
+    server({
+      route: (method, url) => {
+        if (url.pathname === '/ui/config.json') return { body: { ...TLS_CONFIG, mailSmtpsPort: null } };
+        return listRoute({})(method, url);
+      },
+    });
+    renderApp(<AppRoutes />, '/mail');
+    await waitFor(() => expect(screen.getByTestId('mail-empty-smtp')).toHaveTextContent('SMTP listeners are off'));
+    expect(screen.queryByTestId('smtp-snippet-swaks')).not.toBeInTheDocument();
   });
 
   it('deletes the messages matching the search after confirmation', async () => {
@@ -453,6 +533,72 @@ describe('inject dialog', () => {
     await waitFor(() => expect(calls.find((c) => c.method === 'POST')?.body).toBe(JSON.stringify({ from: 'Shop <shop@example.com>', to: ['alice@example.test'], subject: 'Hello', text: 'Body' })));
   });
 
+  it('stores the message in the space that owns the recipient domain unless another space is picked', async () => {
+    const SPACES = [
+      { name: 'billing', pathPrefixes: [], hosts: [], mailDomains: ['billing.example.test'], permissions: ['mail:read', 'mail:write'] },
+      { name: 'crm', pathPrefixes: [], hosts: [], mailDomains: ['crm.example.test'], permissions: ['mail:read', 'mail:write'] },
+    ];
+    const calls = server({
+      route: (method, url) => {
+        if (url.pathname === '/__admin/spaces') return { body: { spaces: SPACES } };
+        if (method === 'POST' && url.pathname === '/__admin/mail/messages') return { body: { messages: [E1] } };
+        return listRoute({ '': { messages: [E1] } })(method, url);
+      },
+    });
+    renderApp(<AppRoutes />, '/mail?inject=1');
+    const dialog = await screen.findByRole('dialog', { name: 'Inject a message' });
+    const field = await within(dialog).findByTestId('space-field');
+    expect(field).toHaveValue('Global area (no space)');
+    await userEvent.type(within(dialog).getByTestId('inject-to'), 'support@billing.example.test{Enter}');
+    await waitFor(() => expect(field).toHaveValue('billing'));
+    expect(within(dialog).queryByTestId('inject-space-hint')).not.toBeInTheDocument();
+    await userEvent.type(within(dialog).getByTestId('inject-to'), 'x@crm.example.test{Enter}');
+    expect(field).toHaveValue('billing');
+    await userEvent.type(within(dialog).getByTestId('inject-from'), 'shop@example.com');
+    await userEvent.type(within(dialog).getByTestId('inject-text'), 'Body');
+    await userEvent.click(within(dialog).getByTestId('inject-submit'));
+    await waitFor(() => expect(calls.find((c) => c.method === 'POST')?.path).toBe('/__admin/mail/messages?space=billing'));
+  });
+
+  it('keeps a space picked by hand and says where logins look', async () => {
+    const SPACES = [{ name: 'billing', pathPrefixes: [], hosts: [], mailDomains: ['billing.example.test'], permissions: ['mail:read', 'mail:write'] }];
+    server({
+      route: (method, url) => {
+        if (url.pathname === '/__admin/spaces') return { body: { spaces: SPACES } };
+        return listRoute({ '': { messages: [E1] } })(method, url);
+      },
+    });
+    renderApp(<AppRoutes />, '/mail?inject=1');
+    const dialog = await screen.findByRole('dialog', { name: 'Inject a message' });
+    const field = await within(dialog).findByTestId('space-field');
+    await userEvent.type(within(dialog).getByTestId('inject-to'), 'support@billing.example.test{Enter}');
+    await waitFor(() => expect(field).toHaveValue('billing'));
+    await userEvent.click(field);
+    await userEvent.click(await screen.findByRole('option', { name: 'Global area (no space)', hidden: true }));
+    expect(field).toHaveValue('Global area (no space)');
+    expect(within(dialog).getByTestId('inject-space-hint')).toHaveTextContent('billing.example.test belongs to billing: IMAP and POP3 logins as this address see only billing.');
+    await userEvent.type(within(dialog).getByTestId('inject-to'), '{Backspace}{Backspace}bob@billing.example.test{Enter}');
+    expect(field).toHaveValue('Global area (no space)');
+  });
+
+  it('keeps the selected space for a domain no space owns, with the login to use', async () => {
+    window.localStorage.setItem('fastmock.space', 'billing');
+    const SPACES = [{ name: 'billing', pathPrefixes: [], hosts: [], mailDomains: ['billing.example.test'], permissions: ['mail:read', 'mail:write'] }];
+    server({
+      route: (method, url) => {
+        if (url.pathname === '/__admin/spaces') return { body: { spaces: SPACES } };
+        return listRoute({ '': { messages: [E1] } })(method, url);
+      },
+    });
+    renderApp(<AppRoutes />, '/mail?inject=1');
+    const dialog = await screen.findByRole('dialog', { name: 'Inject a message' });
+    const field = await within(dialog).findByTestId('space-field');
+    expect(field).toHaveValue('billing');
+    await userEvent.type(within(dialog).getByTestId('inject-to'), 'alice@example.test{Enter}');
+    expect(field).toHaveValue('billing');
+    expect(within(dialog).getByTestId('inject-space-hint')).toHaveTextContent('No space owns example.test: IMAP and POP3 log in to this copy as billing/alice@example.test.');
+  });
+
   it('posts a raw message as message/rfc822', async () => {
     const calls = server({
       route: (method, url) => {
@@ -555,6 +701,41 @@ describe('mail permissions and feature gating', () => {
     await userEvent.click(screen.getByTestId('mail-section-mailboxes'));
     const row = await screen.findByTestId('mailbox-row');
     expect(within(row).getByTestId('missing-permission')).toHaveAttribute('data-permission', 'mail:write');
+  });
+
+  it('shows the published mail host, every IMAP and POP3 port and the TLS login rule', async () => {
+    server({
+      features: ['mail', 'mail.imap', 'mail.pop3'],
+      route: (_method, url) => {
+        if (url.pathname === '/ui/config.json') return { body: TLS_CONFIG };
+        if (url.pathname === '/__admin/mail/mailboxes') return { body: { mailboxes: [{ address: 'support@billing.example.test', folders: ['INBOX'], hasPassword: false }] } };
+        return undefined;
+      },
+    });
+    renderApp(<AppRoutes />, '/mail/mailboxes');
+    const help = await screen.findByTestId('mailbox-help');
+    await waitFor(() => expect(within(help).getByTestId('mailbox-help-host')).toHaveTextContent('mail.example.test'));
+    expect(within(help).getByTestId('mail-endpoint-imap')).toHaveTextContent('IMAP :1143');
+    expect(within(help).getByTestId('mail-endpoint-imaps')).toHaveTextContent('IMAPS :1993 · TLS');
+    expect(within(help).getByTestId('mail-endpoint-pop3s')).toHaveTextContent('POP3S :1995 · TLS');
+    expect(within(help).queryByTestId('mail-endpoint-pop3')).not.toBeInTheDocument();
+    expect(within(help).getByTestId('mailbox-help-logins')).toHaveTextContent('STARTTLS (IMAP)');
+    const address = within(await screen.findByTestId('mailbox-row')).getByTitle('support@billing.example.test');
+    expect(address).toHaveTextContent('support@billing.example.test');
+    expect(address.querySelector('wbr')).not.toBeNull();
+  });
+
+  it('names no host when the server does not publish one', async () => {
+    server({
+      route: (_method, url) => {
+        if (url.pathname === '/__admin/mail/mailboxes') return { body: { mailboxes: [] } };
+        return undefined;
+      },
+    });
+    renderApp(<AppRoutes />, '/mail/mailboxes');
+    const help = await screen.findByTestId('mailbox-help');
+    expect(within(help).getByTestId('mailbox-help-host')).toHaveTextContent('the FastMock mail Service or host');
+    expect(within(help).queryByTestId('mailbox-help-logins')).not.toBeInTheDocument();
   });
 
   it('sets a mailbox password and shows it once', async () => {

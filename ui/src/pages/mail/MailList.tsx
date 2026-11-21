@@ -3,7 +3,7 @@ import { IconChecks, IconHelpCircle, IconMail, IconMailPlus, IconPaperclip, Icon
 import { useInfiniteQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
-import { mailApi, useMailPorts, type MailEntry, type MailList as MailListPage } from '../../api/mail';
+import { mailApi, useMailServer, type MailEntry, type MailList as MailListPage } from '../../api/mail';
 import { confirmAction, useApiMutation } from '../../api/mutations';
 import { useCan, useSpace, useSpaceQuery } from '../../auth/useAuth';
 import { Permitted } from '../../components/Permitted';
@@ -11,7 +11,7 @@ import { SpaceBadge } from '../../components/spaces';
 import { EmptyState, ErrorState, LoadingState } from '../../components/States';
 import { docsUrl } from '../../lib/docs';
 import { formatAbsolute, formatRelative } from '../../lib/format';
-import { isUnread, loadSeen, markAllSeen, QUERY_HELP, recipientsOf, senderOf, smtpSnippets, type SeenState } from '../../lib/mail';
+import { endpointText, isUnread, loadSeen, mailEndpoints, markAllSeen, QUERY_HELP, recipientsOf, senderOf, smtpSnippets, type SeenState } from '../../lib/mail';
 import { useMailStream, type StreamEvent } from '../../lib/mailStream';
 import { InjectDialog } from './MailInject';
 import classes from './Mail.module.css';
@@ -108,31 +108,45 @@ function MailRow({ entry, unread, fresh, showSpace }: { entry: MailEntry; unread
 }
 
 function FirstMessage({ live }: { live: boolean }) {
-  const ports = useMailPorts();
-  const host = window.location.hostname || 'localhost';
-  const port = ports.smtp ?? 2525;
-  const snippets = smtpSnippets(host, port);
+  const info = useMailServer();
+  const eps = mailEndpoints(info, 'smtp');
+  const ep = eps[0];
+  const smtpOff = info.published && !ep;
+  const host = info.hostname ?? (window.location.hostname || 'localhost');
+  const snippets = smtpSnippets(host, ep?.port ?? 2525, ep?.tls ?? false);
+  const ports = eps.length ? eps.map((e) => `${endpointText(e)}${e.tls ? ' (TLS)' : ''}`).join(', ') : 'port 2525, the default';
+  const arrive = `Messages appear here ${live ? 'the moment they arrive' : 'when you reload'}.`;
   return (
     <EmptyState title="No mail yet" icon={<IconMail size={30} />} docs={{ label: 'Mail guide: SMTP, API, IMAP and POP3', href: docsUrl('guide/mail') }} testId="mail-empty">
       <Stack gap="sm" align="center">
-        <span>
-          Point your application at FastMock's SMTP listener ({host}:{port}
-          {ports.smtp ? '' : ', the default port'}). Messages appear here {live ? 'the moment they arrive' : 'when you reload'}. Send a test message:
-        </span>
-        <Tabs defaultValue="swaks" variant="pills" radius="md" className={classes.emptyCard} classNames={{ list: 'fm-tabs-list' }}>
-          <Tabs.List>
-            {snippets.map((s) => (
-              <Tabs.Tab key={s.id} value={s.id}>
-                {s.label}
-              </Tabs.Tab>
-            ))}
-          </Tabs.List>
-          {snippets.map((s) => (
-            <Tabs.Panel key={s.id} value={s.id} pt="xs">
-              <Snippet code={s.code} testId={`smtp-snippet-${s.id}`} />
-            </Tabs.Panel>
-          ))}
-        </Tabs>
+        {smtpOff ? (
+          <span data-testid="mail-empty-smtp">The SMTP listeners are off (FASTMOCK_MAIL_SMTP_LISTEN, FASTMOCK_MAIL_SMTPS_LISTEN): inject a message instead. {arrive}</span>
+        ) : (
+          <>
+            <span data-testid="mail-empty-smtp">
+              Point your application at FastMock's SMTP listener on {info.hostname ? <span className="mono">{info.hostname}</span> : 'the FastMock mail Service or host'}, {ports}. {arrive} Send a test message:
+            </span>
+            {!info.hostname && (
+              <Text size="xs" c="dimmed">
+                The snippets use this page’s host, {host}; replace it with the mail Service or host when they differ.
+              </Text>
+            )}
+            <Tabs defaultValue="swaks" variant="pills" radius="md" className={classes.emptyCard} classNames={{ list: 'fm-tabs-list' }}>
+              <Tabs.List>
+                {snippets.map((s) => (
+                  <Tabs.Tab key={s.id} value={s.id}>
+                    {s.label}
+                  </Tabs.Tab>
+                ))}
+              </Tabs.List>
+              {snippets.map((s) => (
+                <Tabs.Panel key={s.id} value={s.id} pt="xs">
+                  <Snippet code={s.code} testId={`smtp-snippet-${s.id}`} />
+                </Tabs.Panel>
+              ))}
+            </Tabs>
+          </>
+        )}
       </Stack>
     </EmptyState>
   );

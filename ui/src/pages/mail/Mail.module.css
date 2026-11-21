@@ -425,3 +425,49 @@
     animation: none;
   }
 }
+
+.mailboxes {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--mantine-spacing-md);
+  align-items: start;
+}
+
+@media (min-width: 105em) {
+  .mailboxes {
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+  }
+
+  .mailboxesHelp {
+    grid-column: 2;
+    grid-row: 1;
+    position: sticky;
+    top: calc(var(--fm-header-height) + var(--mantine-spacing-md));
+  }
+
+  .mailboxesMain {
+    grid-column: 1;
+    grid-row: 1;
+  }
+}
+
+.addressCell {
+  min-width: 12ch;
+}
+
+.address {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+.badgeCell {
+  white-space: nowrap;
+}
+
+.badgeCell :global(.mantine-Badge-root),
+.badgeCell :global(.mantine-Badge-label) {
+  max-width: none;
+  overflow: visible;
+}

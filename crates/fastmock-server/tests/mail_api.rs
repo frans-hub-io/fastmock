@@ -2266,4 +2266,7 @@ async fn ui_config_lists_the_mail_ports() {
     assert_eq!(v["mailImapPort"], 1143, "{v}");
     assert_eq!(v["mailSmtpPort"], Value::Null, "{v}");
     assert_eq!(v["mailPop3Port"], Value::Null, "{v}");
+    assert_eq!(v["mailImapsPort"], Value::Null, "{v}");
+    assert_eq!(v["mailHostname"], Value::Null, "{v}");
+    assert_eq!(v["mailPlaintextAuth"], true, "{v}");
 }
