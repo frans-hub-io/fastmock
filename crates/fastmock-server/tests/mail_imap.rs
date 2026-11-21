@@ -214,7 +214,7 @@ impl Server {
     }
 
     async fn set_password(&self, space: &str, address: &str, password: &str) {
-        let hash = fastmock_mail::imap::login::hash_password_with(password.as_bytes(), 1000);
+        let hash = fastmock_mail::mailbox_login::hash_password_with(password, 1000);
         self.app
             .mail
             .clone()

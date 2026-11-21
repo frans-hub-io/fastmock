@@ -10,6 +10,7 @@ pub mod config;
 pub mod extract;
 pub mod imap;
 pub mod labels;
+pub mod mailbox_login;
 pub mod matching;
 pub mod parse;
 pub mod pop3;

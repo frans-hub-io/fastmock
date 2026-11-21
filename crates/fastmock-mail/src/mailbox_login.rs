@@ -1,8 +1,9 @@
-//! Mailbox logins for POP3 (and IMAP, which logs in the same way): the user name is the mailbox address
-//! (lowercase, plus tag removed), its area is the space whose `mailDomains` own the domain, else the
-//! global area. The password is a managed FastMock token allowed `mail:read` in that area (or globally),
-//! or the mailbox password set through the admin API, stored as a salted PBKDF2-HMAC-SHA256 hash in the
-//! form `pbkdf2-sha256$<iterations>$<salt>$<hash>` (base64 without padding).
+//! Mailbox logins shared by IMAP and POP3: the user name is the mailbox address (lowercase, plus tag
+//! removed), its area is the space whose `mailDomains` own the domain, else the global area. The password
+//! is a managed FastMock token allowed `mail:read` in that area (or globally), or the mailbox password set
+//! through the admin API, stored as a salted PBKDF2-HMAC-SHA256 hash in the form
+//! `pbkdf2-sha256$<iterations>$<salt>$<hash>` (base64 without padding). The admin API writes these hashes
+//! with [`hash_password`].
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -225,5 +226,102 @@ mod tests {
             MailboxLogin::address_of(&format!("{}@example.test", "a".repeat(400))),
             None
         );
+    }
+
+    #[test]
+    fn hashes_follow_the_rfc_7914_vector() {
+        let want = hex::decode("55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc")
+            .unwrap();
+        let stored = format!(
+            "pbkdf2-sha256$1${}${}",
+            B64.encode(b"salt"),
+            B64.encode(want)
+        );
+        assert!(verify_password(&stored, "passwd"));
+        assert!(!verify_password(&stored, "Passwd"));
+    }
+
+    struct Tokens;
+
+    #[async_trait]
+    impl MailboxTokenCheck for Tokens {
+        async fn can_read(&self, area: Option<&str>, token: &str) -> bool {
+            token == format!("tok-{}", area.unwrap_or("global"))
+        }
+    }
+
+    fn login(tokens: bool) -> MailboxLogin {
+        use crate::config::MailConfig;
+        use crate::routing::MailDomains;
+        use fastmock_core::mail::{LocalMailEvents, MemoryMailStore};
+        let mut domains = MailDomains::default();
+        domains.add("billing", "billing.example.test");
+        domains.add("payments", "payments.example.test");
+        let service = MailService::new(
+            Arc::new(MailConfig::default()),
+            Arc::new(MemoryMailStore::new(10)),
+            Arc::new(LocalMailEvents::new(4)),
+            domains,
+            ["billing", "payments"].map(String::from).into(),
+        );
+        let t: Option<Arc<dyn MailboxTokenCheck>> = tokens.then(|| Arc::new(Tokens) as _);
+        MailboxLogin::new(Arc::new(service), t)
+    }
+
+    #[test]
+    fn areas_follow_mail_domains() {
+        let l = login(false);
+        assert_eq!(
+            l.area_of("alice@billing.example.test").as_deref(),
+            Some("billing")
+        );
+        assert_eq!(l.area_of("x@other.example"), None);
+    }
+
+    #[tokio::test]
+    async fn tokens_and_passwords() {
+        let l = login(true);
+        let ok = l
+            .check("a@billing.example.test", "tok-billing")
+            .await
+            .unwrap();
+        assert_eq!(ok.area.as_deref(), Some("billing"));
+        assert!(ok.by_token);
+        assert!(
+            l.check("a@payments.example.test", "tok-billing")
+                .await
+                .is_none(),
+            "a billing token cannot open a payments mailbox"
+        );
+        assert!(l.check("a@x.example", "tok-global").await.is_some());
+        assert!(
+            login(false)
+                .check("a@billing.example.test", "tok-billing")
+                .await
+                .is_none()
+        );
+        l.service
+            .store
+            .set_mailbox_password(
+                Some("payments"),
+                "p@payments.example.test",
+                Some(&hash_password_with("secret", 1000)),
+            )
+            .await
+            .unwrap();
+        for (user, pw, ok) in [
+            ("P+x@payments.example.test", "secret", true),
+            ("p@payments.example.test", "wrong", false),
+            ("p@payments.example.test", "", false),
+            ("q@payments.example.test", "secret", false),
+            ("not-an-address", "secret", false),
+        ] {
+            let got = l.check(user, pw).await;
+            assert_eq!(got.is_some(), ok, "{user}");
+            if let Some(got) = got {
+                assert_eq!(got.address, "p@payments.example.test");
+                assert!(!got.by_token);
+            }
+        }
     }
 }

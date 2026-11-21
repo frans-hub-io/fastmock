@@ -9,7 +9,7 @@ use fastmock_core::mail::{MailMessage, MailQuery, MailboxKey};
 use fastmock_core::model::SpaceFilter;
 use fastmock_mail::MailConfig;
 use fastmock_mail::config::MailTlsFiles;
-use fastmock_mail::pop3::hash_password_with;
+use fastmock_mail::mailbox_login::hash_password_with;
 use fastmock_server::auth::hash_token;
 use fastmock_server::config::{Config, StorageKind};
 use fastmock_server::mail_listeners::{self, MailListeners};

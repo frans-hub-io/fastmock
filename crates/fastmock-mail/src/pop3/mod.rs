@@ -1,6 +1,6 @@
 //! The POP3 listener (phase C2, RFC 1939 with CAPA (RFC 2449), STLS (RFC 2595), AUTH PLAIN (RFC 5034)
 //! and response codes (RFC 2449, RFC 3206)), written by hand. A session logs in to the INBOX of one
-//! mailbox ([`login::MailboxLogin`]), takes a snapshot of its entries (the maildrop does not change during
+//! mailbox ([`MailboxLogin`]), takes a snapshot of its entries (the maildrop does not change during
 //! the session), and on QUIT removes the messages marked with DELE from that INBOX only
 //! ([`fastmock_core::mail::MailStore::mailbox_remove`]); the stored messages stay in the admin API.
 //!
@@ -8,7 +8,6 @@
 //! and hands each one to [`Pop3Server::serve`].
 
 pub mod command;
-pub mod login;
 pub mod render;
 mod session;
 
@@ -19,12 +18,10 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::watch;
 
+use crate::mailbox_login::{MailboxLogin, MailboxTokenCheck};
 use crate::service::MailService;
 
 pub use crate::smtp::SessionEnd;
-pub use login::{
-    LoginOk, MailboxLogin, MailboxTokenCheck, hash_password, hash_password_with, verify_password,
-};
 
 /// The reply to a POP3 connection over the connection limits, sent before closing it.
 pub const BUSY_REPLY: &[u8] = b"-ERR [SYS/TEMP] Too many connections, try again later\r\n";

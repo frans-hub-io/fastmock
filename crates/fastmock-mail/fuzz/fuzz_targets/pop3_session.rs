@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fastmock_core::mail::{Envelope, LocalMailEvents, MailSource, MailStore, MemoryMailStore};
-use fastmock_mail::pop3::{Pop3Server, command, hash_password_with, render};
+use fastmock_mail::mailbox_login::hash_password_with;
+use fastmock_mail::pop3::{Pop3Server, command, render};
 use fastmock_mail::{Incoming, MailConfig, MailDomains, MailService};
 use libfuzzer_sys::fuzz_target;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

@@ -1,13 +1,12 @@
 //! The IMAP listener (phase C1): an own tokio session loop; `imap-codec` parses commands behind
 //! [`codec`], responses are written by [`response`]. Mailboxes live in [`crate::MailStore`]
-//! (`mailbox_*`), IDLE follows [`crate::MailEvents`], logins go through [`login`].
+//! (`mailbox_*`), IDLE follows [`crate::MailEvents`], logins go through [`MailboxLogin`] (shared with POP3).
 //!
 //! The server crate accepts connections (and applies the connection limits) and hands each one to
 //! [`ImapServer::serve`].
 
 pub mod codec;
 pub mod command;
-pub mod login;
 pub mod mime;
 pub mod response;
 pub mod search;
@@ -19,9 +18,9 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::watch;
 
+use crate::mailbox_login::{MailboxLogin, MailboxTokenCheck};
 use crate::service::MailService;
 pub use crate::smtp::SessionEnd;
-pub use login::{PasswordVerify, ReadTokenCheck, hash_password, verify_password};
 pub use session::{AUTH_FAILURE_DELAY, IDLE_POLL, MAX_BAD_COMMANDS, MAX_COMMANDS, MAX_FOLDERS};
 
 /// The reply to a plain IMAP connection over the connection limits, sent before closing it.
@@ -32,22 +31,19 @@ pub struct ImapServer {
     pub service: Arc<MailService>,
     /// With a certificate, STARTTLS is offered and IMAPS listeners can run.
     pub tls: Option<Arc<rustls::ServerConfig>>,
-    pub tokens: Option<Arc<dyn ReadTokenCheck>>,
-    /// Compares mailbox password hashes ([`verify_password`]: `pbkdf2-sha256$...` by default).
-    pub verify_password: PasswordVerify,
+    pub login: MailboxLogin,
 }
 
 impl ImapServer {
     pub fn new(
         service: Arc<MailService>,
         tls: Option<Arc<rustls::ServerConfig>>,
-        tokens: Option<Arc<dyn ReadTokenCheck>>,
+        tokens: Option<Arc<dyn MailboxTokenCheck>>,
     ) -> Self {
         Self {
+            login: MailboxLogin::new(service.clone(), tokens),
             service,
             tls,
-            tokens,
-            verify_password,
         }
     }
 

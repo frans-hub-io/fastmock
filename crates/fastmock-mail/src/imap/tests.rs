@@ -11,6 +11,7 @@ use tokio::sync::watch;
 
 use super::*;
 use crate::config::MailConfig;
+use crate::mailbox_login::{MailboxTokenCheck, hash_password_with};
 use crate::routing::MailDomains;
 use crate::service::{Incoming, MailService};
 
@@ -56,9 +57,9 @@ fn tls() -> Tls {
 struct Tokens;
 
 #[async_trait]
-impl ReadTokenCheck for Tokens {
-    async fn allows_read(&self, space: Option<&str>, token: &str) -> bool {
-        token == format!("tok-{}", space.unwrap_or("global"))
+impl MailboxTokenCheck for Tokens {
+    async fn can_read(&self, area: Option<&str>, token: &str) -> bool {
+        token == format!("tok-{}", area.unwrap_or("global"))
     }
 }
 
@@ -386,7 +387,7 @@ async fn authenticate_plain_with_and_without_initial_response() {
         .set_mailbox_password(
             Some("payments"),
             "p@payments.example.test",
-            Some(&login::hash_password_with(b"secret", 1000)),
+            Some(&hash_password_with("secret", 1000)),
         )
         .await
         .unwrap();

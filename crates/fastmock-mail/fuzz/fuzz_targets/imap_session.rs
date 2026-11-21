@@ -44,7 +44,7 @@ fuzz_target!(|data: &[u8]| {
             .set_mailbox_password(
                 Some("billing"),
                 "a@billing.example.test",
-                Some(&fastmock_mail::imap::login::hash_password_with(b"secret", 1)),
+                Some(&fastmock_mail::mailbox_login::hash_password_with("secret", 1)),
             )
             .await
             .unwrap();

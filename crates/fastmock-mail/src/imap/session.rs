@@ -19,12 +19,12 @@ use tokio::time::Instant;
 
 use super::codec::{self, guess_tag};
 use super::command::{Cmd, FetchItem, Request, SearchKey, SeqNum, SeqSet, StatusItem, StoreOp};
-use super::login::{self, MailboxUser};
 use super::mime::MessageView;
 use super::response::{flag_list, internal_date, literal, nstring, string};
 use super::search::{Candidate, SearchDoc, matches};
 use super::{ImapServer, SessionEnd};
 use crate::config::MailConfig;
+use crate::mailbox_login::LoginOk;
 use crate::service::{AcceptError, Destination, Incoming, MailService};
 
 /// Most commands in one session.
@@ -195,7 +195,7 @@ pub(crate) struct Session<'a> {
     shutdown: Option<watch::Receiver<bool>>,
     tls: bool,
     utf8: bool,
-    user: Option<MailboxUser>,
+    user: Option<LoginOk>,
     selected: Option<Selected>,
     auth_failures: u32,
     commands: u32,
@@ -701,20 +701,16 @@ impl<'a> Session<'a> {
 
     async fn login(&mut self, tag: &str, user: &[u8], password: &[u8]) -> Step<bool> {
         let svc = &self.srv.service;
-        let found = login::check(
-            svc,
-            self.srv.tokens.as_deref(),
-            self.srv.verify_password,
-            user,
-            password,
-        )
-        .await;
+        let found = match (std::str::from_utf8(user), std::str::from_utf8(password)) {
+            (Ok(user), Ok(password)) => self.srv.login.check(user, password).await,
+            _ => None,
+        };
         let Some(u) = found else {
             return self.login_failed(tag).await;
         };
         if let Err(e) = svc
             .store
-            .mailbox_create(&MailboxKey::inbox(u.space.as_deref(), &u.address))
+            .mailbox_create(&MailboxKey::inbox(u.area.as_deref(), &u.address))
             .await
         {
             tracing::warn!(error = %e, "creating an IMAP INBOX failed");
@@ -743,14 +739,14 @@ impl<'a> Session<'a> {
 
     // ----- authenticated -----
 
-    fn user(&self) -> &MailboxUser {
+    fn user(&self) -> &LoginOk {
         self.user.as_ref().expect("checked by command()")
     }
 
     fn key(&self, folder: &str) -> MailboxKey {
         let u = self.user();
         MailboxKey {
-            space: u.space.clone(),
+            space: u.area.clone(),
             address: u.address.clone(),
             folder: folder_name(folder.trim_end_matches('/')),
         }
@@ -834,7 +830,7 @@ impl<'a> Session<'a> {
         }
         let store = self.srv.service.store.clone();
         let u = self.user().clone();
-        match store.mailbox_folders(u.space.as_deref(), &u.address).await {
+        match store.mailbox_folders(u.area.as_deref(), &u.address).await {
             Ok(f) if f.len() >= MAX_FOLDERS => {
                 self.tagged(tag, "NO", "[LIMIT] Too many mailboxes");
                 return;
@@ -879,7 +875,7 @@ impl<'a> Session<'a> {
             .srv
             .service
             .store
-            .mailbox_folders(u.space.as_deref(), &u.address)
+            .mailbox_folders(u.area.as_deref(), &u.address)
             .await
         {
             Ok(f) => f,
@@ -976,7 +972,7 @@ impl<'a> Session<'a> {
             },
             message,
         );
-        inc.destination = Destination::Area(u.space.clone());
+        inc.destination = Destination::Area(u.area.clone());
         inc.mailboxes = Some(vec![MailboxDelivery {
             address: u.address.clone(),
             folder: key.folder.clone(),
@@ -1172,7 +1168,7 @@ impl<'a> Session<'a> {
         let max_uid = known.last().map_or(0, |k| k.1);
         let limits = self.cfg.parse_limits();
         let svc = self.srv.service.clone();
-        let space = self.user().space.clone();
+        let space = self.user().area.clone();
         let mut hits = Vec::new();
         for (seq, u) in known {
             let Some(entry) = current.get(&u) else {
@@ -1250,7 +1246,7 @@ impl<'a> Session<'a> {
         }
         let needs_message = items.iter().any(FetchItem::needs_message);
         let svc = self.srv.service.clone();
-        let space = self.user().space.clone();
+        let space = self.user().area.clone();
         let limits = self.cfg.parse_limits();
         let utf8 = self.utf8;
         for (seq, u) in targets {
@@ -1474,7 +1470,7 @@ impl<'a> Session<'a> {
             return Ok(false);
         };
         let events = self.srv.service.events.clone();
-        let mut sub = Some(events.subscribe(SpaceFilter::area(u.space.as_deref())));
+        let mut sub = Some(events.subscribe(SpaceFilter::area(u.area.as_deref())));
         let tick = events.poll_interval().unwrap_or(IDLE_POLL);
         let now = Instant::now();
         let session_left = self.deadline.saturating_duration_since(now);

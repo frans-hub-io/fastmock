@@ -14,7 +14,6 @@ fastmock-core.workspace = true
 form_urlencoded = "1"
 handlebars.workspace = true
 hex.workspace = true
-hmac.workspace = true
 imap-codec = { version = "=2.0.0-alpha.10", features = ["starttls", "ext_id", "ext_utf8", "ext_namespace"] }
 imap-types = "=2.0.0-alpha.8"
 mail-builder.workspace = true

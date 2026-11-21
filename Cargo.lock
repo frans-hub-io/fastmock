@@ -1188,7 +1188,6 @@ dependencies = [
  "form_urlencoded",
  "handlebars",
  "hex",
- "hmac",
  "imap-codec",
  "imap-types",
  "mail-builder",
