@@ -1,4 +1,4 @@
-import { ActionIcon, Anchor, Breadcrumbs, CopyButton, Group, Paper, Stack, Table, Text, Title, Tooltip } from '@mantine/core';
+import { ActionIcon, Anchor, Breadcrumbs, Code, CopyButton, Group, Paper, Stack, Table, Text, Title, Tooltip } from '@mantine/core';
 import { IconCheck, IconChevronRight, IconCopy, IconLayoutList, IconList } from '@tabler/icons-react';
 import { Fragment, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
@@ -319,6 +319,108 @@ export function BodyView({ body, contentType, empty = 'empty body' }: { body: st
       <div className={classes.bodyCopy}>
         <Copy value={body} label="Copy body" />
       </div>
+    </div>
+  );
+}
+
+/** The kinds of API the service catalog records; each has its own colour next to its name. */
+const API_KINDS: Record<string, string> = { REST: 'REST', SOAP: 'SOAP', GRAPHQL: 'GraphQL', EVENT: 'Event', GRPC: 'gRPC', GENERIC: 'Generic' };
+
+/** The kind of an imported API (REST, SOAP, GraphQL, event, gRPC or generic) as a coloured pill. */
+export function KindBadge({ kind }: { kind: string }) {
+  const k = kind.toUpperCase();
+  return (
+    <span className="fm-kind" data-kind={k in API_KINDS ? k.toLowerCase() : 'generic'}>
+      {API_KINDS[k] ?? kind}
+    </span>
+  );
+}
+
+export interface Stat {
+  label: string;
+  value: ReactNode;
+  hint?: ReactNode;
+  tone?: Tone;
+  testId?: string;
+}
+
+/** A row of small figures that sum up a screen: a label, the value and an optional hint; wraps on phones. */
+export function StatStrip({ items, label }: { items: Stat[]; label?: string }) {
+  return (
+    <dl className={classes.stats} aria-label={label}>
+      {items.map((s) => (
+        <div key={s.label} className={classes.stat} data-tone={s.tone} data-testid={s.testId}>
+          <dt className={classes.statLabel}>{s.label}</dt>
+          <dd className={classes.statValue}>{s.value}</dd>
+          {s.hint && <dd className={classes.statHint}>{s.hint}</dd>}
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+/** Labelled values (a description list) laid out in a grid of label/value pairs; one column on phones. */
+export function DetailList({ items, columns = 2 }: { items: { label: string; value: ReactNode; hidden?: boolean }[]; columns?: 1 | 2 | 3 }) {
+  return (
+    <dl className={classes.details} data-columns={columns}>
+      {items
+        .filter((i) => !i.hidden)
+        .map((i) => (
+          <div key={i.label} className={classes.detail}>
+            <dt>{i.label}</dt>
+            <dd>{i.value}</dd>
+          </div>
+        ))}
+    </dl>
+  );
+}
+
+/** A shell command in monospace with a copy button; wraps instead of scrolling. */
+export function CommandSnippet({ command, label = 'Copy command', testId }: { command: string; label?: string; testId?: string }) {
+  return (
+    <Group gap={4} wrap="nowrap" className="fm-cmd" data-testid={testId}>
+      <Code className="fm-cmd-code">{command}</Code>
+      <Copy value={command} label={label} />
+    </Group>
+  );
+}
+
+/** A share of a whole (0 to 1) as a thin bar with the percentage next to it. */
+export function Meter({ value, tone = 'info', label }: { value: number; tone?: Tone; label: string }) {
+  const v = Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0));
+  const pct = Math.round(v * 100);
+  return (
+    <span className={classes.meter} role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct} aria-label={label}>
+      <span className={classes.meterTrack}>
+        <span className={classes.meterFill} data-tone={tone} style={{ width: `${String(Math.max(pct ? 3 : 0, pct))}%` }} />
+      </span>
+      <span className={classes.meterValue}>{pct}%</span>
+    </span>
+  );
+}
+
+/**
+ * The bar that keeps the save action of a form in reach: it sticks to the bottom of the viewport, says whether
+ * there are unsaved changes and holds the actions, primary last.
+ */
+export function SaveBar({ dirty, status, children, testId }: { dirty: boolean; status?: ReactNode; children: ReactNode; testId?: string }) {
+  return (
+    <div className={classes.saveBar} data-dirty={dirty || undefined} data-testid={testId}>
+      <Group gap="xs" wrap="wrap" aria-live="polite" className={classes.saveStatus}>
+        {status}
+        {dirty ? (
+          <Text size="sm" span className={classes.dirty}>
+            Unsaved changes
+          </Text>
+        ) : (
+          <Text size="sm" c="dimmed" span>
+            All changes saved
+          </Text>
+        )}
+      </Group>
+      <Group gap="xs" wrap="nowrap" className={classes.saveActions}>
+        {children}
+      </Group>
     </div>
   );
 }

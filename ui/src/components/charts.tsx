@@ -223,3 +223,37 @@ export function BarList({ rows, testId }: { rows: { key: string; label: ReactNod
     </ol>
   );
 }
+
+/**
+ * Passed, failed and errored checks as a compact bar with the passed share as text, for a table cell; the bar
+ * is decorative and the label says the numbers.
+ */
+export function ResultBar({ passed, failed, errors, total }: { passed: number; failed: number; errors: number; total: number }) {
+  const parts: { tone: Segment['tone']; value: number }[] = [
+    { tone: 'success', value: passed },
+    { tone: 'danger', value: failed },
+    { tone: 'warning', value: errors },
+  ];
+  const pending = Math.max(0, total - passed - failed - errors);
+  return (
+    <span className={classes.result} role="img" aria-label={`${String(passed)} of ${String(total)} passed, ${String(failed)} failed, ${String(errors)} errors`}>
+      <span className={classes.resultBar} aria-hidden>
+        {total === 0 ? (
+          <span className={classes.segEmpty} />
+        ) : (
+          <>
+            {parts
+              .filter((p) => p.value > 0)
+              .map((p) => (
+                <span key={p.tone} className={classes.seg} data-tone={p.tone} style={{ flexGrow: p.value }} />
+              ))}
+            {pending > 0 && <span className={classes.seg} data-tone="neutral" style={{ flexGrow: pending }} />}
+          </>
+        )}
+      </span>
+      <span className={classes.resultText} aria-hidden>
+        {passed}/{total}
+      </span>
+    </span>
+  );
+}
