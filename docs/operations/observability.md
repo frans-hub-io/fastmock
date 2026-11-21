@@ -81,6 +81,29 @@ avoid generating thousands of uniquely named stubs per run.
 | `fastmock_async_mocks_active` | gauge | | Active async mocks on the publishing replica. |
 | `fastmock_async_leader` | gauge | | 1 on the replica that currently publishes async mock messages, 0 elsewhere. |
 
+### Mail
+
+Present only with `FASTMOCK_MAIL_ENABLED=true` ([Mail](../guide/mail.md)).
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `fastmock_mail_messages_total` | counter | `source` (`smtp`, `provider`, `inject`), `provider` (empty, `ses`, `sendgrid`, ...) | Messages stored; a message routed to several spaces counts once per stored copy. |
+| `fastmock_mail_smtp_sessions_total` | counter | `result` (`quit`, `disconnected`, `timeout`, `rejected`, `chaos`, `shutdown`, `error`) | Finished SMTP and SMTPS sessions. |
+| `fastmock_mail_imap_sessions_total` | counter | `result` | Finished IMAP and IMAPS sessions. |
+| `fastmock_mail_pop3_sessions_total` | counter | `result` | Finished POP3 and POP3S sessions. |
+| `fastmock_mail_rejected_total` | counter | `reason` (`auth_failed`, `too_many_auth_failures`, `auth_required`, `auth_before_tls`, `starttls_pipelined`, `tls_handshake`, `size`, `recipients`, `fail_address`, `chaos`, `line_too_long`, `literal_too_large`, `too_many_errors`, `too_many_commands`, `timeout`, `connections`, `connections_per_ip`) | Refused commands, logins and connections on the mail listeners. |
+| `fastmock_mail_connections` | gauge | | Open connections over all mail listeners of this replica. |
+| `fastmock_mail_chaos_injections_total` | counter | `stage` | Mail chaos rule firings, including provider errors. |
+| `fastmock_mail_provider_requests_total` | counter | `provider`, `status_class` | Calls to the provider APIs under `/__mail/`. |
+| `fastmock_mail_webhooks_total` | counter | `provider`, `kind` (`events`, `inbound`) | Provider webhooks written to the outbox; delivery outcomes are in `fastmock_callbacks_total{source="mail"}`. |
+| `fastmock_mail_waits_total` | counter | `result` (`found`, `timeout`) | Finished `POST /__admin/mail/messages/wait` requests. |
+| `fastmock_mail_waits_active`, `fastmock_mail_streams_active` | gauge | | Waits and `GET /__admin/mail/stream` connections in progress on this replica. |
+| `fastmock_mail_messages` | gauge | `space` (`_global` for the global area) | Stored messages per area, refreshed every minute. PostgreSQL only; a cluster-wide value that every replica reports: aggregate it with `max`. |
+| `fastmock_mail_storage_bytes` | gauge | `space` | Raw size of the stored messages per area; like `fastmock_mail_messages`. |
+| `fastmock_mail_events_reconnects_total` | counter | | Reconnections of this replica's Valkey subscription for mail events (PostgreSQL mode). |
+
+`POST /__admin/mail/verify` is counted in `fastmock_admin_verifications_total{kind="mail"}`.
+
 ### Journal, storage, imports
 
 | Metric | Type | Labels | Meaning |
@@ -88,7 +111,7 @@ avoid generating thousands of uniquely named stubs per run.
 | `fastmock_journal_dropped_total` | counter | | Journal entries dropped because the write queue was full. |
 | `fastmock_journal_write_errors_total` | counter | | Journal entries that could not be written. |
 | `fastmock_journal_batch_size` | summary | | Entries per journal write. |
-| `fastmock_store_errors_total` | counter | `store` (`stubs`, `outbox`, `audit`, `chaos`, `settings`, `services`, `asyncmocks`, `asyncmock_lease`, `contract_runs`, `tokens`, `sessions`) | Storage operations that failed in background work (`tokens`: managed token lookups, last-use updates and counts; `sessions`: reading, writing or deleting OIDC sessions and pending sign-ins in the hot store). |
+| `fastmock_store_errors_total` | counter | `store` (`stubs`, `outbox`, `audit`, `chaos`, `settings`, `services`, `asyncmocks`, `asyncmock_lease`, `contract_runs`, `tokens`, `sessions`, `mail`) | Storage operations that failed in background work (`tokens`: managed token lookups, last-use updates and counts; `sessions`: reading, writing or deleting OIDC sessions and pending sign-ins in the hot store; `mail`: reading the mail storage usage). |
 | `fastmock_imports_total` | counter | `format`, `dry_run` | Stub imports (WireMock, MockServer, OpenAPI, Postman, HAR and others). |
 | `fastmock_import_rejections_total` | counter | `format` | Imports rejected with `400` because the document produced no valid stub; nothing was changed. |
 | `fastmock_import_detections_total` | counter | `format` | Formats detected by `POST /__admin/import`. |
@@ -110,7 +133,7 @@ avoid generating thousands of uniquely named stubs per run.
 | `fastmock_oidc_logins_total` | counter | `result` (`success`, `no_binding`, `invalid_state`, `idp_error`, `token_error`, `unavailable`, `rate_limited`) | [OIDC sign-ins](access-control.md#oidc-sign-in-and-bearer-jwts) by outcome. |
 | `fastmock_oidc_ready` | gauge | | 1 once the OIDC provider has been discovered, 0 while sign-in answers 503. |
 | `fastmock_admin_errors_total` | counter | | Admin calls that failed with 500. |
-| `fastmock_admin_verifications_total` | counter | `kind` (`count`, `sequence`), `result` (`pass`, `fail`) | Verification requests. |
+| `fastmock_admin_verifications_total` | counter | `kind` (`count`, `sequence`, `mail`), `result` (`pass`, `fail`) | Verification requests. |
 | `fastmock_contract_tests_total` | counter | `result` (`passed`, `failed`, `error`) | Contract test runs. |
 | `fastmock_contract_test_requests_total` | counter | `verdict` (`passed`, `failed`, `error`) | Checked operations in contract test runs. |
 | `fastmock_contract_test_duration_seconds` | histogram | | Contract test run duration. |
@@ -160,6 +183,11 @@ sum by (action) (increase(fastmock_admin_changes_total[1h]))
 sum by (result) (increase(fastmock_oidc_logins_total{result!="success"}[1h]))
 # active managed tokens (every replica reports the same cluster-wide count)
 max(fastmock_api_tokens_active)
+# captured mail per minute by source, and refused SMTP/IMAP/POP3 steps by reason
+sum by (source) (rate(fastmock_mail_messages_total[5m])) * 60
+sum by (reason) (increase(fastmock_mail_rejected_total[1h]))
+# stored mail per space (cluster-wide gauge)
+max by (space) (fastmock_mail_messages)
 ```
 
 ## Alerts
@@ -275,6 +303,10 @@ Useful messages:
 | `admin change` (target `audit`) | info | Every change through the admin API. |
 | `admin request rejected: ...` (target `audit`) | warn | Rejected admin calls. |
 | `shutdown requested; readiness withdrawn, draining` | info | SIGTERM received. |
+| `mail listener started` | info | A mail listener is open (`listener`, `addr`, `tls`). |
+| `mail connection refused: limit reached` | warn | A mail connection over `FASTMOCK_MAIL_MAX_CONNECTIONS` or the per-address limit (`peer`, `reason`). |
+| `mail events: lost the Valkey subscription; reconnecting, events published meanwhile are not delivered to this replica` | warn | Waits and streams on this replica fall back to re-reading the store until `mail events: subscribed to Valkey again`. |
+| `publishing to Valkey failed, only this replica's subscribers got the event: ...` | warn | A mail event reached only local waits and streams; others find the message on their next store read. |
 
 Route `target="audit"` lines to long-term storage; they complement the audit table
 ([Security: audit log](security.md#audit-log)).

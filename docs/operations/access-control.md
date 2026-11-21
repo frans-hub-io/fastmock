@@ -65,6 +65,11 @@ everywhere.
 | `mail:write` | `POST /mail/messages` (inject), `PUT /mail/messages/{id}/labels`, mailbox passwords, mail chaos rules and webhooks, `POST /mail/inbound` | space |
 | `mail:delete` | `DELETE /mail/messages`, `/mail/messages/{id}` | space |
 
+Mail permissions also apply outside the admin API ([Mail: spaces](../guide/mail.md#spaces)): a managed token with
+`mail:read` is accepted as an IMAP or POP3 password for the mailboxes of its space, and one with `mail:write` as an
+SMTP AUTH password when `FASTMOCK_MAIL_SMTP_REQUIRE_AUTH=true`. Messages of the global area need the permission
+globally.
+
 Endpoints without a space of their own need the permission globally:
 
 | Endpoints | Permission (global) |
@@ -107,6 +112,7 @@ spaces:
     pathPrefixes: [/payments/, /psp/]
     hosts: [psp.example.com]
   - name: billing
+    mailDomains: [billing.example.test]
 bindings:
   - subject: group:payments-dev
     role: editor
@@ -610,7 +616,7 @@ A space is a named partition, named like a Kubernetes namespace (`[a-z0-9]([a-z0
 | `description` | Optional text, shown by `GET /__admin/spaces`. |
 | `pathPrefixes` | Optional data-plane path prefixes that the space's stubs must stay under ([ownership](#ownership-of-the-data-plane)). Each must be a plain path starting with `/`: no query, fragment, `.` or `..` segment, encoded slash or backslash (`%2F`, `%5C`) or backslash. |
 | `hosts` | Optional `Host` values the space's stubs must match. |
-| `mailDomains` | Optional mail domains whose captured messages go to the space (lowercase; `*.example.com` covers the subdomains of `example.com`, not `example.com` itself). A domain belongs to one space: overlaps between spaces stop the start, like overlapping path prefixes. |
+| `mailDomains` | Optional mail domains whose captured messages go to the space (lowercase; `*.example.com` covers the subdomains of `example.com`, not `example.com` itself). A domain belongs to one space: overlaps between spaces stop the start, like overlapping path prefixes. The IMAP and POP3 mailboxes of these domains live in the space. See [Mail: spaces](../guide/mail.md#spaces). |
 
 What belongs to a space:
 
@@ -632,6 +638,9 @@ What belongs to a space:
   body files are therefore shared with every space: keep files that belong to one team in that team's space, and
   keep only files meant for everyone in the global area.
 - **Contract test runs** carry the space they were started in.
+- **Captured mail** goes to the space that claims the recipients' domains in `mailDomains`, else to the space named
+  like the SMTP AUTH user, else to the global area; mail chaos rules, provider webhooks and mailbox passwords are
+  set per space ([Mail](../guide/mail.md#spaces)).
 
 Messages published to Kafka, gRPC descriptors, chaos rules, global settings, recordings, async mocks and the
 service catalog are not scoped. On the data plane every enabled stub competes for a request, except inside the
@@ -716,6 +725,7 @@ that requests there are answered only by that team's stubs and global ones.
 | Data | Scoped by space |
 |---|---|
 | stubs, journal entries, callback jobs, scenario states, key-value entries, body files, contract test runs, stub counters | yes |
+| captured mail, IMAP/POP3 mailboxes and their passwords, mail chaos rules, provider webhook settings | yes |
 | recordings, chaos rules, global settings, gRPC descriptors, async mocks, service catalog, Kafka messages, audit log | no (global permissions) |
 
 ## Inspecting your permissions
@@ -903,6 +913,27 @@ indexed. Allow for the index build time in `FASTMOCK_DATABASE_MIGRATION_TIMEOUT`
 grant them on the new table too, for example
 `GRANT SELECT, INSERT, UPDATE, DELETE ON fm_api_tokens TO fastmock;`. Without it the server starts, but managed
 tokens cannot be created or used (a managed token answers `503 {"error":"token store unavailable",...}`).
+
+**Mail permissions.** The release that adds [mail](../guide/mail.md) adds `mail:read`, `mail:write` and
+`mail:delete`. `viewer` gains `mail:read`, `editor` gains all three. Because a token can only be created by a
+caller that holds every permission of its role, a custom role that copies the permission list of `editor` (for
+example to add `tokens:write`) can no longer create `editor` tokens until it also lists `mail:*` (or the three
+mail permissions). Add them to such roles before upgrading:
+
+```yaml
+roles:
+  - name: team-lead
+    permissions: [stubs:*, imports:run, journal:*, files:*, callbacks:*, state:*, contracts:read,
+      contracts:details, contracts:write, mail:*, tokens:read, tokens:write]
+```
+
+Mail stays off until `FASTMOCK_MAIL_ENABLED=true`; while it is off the mail routes answer `404`. With PostgreSQL
+storage, mail adds four tables and a sequence ([Database](database.md#what-is-stored-where)) and needs Valkey
+publish/subscribe: a Valkey ACL user needs the channel rule `&<prefix>mail:events:*` (for example
+`&fastmock:mail:events:*`) and the commands `publish` and `psubscribe`
+([Security: storage connections](security.md#storage-connections)). If you grant table rights one by one, grant
+them on `fm_mail_messages`, `fm_mail_mailboxes`, `fm_mail_folders` and `fm_mail_entries`, and `USAGE` on the
+sequence `fm_mail_uid_validity`.
 
 **Logs.** Audit log lines (target `audit`) change:
 

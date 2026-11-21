@@ -1,8 +1,8 @@
 # FastMock documentation
 
 FastMock is an API mock server for test environments: HTTP, HTTPS with mTLS, gRPC, GraphQL, SOAP, WebSocket,
-Server-Sent Events, Kafka and AsyncAPI, with durable signed callbacks, shared state for any number of replicas,
-security by default and full observability. Start with [Getting started](guide/getting-started.md), then pick the
+Server-Sent Events, Kafka and AsyncAPI, plus mail capture over SMTP and provider APIs, with durable signed
+callbacks, shared state for any number of replicas, security by default and full observability. Start with [Getting started](guide/getting-started.md), then pick the
 section for what you do.
 
 ## Getting started
@@ -50,6 +50,7 @@ section for what you do.
 | Page | What you learn |
 |---|---|
 | [Verification](guide/verification.md) | Query the journal, verify counts and sequences, near misses. |
+| [Mail](guide/mail.md) | Capture email over SMTP and provider APIs (SES, SendGrid, Mailgun, Postmark, Resend, Brevo), wait for and verify it in tests, read links and codes, IMAP and POP3 mailboxes, mail chaos, provider webhooks. |
 | [Java client](guide/java-client.md) | The Java 25 client: every method, JUnit 5 patterns, Testcontainers. |
 | [Contract testing](guide/contract-testing.md) | Testing a real service against its OpenAPI or AsyncAPI contract. |
 | [Admin API](guide/admin-api.md) | Authentication, roles per endpoint, errors, pagination, every endpoint group. |
