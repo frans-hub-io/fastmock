@@ -1,6 +1,7 @@
 import {
   IconActivity,
   IconApi,
+  IconBolt,
   IconBox,
   IconBroadcast,
   IconChecklist,
@@ -49,6 +50,7 @@ export const NAV: NavGroup[] = [
   {
     group: 'Mocks',
     items: [
+      { to: '/quick-mock', label: 'Quick mock', icon: IconBolt, perm: 'stubs:write', keywords: 'new mock wizard first start template create' },
       { to: '/stubs', label: 'Stubs', icon: IconRoute, perm: 'stubs:read', keywords: 'mappings routes mocks' },
       { to: '/services', label: 'Services', icon: IconSitemap, perm: 'stubs:read', global: true, keywords: 'catalog openapi specs' },
       { to: '/scenarios', label: 'Scenarios', icon: IconChecklist, perm: 'state:read', keywords: 'state machine' },

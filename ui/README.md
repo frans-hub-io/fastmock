@@ -101,8 +101,8 @@ npx playwright install chromium                          # once
 npm run e2e
 ```
 
-The suites cover login and logout, creating, editing, calling and deleting a stub, finding the call in the
-journal, verification, the viewer role, and Swagger UI executing an authorized call. They fail on any
+The suites cover login and logout, creating, editing, calling and deleting a stub, building a mock on the
+Quick mock page and calling it, finding the call in the journal, verification, the viewer role, and Swagger UI executing an authorized call. They fail on any
 Content-Security-Policy violation reported by the browser. Without the two tokens the suites are skipped.
 
 `e2e/access.spec.ts` (spaces, permission-hidden actions, the tokens page) needs a server started with

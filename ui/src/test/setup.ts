@@ -32,3 +32,7 @@ class RO {
 if (!('ResizeObserver' in globalThis)) (globalThis as unknown as { ResizeObserver: typeof RO }).ResizeObserver = RO;
 
 if (typeof Element.prototype.scrollIntoView !== 'function') Element.prototype.scrollIntoView = () => undefined;
+
+if (!('fonts' in document)) {
+  Object.defineProperty(document, 'fonts', { value: { addEventListener: () => undefined, removeEventListener: () => undefined, ready: Promise.resolve() } });
+}

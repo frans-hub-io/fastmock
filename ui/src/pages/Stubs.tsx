@@ -15,6 +15,7 @@ import {
 } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
 import {
+  IconBolt,
   IconCopy,
   IconDotsVertical,
   IconDownload,
@@ -249,15 +250,20 @@ export default function Stubs() {
                     </Button>
                   )}
                   {canEdit && (
-                    <Button component={Link} to="/stubs/new" leftSection={<IconPlus size={16} />}>
-                      Create your first stub
-                    </Button>
+                    <>
+                      <Button variant="default" component={Link} to="/stubs/new" leftSection={<IconPlus size={16} />}>
+                        Blank stub
+                      </Button>
+                      <Button component={Link} to="/quick-mock" leftSection={<IconBolt size={16} />} data-testid="create-first-mock">
+                        Create your first mock
+                      </Button>
+                    </>
                   )}
                 </>
               ) : undefined
             }
           >
-            {canEdit ? 'A stub pairs a request pattern with the response FastMock returns. Create one, import a file, or record real traffic.' : 'Stubs pair a request pattern with a response. Ask an editor to add some.'}
+            {canEdit ? 'A stub pairs a request pattern with the response FastMock returns. Quick mock walks you through your first one; you can also import a file or record real traffic.' : 'Stubs pair a request pattern with a response. Ask an editor to add some.'}
           </EmptyState>
         )
       ) : (

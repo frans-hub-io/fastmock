@@ -271,6 +271,24 @@ described in [Verification](verification.md).
 
 The UI uses the same token and roles as the API; see [Web UI](ui.md) and [Admin API](admin-api.md).
 
+### Quick mock
+
+**Quick mock** in the navigation (or **Create your first mock** on an empty stubs page) builds a stub without
+writing JSON, for an editor or admin token:
+
+1. Pick a template (Hello JSON, Login with token, Protected resource, Flaky endpoint, Paginated list, Webhook
+   after create) or start blank.
+2. **Essentials:** method, path (`/orders/{id}` for path parameters), status and the response body and headers.
+3. **Behaviour:** switch on what the mock should do: request matching, required credentials with a 401 answer,
+   a delay, a network fault, random failures, dynamic values, a response sequence, a scenario, a webhook
+   callback, browser access (CORS) and a limited lifetime.
+
+The panel on the right shows the stub exactly as `POST /__admin/stubs` takes it, and whether the server accepts
+it. **Create mock** saves it (some behaviours add a second stub, for example the 401 fallback or the answer to a
+browser's CORS preflight); every stub it creates carries the tag `quick-mock`. **Try it** then sends a request
+to the data plane from the browser and shows the status, the time and the body, next to the same call as
+cURL, JavaScript `fetch`, Python `requests` and Java `HttpClient`, ready to copy.
+
 ## 7. Your first callback
 
 A payment provider answers "pending" and later calls your webhook. Here FastMock plays both sides: one stub is

@@ -17,6 +17,7 @@ import { theme } from './theme';
 const DashboardPage = lazy(() => import('./pages/Dashboard'));
 const StubsPage = lazy(() => import('./pages/Stubs'));
 const StubEditorPage = lazy(() => import('./pages/StubEditor'));
+const QuickMockPage = lazy(() => import('./pages/QuickMock'));
 const JournalPage = lazy(() => import('./pages/Journal'));
 const NearMissesPage = lazy(() => import('./pages/NearMisses'));
 const VerifyPage = lazy(() => import('./pages/Verify'));
@@ -65,6 +66,7 @@ function Protected() {
           <Route path="stubs" element={<StubsPage />} />
           <Route path="stubs/new" element={<StubEditorPage />} />
           <Route path="stubs/:id" element={<StubEditorPage />} />
+          <Route path="quick-mock" element={<QuickMockPage />} />
           <Route path="requests" element={<JournalPage />} />
           <Route path="near-misses" element={<NearMissesPage />} />
           <Route path="verify" element={<VerifyPage />} />
