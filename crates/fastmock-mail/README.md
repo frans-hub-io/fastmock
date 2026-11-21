@@ -1,7 +1,7 @@
 # fastmock-mail
 
-Mail capture for FastMock: SMTP (and later IMAP/POP3) listeners, the message model, parsing and
-matching. The crate has no HTTP dependency; `fastmock-server` wires it in. FastMock never delivers mail.
+Mail capture for FastMock: SMTP, IMAP and POP3 servers, provider HTTP API payloads, the message model,
+parsing and matching. The crate has no HTTP dependency; `fastmock-server` wires it in. FastMock never delivers mail.
 
 ## Layout
 
@@ -20,13 +20,20 @@ matching. The crate has no HTTP dependency; `fastmock-server` wires it in. FastM
 | `src/config.rs` | `MailConfig` (all `FASTMOCK_MAIL_*` values with defaults and `validate`); the server reads the environment in `fastmock-server/src/config.rs` (`mail_settings`). |
 | `src/tls.rs` | `server_config(&MailTlsFiles)`: rustls config for SMTPS/IMAPS/POP3S and STARTTLS/STLS. |
 | `src/smtp/` | SMTP sessions (B1): `SmtpServer::serve` runs one session over any stream (state machine in `session.rs`, SASL in `sasl.rs`, `smtp-proto` behind `codec::SmtpCodec`); `TokenCheck` is implemented by the server for managed tokens. |
-| `src/pop3/` | POP3/POP3S sessions (C2): `Pop3Server::serve` (state machine in `session.rs`, commands in `command.rs`, dot-stuffing in `render.rs`); `login.rs` holds the mailbox login shared with IMAP (`MailboxLogin`: address via `mailbox_of`, area via `mailDomains`, managed token through `MailboxTokenCheck` or the mailbox password hash, `hash_password`/`verify_password`, PBKDF2-HMAC-SHA256). |
+| `src/mailbox_login.rs` | Mailbox logins shared by IMAP and POP3: `MailboxLogin::check` (address via `mailbox_of`, area via `mailDomains`, a managed token through `MailboxTokenCheck` (implemented by the server) or the mailbox password; a dummy hash is checked for mailboxes without one), `hash_password`/`verify_password` (`pbkdf2-sha256$<iter>$<salt>$<hash>`, PBKDF2-HMAC-SHA256, also used by the admin API). |
+| `src/pop3/` | POP3/POP3S sessions (C2): `Pop3Server::serve` (state machine in `session.rs`, commands in `command.rs`, dot-stuffing in `render.rs`). |
 | `src/chaos.rs` | Mail chaos (M6): `MailChaosRule` model and `validate`, `MailChaos` (cache, counters, `evaluate`, `evaluate_provider` for C3) over `ChaosBackend` (server: `mail_chaos_api::StoreChaosBackend`; tests: `MemoryChaosBackend`). |
-| `src/imap/` | IMAP/IMAPS sessions (C1): `ImapServer::serve` (state machine and framing in `session.rs`); `imap-codec`/`imap-types` only in `codec.rs`, which turns commands into `command.rs` types; `response.rs` writes responses; `mime.rs` builds ENVELOPE, BODYSTRUCTURE and `BODY[...]` sections from mail-parser; `search.rs` evaluates SEARCH; `login.rs` checks mailbox logins (`ReadTokenCheck`, implemented by the server, and `verify_password` for `pbkdf2-sha256$...` mailbox password hashes). |
+| `src/imap/` | IMAP/IMAPS sessions (C1): `ImapServer::serve` (state machine and framing in `session.rs`); `imap-codec`/`imap-types` only in `codec.rs`, which turns commands into `command.rs` types; `response.rs` writes responses; `mime.rs` builds ENVELOPE, BODYSTRUCTURE and `BODY[...]` sections from mail-parser; `search.rs` evaluates SEARCH. |
+| `src/providers/` | Provider HTTP APIs (C3): `Provider` (SES, SendGrid, Mailgun, Postmark, Resend, Brevo), `route`, `credential`, `parse` (send requests to `OutMessage`s with provider extras), `success`/`failure`/`path_failure` answers in each provider's format; `build.rs` renders templates and checks fan-out. The server reads HTTP in `fastmock-server/src/mail_providers.rs` and sends webhooks from `mail_webhooks.rs`. |
 | `fuzz/` | cargo-fuzz targets `smtp_session`, `smtp_codec`, `pop3_session`, `imap_session` and `imap_command` (own workspace, not built by CI). |
 
 Server side: `AppState::mail: Option<Arc<MailService>>` (`None` unless `FASTMOCK_MAIL_ENABLED=true`),
 built in `fastmock-server/src/mail_setup.rs`; the maintenance loop calls `MailService::sweep` every minute.
+`fastmock-server/src/mail_listeners.rs` binds every SMTP/SMTPS/POP3/POP3S/IMAP/IMAPS listener through one
+accept loop (`serve_connections`) with the shared `ConnectionLimits`, and implements `TokenCheck` and
+`MailboxTokenCheck` for managed tokens. The admin API is `mail_api.rs` (mailbox passwords hashed with
+`mailbox_login::hash_password`), chaos `mail_chaos_api.rs`, provider APIs `mail_providers.rs`, webhooks
+`mail_webhooks.rs` and `mail_webhooks_api.rs`.
 Permissions `mail:read`, `mail:write`, `mail:delete` (space-scoped) and the route rules for
 `/__admin/mail/...` are in `access.rs`; spaces carry `mailDomains`.
 
@@ -72,7 +79,7 @@ Permissions `mail:read`, `mail:write`, `mail:delete` (space-scoped) and the rout
   `ConnectionLimits` (global and per IP over all mail listeners) and shutdown handling;
   mailbox state through `MailStore::mailbox_*` (sequence numbers are positions in UID
   order); IDLE through `events.subscribe` (`MailEvent::mailboxes` lists the INBOX addresses that got a
-  message); passwords through `mailbox_password`/`set_mailbox_password` (hash chosen by C2); APPEND stores
+  message); passwords through `mailbox_password`/`set_mailbox_password` (`mailbox_login`); APPEND stores
   with `accept` (`MailSource::Inject`, `Destination::Area`, `mailboxes` override).
 - **C3 providers**: provider errors through `AppState::mail_chaos` → `MailChaos::evaluate_provider(area, provider,
   mail_from, rcpt_to)`: sleep `delay`, then answer `ChaosEffect::ProviderError(name)` in the provider's format.
