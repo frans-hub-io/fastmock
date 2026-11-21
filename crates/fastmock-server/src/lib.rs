@@ -13,6 +13,8 @@ pub mod grpc;
 pub mod imports;
 pub mod journal_api;
 pub mod mail_api;
+pub mod mail_chaos_api;
+pub mod mail_listeners;
 pub mod mail_setup;
 pub mod oidc;
 pub mod openapi_doc;
@@ -227,7 +229,7 @@ pub async fn build(
     tokio::spawn(journal_writer(stores.journal.clone(), journal_rx));
     let app = AppState {
         cfg: cfg.clone(),
-        stores,
+        stores: stores.clone(),
         engine,
         auth,
         redactor,
@@ -248,6 +250,7 @@ pub async fn build(
         scans: Arc::new(tokio::sync::Semaphore::new(cfg.journal_scan_concurrency)),
         tokens: Arc::new(tokens::TokenService::new(token_store, cfg.token_cache_ttl)),
         oidc,
+        mail_chaos: mail.as_ref().map(|_| mail_chaos_api::build(&stores)),
         mail,
     };
     if let Err(e) = app.grpc.reload(&app).await {
@@ -399,9 +402,15 @@ pub async fn serve() -> anyhow::Result<()> {
     }
     let hrt = app.cfg.header_read_timeout;
     let drain = Duration::from_secs(20);
+    let mail_listeners = mail_listeners::start(&app, rx.clone()).await?;
     tokio::join!(
         tls::serve(data_listener, data, tls_cfg, rx.clone(), hrt, drain),
         tls::serve(admin_listener, admin, None, rx.clone(), hrt, drain),
+        async {
+            if let Some(m) = mail_listeners {
+                m.wait().await;
+            }
+        },
     );
     let _ = tokio::time::timeout(Duration::from_secs(15), async {
         let _ = worker.await;

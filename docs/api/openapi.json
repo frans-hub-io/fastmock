@@ -3489,6 +3489,247 @@
         ]
       }
     },
+    "/__admin/mail/chaos": {
+      "get": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Mail chaos rules of a space",
+        "description": "The rules of one area (the space, or the global area) with their counters. Needs `mail:read` there.",
+        "operationId": "getMailChaos",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rules and counters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailChaosView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires mail:read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Replace the mail chaos rules of a space",
+        "description": "Stores the rules of one area and starts their counters from zero. Rules are evaluated in order at their stage; the first rule whose match holds and that fires (after `every`, `probability` and `times`) decides. Stages before routing (`connect`, `tls`, `ehlo`) use the global area's rules; `auth` and `mail` the space named like the AUTH user (else global); `rcpt` the space of the recipient; `data` the spaces the message is routed to. Rules with stage `provider` apply to the provider HTTP APIs. Needs `mail:write`.",
+        "operationId": "putMailChaos",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MailChaosBody"
+              },
+              "example": {
+                "rules": [
+                  {
+                    "id": "third-fails",
+                    "stage": "data",
+                    "every": 3,
+                    "times": 1,
+                    "action": {
+                      "reply": {
+                        "code": 451,
+                        "enhanced": "4.3.0",
+                        "text": "Try again later"
+                      }
+                    }
+                  },
+                  {
+                    "stage": "rcpt",
+                    "match": {
+                      "rcptTo": {
+                        "contains": "slow@"
+                      }
+                    },
+                    "action": {
+                      "delay": "2s"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Rules stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailChaosView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires mail:write",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Remove the mail chaos rules of a space",
+        "description": "Removes the rules of one area and their counters. Needs `mail:write`.",
+        "operationId": "clearMailChaos",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires mail:write",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/__admin/plugins": {
       "get": {
         "tags": [
@@ -8252,6 +8493,43 @@
           "failed"
         ]
       },
+      "ChaosAction": {
+        "type": "object",
+        "description": "What a firing rule does: optionally wait (`delay`), then one of `reply`, `disconnect` or\n`providerError`, or continue normally after a delay alone.",
+        "properties": {
+          "reply": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ChaosReply"
+              }
+            ]
+          },
+          "delay": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`500ms`, `2s`, `1m` (at most 10 minutes).",
+            "example": "2s"
+          },
+          "disconnect": {
+            "type": "boolean",
+            "description": "Close the connection without a reply."
+          },
+          "providerError": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Stage `provider` only: the error the provider API answers with, in the provider's format\n(for example `MessageRejected`, `rateLimit`, `invalidKey`).",
+            "example": "rateLimit"
+          }
+        },
+        "additionalProperties": false
+      },
       "ChaosBody": {
         "type": "object",
         "required": [
@@ -8265,6 +8543,116 @@
             }
           }
         }
+      },
+      "ChaosCounters": {
+        "type": "object",
+        "description": "How often a rule matched and fired since its rules were stored.",
+        "required": [
+          "id",
+          "matched",
+          "fired"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "matched": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Events that met stage and match.",
+            "minimum": 0
+          },
+          "fired": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Times the rule fired (with `times`, attempts beyond it are counted too).",
+            "minimum": 0
+          }
+        }
+      },
+      "ChaosMatch": {
+        "type": "object",
+        "description": "Conditions of a rule, written with the stub string matchers; all given ones must hold. `rcptTo`\nholds when one recipient matches (at `rcpt`: the recipient of that command).",
+        "properties": {
+          "rcptTo": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StringMatcher",
+                "description": "Stages `rcpt`, `data`, `provider`."
+              }
+            ]
+          },
+          "mailFrom": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StringMatcher",
+                "description": "Stages `mail`, `rcpt`, `data`, `provider`."
+              }
+            ]
+          },
+          "authUser": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StringMatcher",
+                "description": "Stages `auth`, `mail`, `rcpt`, `data`; a session without AUTH has no user."
+              }
+            ]
+          },
+          "provider": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StringMatcher",
+                "description": "Stage `provider`: the provider name (`ses`, `sendgrid`, ...)."
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChaosReply": {
+        "type": "object",
+        "description": "An SMTP reply sent instead of the normal one.",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32",
+            "description": "400-599. 421 also closes the connection.",
+            "example": 451,
+            "minimum": 0
+          },
+          "enhanced": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Enhanced status code whose class matches the code; default `<class>.0.0`.",
+            "example": "4.3.0"
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Default `FastMock chaos rule <id>`.",
+            "example": "Try again later"
+          }
+        },
+        "additionalProperties": false
       },
       "ChaosRule": {
         "type": "object",
@@ -8354,6 +8742,20 @@
             "minimum": 0
           }
         }
+      },
+      "ChaosStage": {
+        "type": "string",
+        "description": "Where a rule applies.",
+        "enum": [
+          "connect",
+          "tls",
+          "ehlo",
+          "auth",
+          "mail",
+          "rcpt",
+          "data",
+          "provider"
+        ]
       },
       "ChunkedDribbleDelay": {
         "type": "object",
@@ -9679,6 +10081,115 @@
               "null"
             ],
             "description": "The provider's end-session URL; the UI navigates there to end the IdP session too."
+          }
+        }
+      },
+      "MailChaosBody": {
+        "type": "object",
+        "required": [
+          "rules"
+        ],
+        "properties": {
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailChaosRule"
+            },
+            "description": "Evaluated in order; the first rule that fires wins. At most 100."
+          }
+        }
+      },
+      "MailChaosRule": {
+        "type": "object",
+        "description": "A mail chaos rule.",
+        "required": [
+          "stage",
+          "action"
+        ],
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Letters, digits, `.`, `_`, `-` (at most 64); `rule-<n>` (its position) when left out.",
+            "example": "third-message-fails"
+          },
+          "stage": {
+            "$ref": "#/components/schemas/ChaosStage"
+          },
+          "match": {
+            "$ref": "#/components/schemas/ChaosMatch"
+          },
+          "action": {
+            "$ref": "#/components/schemas/ChaosAction"
+          },
+          "times": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Fire at most this many times.",
+            "minimum": 0
+          },
+          "every": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Fire only on every n-th matching event (the n-th, 2n-th, ...).",
+            "minimum": 0
+          },
+          "probability": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Chance to fire, 0-100 (percent)."
+          },
+          "seed": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "With `probability`: decide from the seed and the number of the matching event instead of at\nrandom, so a run repeats.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "MailChaosView": {
+        "type": "object",
+        "required": [
+          "rules",
+          "counters"
+        ],
+        "properties": {
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The space; absent for the global area.",
+            "example": "billing"
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailChaosRule"
+            },
+            "description": "The rules, each with its id."
+          },
+          "counters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChaosCounters"
+            },
+            "description": "How often each rule matched and fired since the rules were stored, over all replicas."
           }
         }
       },
@@ -12298,6 +12809,9 @@
     {
       "name": "tokens",
       "description": "Managed admin tokens with expiry and revocation"
+    },
+    {
+      "name": "mail"
     },
     {
       "name": "services"
