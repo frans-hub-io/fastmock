@@ -86,3 +86,39 @@ verify-full
 {{- $access := .Values.access | default dict -}}
 {{- toYaml (dict "roles" ($access.roles | default list) "spaces" ($access.spaces | default list) "bindings" ($access.bindings | default list)) -}}
 {{- end -}}
+
+{{- define "fastmock.mailListeners" -}}
+{{- $out := list -}}
+{{- $mail := .Values.mail | default dict -}}
+{{- if $mail.enabled -}}
+{{- $ports := $mail.ports | default dict -}}
+{{- range $l := list (list "smtp" "SMTP" false) (list "smtps" "SMTPS" true) (list "imap" "IMAP" false) (list "imaps" "IMAPS" true) (list "pop3" "POP3" false) (list "pop3s" "POP3S" true) -}}
+{{- $port := index $ports (index $l 0) -}}
+{{- if $port -}}
+{{- $out = append $out (dict "name" (index $l 0) "port" ($port | int) "var" (printf "FASTMOCK_MAIL_%s_LISTEN" (index $l 1)) "tls" (index $l 2)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $out -}}
+{{- end -}}
+
+{{- define "fastmock.mailValidate" -}}
+{{- $mail := .Values.mail | default dict -}}
+{{- if $mail.enabled -}}
+{{- $seen := dict "8080" "the data plane (8080)" "9090" "the admin API (9090)" -}}
+{{- range $l := include "fastmock.mailListeners" . | fromJsonArray -}}
+{{- $key := toString (int $l.port) -}}
+{{- if hasKey $seen $key -}}
+{{- fail (printf "mail.ports.%s (%s) uses the same port as %s" $l.name $key (get $seen $key)) -}}
+{{- end -}}
+{{- $_ := set $seen $key (printf "mail.ports.%s" $l.name) -}}
+{{- if and $l.tls (not (dig "tls" "existingSecret" "" $mail)) -}}
+{{- fail (printf "mail.ports.%s needs a certificate: set mail.tls.existingSecret" $l.name) -}}
+{{- end -}}
+{{- end -}}
+{{- $limits := $mail.limits | default dict -}}
+{{- if and (hasKey $limits "maxConnections") (hasKey $limits "maxConnectionsPerIp") (gt (int $limits.maxConnectionsPerIp) (int $limits.maxConnections)) -}}
+{{- fail "mail.limits.maxConnectionsPerIp must not exceed mail.limits.maxConnections" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

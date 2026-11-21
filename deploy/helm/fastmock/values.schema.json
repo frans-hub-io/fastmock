@@ -165,6 +165,14 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "mailDomains": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 255,
+                  "pattern": "^(\\*\\.)?[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\\.?$"
+                }
               }
             }
           }
@@ -525,6 +533,229 @@
       },
       "additionalProperties": false
     },
+    "mail": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "hostname": {
+          "type": "string",
+          "maxLength": 253,
+          "pattern": "^[A-Za-z0-9.-]*$"
+        },
+        "ports": {
+          "type": "object",
+          "properties": {
+            "smtp": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                {
+                  "type": "string",
+                  "maxLength": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "smtps": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                {
+                  "type": "string",
+                  "maxLength": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "imap": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                {
+                  "type": "string",
+                  "maxLength": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "imaps": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                {
+                  "type": "string",
+                  "maxLength": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "pop3": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                {
+                  "type": "string",
+                  "maxLength": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "pop3s": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                {
+                  "type": "string",
+                  "maxLength": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "tls": {
+          "type": "object",
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            },
+            "certKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "keyKey": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "requireAuth": {
+          "type": "boolean"
+        },
+        "smtpUsers": {
+          "type": "object",
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "allowPlaintextAuth": {
+          "type": "boolean"
+        },
+        "limits": {
+          "type": "object",
+          "properties": {
+            "maxMessageBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 536870912
+            },
+            "maxRecipients": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxMessages": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxAge": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h|d)?$"
+            },
+            "maxConnections": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxConnectionsPerIp": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxAuthFailures": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "idleTimeout": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h|d)?$"
+            },
+            "dataTimeout": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h|d)?$"
+            },
+            "sessionTimeout": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h|d)?$"
+            },
+            "imapIdleTimeout": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h|d)?$"
+            }
+          },
+          "additionalProperties": false
+        },
+        "service": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "ClusterIP",
+                "NodePort",
+                "LoadBalancer"
+              ]
+            },
+            "annotations": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "shutdownDelay": {
       "type": "string",
       "pattern": "^[0-9]+(ms|s|m|h|d)?$"
@@ -867,6 +1098,12 @@
           }
         },
         "dataFrom": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "mailFrom": {
           "type": "array",
           "items": {
             "type": "object"

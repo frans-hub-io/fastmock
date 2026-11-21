@@ -134,6 +134,17 @@ spec:
       from:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+    {{- with include "fastmock.mailListeners" . | fromJsonArray }}
+    - ports:
+        {{- range . }}
+        - port: {{ .name }}
+          protocol: TCP
+        {{- end }}
+      {{- with $.Values.networkPolicy.mailFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
   {{- if .Values.networkPolicy.egress.enabled }}
   egress:
     - to:
