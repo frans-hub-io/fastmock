@@ -143,7 +143,7 @@ pub async fn build(
         None => access::AccessConfig::default(),
     };
     engine.set_ownership(access.ownership());
-    let mail = mail_setup::build(&cfg, &access).await?;
+    let mail = mail_setup::build(&cfg, &access, pg.as_ref()).await?;
     let problems = spaces::ownership_problems(&access, engine.snapshot().iter().map(|c| &c.stub));
     for p in problems.iter().take(50) {
         tracing::warn!(stub_id = %p.stub_id, space = %p.space, reason = %p.reason, "stored stub breaks the rules of its space; fix or delete it");

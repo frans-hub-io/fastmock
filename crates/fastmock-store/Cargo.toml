@@ -7,10 +7,14 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+bytes.workspace = true
 chrono.workspace = true
 fastmock-core.workspace = true
+futures-util = "0.3"
+metrics.workspace = true
 redis.workspace = true
 rustls.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 tokio.workspace = true

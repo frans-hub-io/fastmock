@@ -80,6 +80,12 @@ pub trait MailEvents: Send + Sync {
 
     /// Events of the areas `filter` selects, from now on.
     fn subscribe(&self, filter: SpaceFilter) -> MailSubscription;
+
+    /// How often a waiter should also re-read the store, because this implementation can lose events (a
+    /// shared bus that was briefly unreachable). `None`: events are never lost while the process runs.
+    fn poll_interval(&self) -> Option<std::time::Duration> {
+        None
+    }
 }
 
 /// The in-process fan-out of mail events.
