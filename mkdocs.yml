@@ -6,40 +6,41 @@ repo_name: frans-hub-io/fastmock
 edit_uri: edit/main/docs/
 copyright: FastMock is licensed under the Apache License 2.0
 docs_dir: docs
+exclude_docs: |
+  overrides/
 site_dir: site
 strict: true
 
 
 theme:
   name: material
+  custom_dir: docs/overrides
   language: en
   palette:
-    - media: "(prefers-color-scheme: light)"
-      scheme: default
-      primary: custom
-      accent: custom
-      toggle:
-        icon: material/brightness-7
-        name: Switch to dark mode
-    - media: "(prefers-color-scheme: dark)"
-      scheme: slate
+    - scheme: slate
       primary: custom
       accent: custom
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
-  logo: assets/brand/FransHub_monogram_mono_dark.svg
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  logo: assets/brand/FransHub_monogram_light.svg
   favicon: assets/brand/favicon.svg
   font: false
   features:
-    - navigation.tabs
-    - navigation.sections
-    - navigation.top
+    - navigation.path
     - navigation.indexes
+    - navigation.top
     - navigation.footer
     - search.suggest
     - search.highlight
     - content.code.copy
+    - content.tabs.link
     - content.action.edit
     - toc.follow
 
@@ -55,12 +56,16 @@ extra_css:
 markdown_extensions:
   - admonition
   - attr_list
+  - md_in_html
   - def_list
   - footnotes
   - tables
   - toc:
       permalink: true
   - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite

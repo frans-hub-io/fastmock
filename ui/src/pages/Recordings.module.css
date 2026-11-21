@@ -1,0 +1,106 @@
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--fh-color-text-muted);
+}
+
+.dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--fh-color-border-strong);
+}
+
+.state[data-recording] {
+  color: var(--fh-semantic-danger-fg);
+}
+
+.state[data-recording] .dot,
+.live .dot {
+  background: var(--fh-semantic-danger-border);
+  animation: fm-rec 1.6s var(--fm-ease) infinite;
+}
+
+@keyframes fm-rec {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--fh-semantic-danger-border) 60%, transparent);
+  }
+
+  70% {
+    box-shadow: 0 0 0 7px transparent;
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.live {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mantine-spacing-md);
+  padding: var(--mantine-spacing-lg);
+  border-radius: var(--mantine-radius-lg);
+  border: 1px solid var(--fh-semantic-danger-border);
+  background:
+    radial-gradient(120% 140% at 100% 0%, color-mix(in srgb, var(--fh-semantic-danger-border) 14%, transparent) 0%, transparent 55%),
+    var(--fm-tile-bg);
+  box-shadow: var(--fm-shadow-sm);
+}
+
+.liveLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fh-semantic-danger-fg);
+}
+
+.steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--mantine-spacing-sm);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: none;
+}
+
+.step {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border-radius: var(--mantine-radius-md);
+  background: var(--fm-subtle-bg);
+  border: 1px solid var(--fm-hairline);
+  font-size: 0.875rem;
+}
+
+.stepNo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: var(--fm-param-fg);
+  background: var(--fm-param-bg);
+  border: 1px solid var(--fm-param-border);
+}
+
+@media (max-width: 47.99em) {
+  .steps {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -58,7 +58,7 @@ function TableBox({ children, testId, miw }: { children: ReactNode; testId: stri
   return (
     <Paper withBorder radius="md">
       <div className="table-scroll">
-        <Table fz="sm" miw={miw} className="stack-table" data-testid={testId}>
+        <Table fz="sm" miw={miw} className="fm-table stack-table" data-testid={testId}>
           {children}
         </Table>
       </div>

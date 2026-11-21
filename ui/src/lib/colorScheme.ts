@@ -8,8 +8,8 @@ export function applyInitialColorScheme(): void {
   } catch {
     stored = null;
   }
-  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-  const scheme = stored === 'light' || stored === 'dark' ? stored : prefersDark ? 'dark' : 'light';
+  // Dark is the default look; a choice made with the theme toggle is remembered and wins.
+  const scheme = stored === 'light' || stored === 'dark' ? stored : 'dark';
   document.documentElement.setAttribute(MANTINE_ATTR, scheme);
   document.documentElement.setAttribute('data-theme', scheme);
 }

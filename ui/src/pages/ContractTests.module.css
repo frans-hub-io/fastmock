@@ -1,0 +1,65 @@
+.runHead {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--mantine-spacing-md);
+  border-radius: var(--mantine-radius-lg);
+  border: 1px solid var(--fm-hairline);
+  background: var(--fm-subtle-bg);
+}
+
+.runHead[data-status='failed'] {
+  border-color: var(--fh-semantic-danger-border);
+}
+
+.runHead[data-status='passed'] {
+  border-color: var(--fh-semantic-success-border);
+}
+
+.big {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 8px 0 6px;
+}
+
+.bigValue {
+  font-size: 2.2rem;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.bigOf {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--fh-color-text-muted);
+}
+
+.bigLabel {
+  font-size: 0.85rem;
+  color: var(--fh-color-text-muted);
+}
+
+.item {
+  border: 1px solid var(--fm-hairline);
+  background: var(--fm-tile-bg);
+  box-shadow: inset 3px 0 0 var(--fh-color-border-strong);
+}
+
+.item[data-verdict='passed'] {
+  box-shadow: inset 3px 0 0 var(--fh-semantic-success-border);
+}
+
+.item[data-verdict='failed'] {
+  box-shadow: inset 3px 0 0 var(--fh-semantic-danger-border);
+}
+
+.item[data-verdict='error'] {
+  box-shadow: inset 3px 0 0 var(--fh-semantic-warning-border);
+}
+
+.control {
+  min-width: 0;
+}

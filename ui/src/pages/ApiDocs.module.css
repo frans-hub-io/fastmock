@@ -1,8 +1,9 @@
 .host {
   border: 1px solid var(--mantine-color-default-border);
-  border-radius: var(--mantine-radius-md);
+  border-radius: var(--mantine-radius-lg);
   background: #fff;
   overflow: hidden;
+  box-shadow: var(--fm-shadow-xs);
 }
 
 .host :global(.swagger-ui) {
@@ -17,7 +18,16 @@
   display: none;
 }
 
-/* Light values of the brand tokens (--fh-color-link, --fh-color-accent, --fh-http-*): the dark scheme inverts the whole host. */
+/*
+ * Light scheme: Swagger UI's own light styles, with the brand link, accent and HTTP method colours. Form fields get
+ * explicit colours so they never take the page's colour scheme.
+ */
+.host :global(.swagger-ui input),
+.host :global(.swagger-ui textarea:not(.curl)),
+.host :global(.swagger-ui select) {
+  color: #3b4151;
+}
+
 .host :global(.swagger-ui .info a) {
   color: #6020a0;
 }
@@ -95,12 +105,187 @@
   background: #46777e;
 }
 
-:global([data-mantine-color-scheme='dark']) .host {
-  filter: invert(0.9) hue-rotate(180deg);
-  border-color: #ccc;
+/*
+ * Dark scheme: the page sets Swagger UI's own dark mode (the dark-mode class on the html element) while this
+ * screen is open; these rules move its surfaces, fields and links onto the brand's dark palette.
+ */
+:global(html.dark-mode) .host {
+  background: var(--fm-tile-bg);
+  border-color: var(--fm-hairline);
 }
 
-:global([data-mantine-color-scheme='dark']) .host :global(.swagger-ui img),
-:global([data-mantine-color-scheme='dark']) .host :global(.swagger-ui .microlight) {
-  filter: invert(1) hue-rotate(180deg);
+:global(html.dark-mode) .host :global(.swagger-ui) {
+  background: transparent;
+  color: var(--fh-color-text);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .info a),
+:global(html.dark-mode) .host :global(.swagger-ui .opblock-tag a.link),
+:global(html.dark-mode) .host :global(.swagger-ui a.nostyle),
+:global(html.dark-mode) .host :global(.swagger-ui .info .link) {
+  color: var(--fh-color-link);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .scheme-container),
+:global(html.dark-mode) .host :global(.swagger-ui .opblock .opblock-section-header) {
+  background: var(--fm-subtle-bg);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .model-box),
+:global(html.dark-mode) .host :global(.swagger-ui section.models .model-container) {
+  background: var(--fm-subtle-bg);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui input),
+:global(html.dark-mode) .host :global(.swagger-ui select),
+:global(html.dark-mode) .host :global(.swagger-ui textarea:not(.curl)) {
+  background-color: var(--fm-chip-bg);
+  border-color: var(--fh-color-border-strong);
+  color: var(--fh-color-text);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui input::placeholder),
+:global(html.dark-mode) .host :global(.swagger-ui textarea::placeholder) {
+  color: var(--fh-color-text-muted);
+  opacity: 1;
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui input:focus),
+:global(html.dark-mode) .host :global(.swagger-ui select:focus),
+:global(html.dark-mode) .host :global(.swagger-ui textarea:focus) {
+  border-color: var(--fh-color-focus-ring) !important;
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock-tag),
+:global(html.dark-mode) .host :global(.swagger-ui section.models),
+:global(html.dark-mode) .host :global(.swagger-ui section.models h4) {
+  border-color: var(--fm-hairline);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock.opblock-get) {
+  background: color-mix(in srgb, var(--fh-http-get-bg) 70%, transparent);
+  border-color: var(--fh-http-get-border);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock.opblock-get .opblock-summary) {
+  border-color: var(--fh-http-get-border);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock.opblock-get .opblock-summary-method) {
+  background: var(--fh-http-get-fg);
+  color: #1a1522;
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock.opblock-post) {
+  background: color-mix(in srgb, var(--fh-http-post-bg) 70%, transparent);
+  border-color: var(--fh-http-post-border);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock.opblock-post .opblock-summary) {
+  border-color: var(--fh-http-post-border);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock.opblock-post .opblock-summary-method) {
+  background: var(--fh-http-post-fg);
+  color: #1a1522;
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock.opblock-put) {
+  background: color-mix(in srgb, var(--fh-http-put-bg) 70%, transparent);
+  border-color: var(--fh-http-put-border);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock.opblock-put .opblock-summary) {
+  border-color: var(--fh-http-put-border);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock.opblock-put .opblock-summary-method) {
+  background: var(--fh-http-put-fg);
+  color: #1a1522;
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock.opblock-patch) {
+  background: color-mix(in srgb, var(--fh-http-patch-bg) 70%, transparent);
+  border-color: var(--fh-http-patch-border);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock.opblock-patch .opblock-summary) {
+  border-color: var(--fh-http-patch-border);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock.opblock-patch .opblock-summary-method) {
+  background: var(--fh-http-patch-fg);
+  color: #1a1522;
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock.opblock-delete) {
+  background: color-mix(in srgb, var(--fh-http-delete-bg) 70%, transparent);
+  border-color: var(--fh-http-delete-border);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock.opblock-delete .opblock-summary) {
+  border-color: var(--fh-http-delete-border);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock.opblock-delete .opblock-summary-method) {
+  background: var(--fh-http-delete-fg);
+  color: #1a1522;
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock.opblock-head) {
+  background: color-mix(in srgb, var(--fh-http-head-bg) 70%, transparent);
+  border-color: var(--fh-http-head-border);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock.opblock-head .opblock-summary) {
+  border-color: var(--fh-http-head-border);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock.opblock-head .opblock-summary-method) {
+  background: var(--fh-http-head-fg);
+  color: #1a1522;
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock.opblock-options) {
+  background: color-mix(in srgb, var(--fh-http-options-bg) 70%, transparent);
+  border-color: var(--fh-http-options-border);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock.opblock-options .opblock-summary) {
+  border-color: var(--fh-http-options-border);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock.opblock-options .opblock-summary-method) {
+  background: var(--fh-http-options-fg);
+  color: #1a1522;
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock .opblock-summary-path),
+:global(html.dark-mode) .host :global(.swagger-ui .opblock .opblock-summary-path__deprecated),
+:global(html.dark-mode) .host :global(.swagger-ui .opblock .opblock-summary-description) {
+  color: var(--fh-color-text);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .opblock .opblock-section-header) {
+  background: color-mix(in srgb, var(--fm-tile-bg) 70%, transparent);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .btn.execute) {
+  background-color: var(--fh-color-accent);
+  border-color: var(--fh-color-accent);
+  color: var(--fh-color-on-accent);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .btn.authorize) {
+  border-color: var(--fh-semantic-success-border);
+  color: var(--fh-semantic-success-fg);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .btn.authorize svg) {
+  fill: var(--fh-semantic-success-fg);
+}
+
+:global(html.dark-mode) .host :global(.swagger-ui .tab li button.tablinks),
+:global(html.dark-mode) .host :global(.swagger-ui .tab li) {
+  color: var(--fh-color-text);
 }
