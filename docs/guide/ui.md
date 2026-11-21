@@ -127,6 +127,18 @@ all/enabled/disabled switch; the filters are kept in the URL. Each row has an on
   replacing stubs that already carry it unless "Replace" is cleared.
 - **Delete tag** (with a tag filter) removes every stub carrying the tag.
 
+### Quick mock
+
+A guided page for a first mock (`/ui/quick-mock`, shown to principals with `stubs:write`; an empty stubs page links
+to it). Templates prefill the form; step 1 sets method, path, status, body and headers, step 2 switches on
+behaviours that map to stub features: request matching, credentials (with a second stub that answers 401), delay,
+fault, random failures (a `random` response list), templating, a response sequence, a scenario, a callback, CORS
+headers (with an OPTIONS stub when the browser needs a preflight) and `times`/`ttlSeconds`. The side panel shows
+each stub as `POST /__admin/stubs` takes it and the result of `POST /__admin/stubs/validate`. **Create mock**
+saves the stubs (tagged `quick-mock`) in the chosen space, **Update mock** replaces them, and **Try it** calls the
+data plane from the browser and shows the call as cURL, JavaScript, Python and Java code. **Open in full editor**
+continues in the stub editor.
+
 ### Stub editor
 
 Opened from the stubs table (`/ui/stubs/<id>`), from **New stub**, or from "Create stub from this request" in the

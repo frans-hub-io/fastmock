@@ -137,7 +137,8 @@ describe('empty states and the stub editor', () => {
     api('editor', []);
     renderApp(<AppRoutes />, '/stubs');
     expect(await screen.findByText('No stubs yet')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Create your first stub' })).toHaveAttribute('href', '/stubs/new');
+    expect(screen.getByRole('link', { name: 'Create your first mock' })).toHaveAttribute('href', '/quick-mock');
+    expect(screen.getByRole('link', { name: 'Blank stub' })).toHaveAttribute('href', '/stubs/new');
     expect(screen.getByRole('link', { name: /How stubs match requests/ })).toHaveAttribute('target', '_blank');
   });
 
@@ -145,7 +146,7 @@ describe('empty states and the stub editor', () => {
     api('viewer', []);
     renderApp(<AppRoutes />, '/stubs');
     expect(await screen.findByText('No stubs yet')).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: 'Create your first stub' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Create your first mock' })).not.toBeInTheDocument();
   });
 
   it('validates the URL inline and keeps the save bar', async () => {
