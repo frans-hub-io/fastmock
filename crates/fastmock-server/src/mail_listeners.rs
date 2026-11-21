@@ -1,24 +1,29 @@
-//! Binds the mail listeners (SMTP, SMTPS, POP3, POP3S, IMAP, IMAPS) from `MailConfig`, applies the connection limits shared by all
-//! mail listeners (`FASTMOCK_MAIL_MAX_CONNECTIONS`, `FASTMOCK_MAIL_MAX_CONNECTIONS_PER_IP`) and stops
-//! with the server: no new connections after the shutdown signal, sessions waiting for a command get
-//! `421`, the rest get a grace period.
+//! Binds the mail listeners (SMTP, SMTPS, POP3, POP3S, IMAP, IMAPS) from `MailConfig`, applies the
+//! connection limits shared by all mail listeners (`FASTMOCK_MAIL_MAX_CONNECTIONS`,
+//! `FASTMOCK_MAIL_MAX_CONNECTIONS_PER_IP`) and stops with the server: no new connections after the
+//! shutdown signal, sessions waiting for a command get the protocol's closing reply (SMTP `421`, POP3
+//! `-ERR [SYS/TEMP]`, IMAP `* BYE`), the rest get a grace period. Every listener runs the same accept
+//! loop ([`serve_connections`]).
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use fastmock_mail::imap::{self, ImapServer, ReadTokenCheck};
-use fastmock_mail::pop3::{BUSY_REPLY as POP3_BUSY_REPLY, MailboxTokenCheck, Pop3Server};
-use fastmock_mail::smtp::{BUSY_REPLY, SmtpServer, TokenCheck};
+use fastmock_mail::imap::{self, ImapServer};
+use fastmock_mail::mailbox_login::MailboxTokenCheck;
+use fastmock_mail::pop3::{self, Pop3Server};
+use fastmock_mail::smtp::{self, SmtpServer, TokenCheck};
 use tokio::io::AsyncWriteExt;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use crate::access::Permission;
+use crate::auth::Principal;
 use crate::state::AppState;
 use crate::tokens::{Lookup, looks_managed, principal_of};
 
@@ -93,84 +98,58 @@ impl ConnectionLimits {
 }
 
 /// AUTH with a managed token: valid, and allowed `mail:write` in the global area or in the space named
-/// like the AUTH user.
+/// like the AUTH user. As an IMAP/POP3 password: valid, and allowed `mail:read` in the mailbox's space or
+/// globally (a mailbox of the global area needs a global grant).
 pub struct ManagedTokens {
     app: AppState,
+}
+
+impl ManagedTokens {
+    /// The principal of a valid managed token.
+    async fn principal(&self, token: &str, what: &str) -> Option<(uuid::Uuid, Principal)> {
+        if !looks_managed(token) {
+            return None;
+        }
+        let t = match self.app.tokens.lookup(token).await {
+            Ok(Lookup::Valid(t)) => t,
+            Ok(_) => return None,
+            Err(e) => {
+                tracing::warn!(error = %e, "checking a managed token for {what} failed");
+                return None;
+            }
+        };
+        principal_of(&self.app.auth, &t).map(|p| (t.id, p))
+    }
 }
 
 #[async_trait]
 impl TokenCheck for ManagedTokens {
     async fn allows(&self, user: &str, token: &str) -> bool {
-        if !looks_managed(token) {
-            return false;
-        }
-        let t = match self.app.tokens.lookup(token).await {
-            Ok(Lookup::Valid(t)) => t,
-            Ok(_) => return false,
-            Err(e) => {
-                tracing::warn!(error = %e, "checking a managed token for SMTP AUTH failed");
-                return false;
-            }
-        };
-        let Some(p) = principal_of(&self.app.auth, &t) else {
+        let Some((id, p)) = self.principal(token, "SMTP AUTH").await else {
             return false;
         };
         let space = self.app.auth.access().space(user).map(|s| s.name.as_str());
         let ok = p.allowed(Permission::MailWrite, None)
             || space.is_some_and(|s| p.allowed(Permission::MailWrite, Some(s)));
         if ok {
-            self.app.tokens.touch(t.id);
+            self.app.tokens.touch(id);
         }
         ok
     }
 }
 
-/// IMAP login with a managed token: valid, and allowed `mail:read` in the mailbox's space (or globally;
-/// a mailbox of the global area needs a global grant).
 #[async_trait]
-impl ReadTokenCheck for ManagedTokens {
-    async fn allows_read(&self, space: Option<&str>, token: &str) -> bool {
-        if !looks_managed(token) {
-            return false;
-        }
-        let t = match self.app.tokens.lookup(token).await {
-            Ok(Lookup::Valid(t)) => t,
-            Ok(_) => return false,
-            Err(e) => {
-                tracing::warn!(error = %e, "checking a managed token for a mailbox login failed");
-                return false;
-            }
-        };
-        let Some(p) = principal_of(&self.app.auth, &t) else {
+impl MailboxTokenCheck for ManagedTokens {
+    async fn can_read(&self, area: Option<&str>, token: &str) -> bool {
+        let Some((id, p)) = self.principal(token, "a mailbox login").await else {
             return false;
         };
-        let ok = p.allowed(Permission::MailRead, space);
+        let ok = p.allowed(Permission::MailRead, area);
         if ok {
-            self.app.tokens.touch(t.id);
+            self.app.tokens.touch(id);
         }
         ok
     }
-}
-
-/// The SMTP server of an application (`None` without the mail module).
-pub fn smtp_server(app: &AppState) -> anyhow::Result<Option<Arc<SmtpServer>>> {
-    let Some(mail) = &app.mail else {
-        return Ok(None);
-    };
-    let tls = mail
-        .config
-        .tls
-        .as_ref()
-        .map(fastmock_mail::tls::server_config)
-        .transpose()
-        .context("mail TLS certificate")?;
-    let tokens: Arc<dyn TokenCheck> = Arc::new(ManagedTokens { app: app.clone() });
-    Ok(Some(Arc::new(SmtpServer::new(
-        mail.clone(),
-        tls,
-        Some(tokens),
-        app.mail_chaos.clone(),
-    ))))
 }
 
 /// The running mail listeners.
@@ -191,112 +170,148 @@ impl MailListeners {
     pub async fn wait(mut self) {
         while self.tasks.join_next().await.is_some() {}
     }
-}
 
-/// Binds the SMTP, SMTPS, POP3 and POP3S listeners; `None` without the mail module.
-pub async fn start(
-    app: &AppState,
-    shutdown: watch::Receiver<bool>,
-) -> anyhow::Result<Option<MailListeners>> {
-    let Some(server) = smtp_server(app)? else {
-        return Ok(None);
-    };
-    let cfg = server.service.config.clone();
-    let limits = ConnectionLimits::new(cfg.max_connections, cfg.max_connections_per_ip);
-    let mut addrs = Vec::new();
-    let mut tasks = JoinSet::new();
-    for (var, addr, implicit_tls) in [
-        ("FASTMOCK_MAIL_SMTP_LISTEN", cfg.listeners.smtp, false),
-        ("FASTMOCK_MAIL_SMTPS_LISTEN", cfg.listeners.smtps, true),
-    ] {
-        let Some(addr) = addr else { continue };
+    /// Binds `addr` (when set) and runs [`serve_connections`] on it.
+    async fn bind<F, Fut>(
+        &mut self,
+        var: &'static str,
+        addr: Option<SocketAddr>,
+        implicit_tls: bool,
+        busy: &'static [u8],
+        shutdown: &watch::Receiver<bool>,
+        session: F,
+    ) -> anyhow::Result<()>
+    where
+        F: Fn(TcpStream, SocketAddr, watch::Receiver<bool>) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let Some(addr) = addr else {
+            return Ok(());
+        };
         let listener = TcpListener::bind(addr)
             .await
             .with_context(|| format!("binding {var} {addr}"))?;
         let local = listener.local_addr()?;
         tracing::info!(listener = var, addr = %local, tls = implicit_tls, "mail listener started");
-        addrs.push((var, local));
-        tasks.spawn(accept_loop(
+        self.addrs.push((var, local));
+        self.tasks.spawn(serve_connections(
             listener,
-            server.clone(),
             implicit_tls,
-            limits.clone(),
+            self.limits.clone(),
             shutdown.clone(),
+            busy,
+            session,
         ));
+        Ok(())
     }
-    start_pop3(app, &limits, &shutdown, &mut addrs, &mut tasks).await?;
-    start_imap(app, &limits, &shutdown, &mut addrs, &mut tasks).await?;
-    Ok(Some(MailListeners {
-        addrs,
-        limits,
-        tasks,
-    }))
 }
 
-/// The IMAP server of an application (`None` without the mail module).
-pub fn imap_server(app: &AppState) -> anyhow::Result<Option<Arc<ImapServer>>> {
+/// Binds the SMTP, SMTPS, POP3, POP3S, IMAP and IMAPS listeners that are configured; `None` without the
+/// mail module.
+pub async fn start(
+    app: &AppState,
+    shutdown: watch::Receiver<bool>,
+) -> anyhow::Result<Option<MailListeners>> {
     let Some(mail) = &app.mail else {
         return Ok(None);
     };
-    let tls = mail
-        .config
+    let cfg = mail.config.clone();
+    let tls = cfg
         .tls
         .as_ref()
         .map(fastmock_mail::tls::server_config)
         .transpose()
         .context("mail TLS certificate")?;
-    let tokens: Arc<dyn ReadTokenCheck> = Arc::new(ManagedTokens { app: app.clone() });
-    Ok(Some(Arc::new(ImapServer::new(
+    let tokens = Arc::new(ManagedTokens { app: app.clone() });
+    let smtp_server = Arc::new(SmtpServer::new(
+        mail.clone(),
+        tls.clone(),
+        Some(tokens.clone() as Arc<dyn TokenCheck>),
+        app.mail_chaos.clone(),
+    ));
+    let pop3_server = Arc::new(Pop3Server::new(
+        mail.clone(),
+        tls.clone(),
+        Some(tokens.clone() as Arc<dyn MailboxTokenCheck>),
+    ));
+    let imap_server = Arc::new(ImapServer::new(
         mail.clone(),
         tls,
-        Some(tokens),
-    ))))
-}
-
-/// Binds the IMAP and IMAPS listeners that are configured.
-async fn start_imap(
-    app: &AppState,
-    limits: &Arc<ConnectionLimits>,
-    shutdown: &watch::Receiver<bool>,
-    addrs: &mut Vec<(&'static str, SocketAddr)>,
-    tasks: &mut JoinSet<()>,
-) -> anyhow::Result<()> {
-    let Some(server) = imap_server(app)? else {
-        return Ok(());
+        Some(tokens as Arc<dyn MailboxTokenCheck>),
+    ));
+    let mut l = MailListeners {
+        addrs: Vec::new(),
+        limits: ConnectionLimits::new(cfg.max_connections, cfg.max_connections_per_ip),
+        tasks: JoinSet::new(),
     };
-    let cfg = server.service.config.clone();
+    let ls = &cfg.listeners;
     for (var, addr, implicit_tls) in [
-        ("FASTMOCK_MAIL_IMAP_LISTEN", cfg.listeners.imap, false),
-        ("FASTMOCK_MAIL_IMAPS_LISTEN", cfg.listeners.imaps, true),
+        ("FASTMOCK_MAIL_SMTP_LISTEN", ls.smtp, false),
+        ("FASTMOCK_MAIL_SMTPS_LISTEN", ls.smtps, true),
     ] {
-        let Some(addr) = addr else { continue };
-        let listener = TcpListener::bind(addr)
-            .await
-            .with_context(|| format!("binding {var} {addr}"))?;
-        let local = listener.local_addr()?;
-        tracing::info!(listener = var, addr = %local, tls = implicit_tls, "mail listener started");
-        addrs.push((var, local));
-        let server = server.clone();
-        tasks.spawn(serve_connections(
-            listener,
+        let server = smtp_server.clone();
+        l.bind(
+            var,
+            addr,
             implicit_tls,
-            limits.clone(),
-            shutdown.clone(),
-            imap::BUSY_REPLY,
-            move |stream, peer, rx| {
+            smtp::BUSY_REPLY,
+            &shutdown,
+            move |s, peer, rx| {
                 let server = server.clone();
                 async move {
-                    server.serve(stream, peer, implicit_tls, Some(rx)).await;
+                    server.serve(s, peer, implicit_tls, Some(rx)).await;
                 }
             },
-        ));
+        )
+        .await?;
     }
-    Ok(())
+    for (var, addr, implicit_tls) in [
+        ("FASTMOCK_MAIL_POP3_LISTEN", ls.pop3, false),
+        ("FASTMOCK_MAIL_POP3S_LISTEN", ls.pop3s, true),
+    ] {
+        let server = pop3_server.clone();
+        l.bind(
+            var,
+            addr,
+            implicit_tls,
+            pop3::BUSY_REPLY,
+            &shutdown,
+            move |s, peer, rx| {
+                let server = server.clone();
+                async move {
+                    server.serve(s, peer, implicit_tls, Some(rx)).await;
+                }
+            },
+        )
+        .await?;
+    }
+    for (var, addr, implicit_tls) in [
+        ("FASTMOCK_MAIL_IMAP_LISTEN", ls.imap, false),
+        ("FASTMOCK_MAIL_IMAPS_LISTEN", ls.imaps, true),
+    ] {
+        let server = imap_server.clone();
+        l.bind(
+            var,
+            addr,
+            implicit_tls,
+            imap::BUSY_REPLY,
+            &shutdown,
+            move |s, peer, rx| {
+                let server = server.clone();
+                async move {
+                    server.serve(s, peer, implicit_tls, Some(rx)).await;
+                }
+            },
+        )
+        .await?;
+    }
+    Ok(Some(l))
 }
 
-/// Accepts connections within the limits and runs `session` for each until shutdown, then drains
-/// them like the SMTP listeners. Refused plain connections get `busy` before closing.
-async fn serve_connections<F, Fut>(
+/// Accepts connections within the limits and runs `session` for each until shutdown, then gives the
+/// open sessions [`DRAIN`] to finish and aborts the rest. Refused plain connections get `busy` before
+/// closing; refused implicit-TLS connections are closed without a reply.
+pub async fn serve_connections<F, Fut>(
     listener: TcpListener,
     implicit_tls: bool,
     limits: Arc<ConnectionLimits>,
@@ -304,8 +319,8 @@ async fn serve_connections<F, Fut>(
     busy: &'static [u8],
     session: F,
 ) where
-    F: Fn(tokio::net::TcpStream, SocketAddr, watch::Receiver<bool>) -> Fut,
-    Fut: std::future::Future<Output = ()> + Send + 'static,
+    F: Fn(TcpStream, SocketAddr, watch::Receiver<bool>) -> Fut,
+    Fut: Future<Output = ()> + Send + 'static,
 {
     let mut sessions = JoinSet::new();
     loop {
@@ -332,15 +347,15 @@ async fn serve_connections<F, Fut>(
                 };
                 metrics::counter!("fastmock_mail_rejected_total", "reason" => reason).increment(1);
                 tracing::warn!(peer = %peer.ip(), reason, "mail connection refused: limit reached");
-                sessions.spawn(async move {
-                    if !implicit_tls {
+                if !implicit_tls {
+                    sessions.spawn(async move {
                         let _ = tokio::time::timeout(Duration::from_secs(2), async {
                             stream.write_all(busy).await?;
                             stream.shutdown().await
                         })
                         .await;
-                    }
-                });
+                    });
+                }
                 continue;
             }
         };
@@ -360,233 +375,6 @@ async fn serve_connections<F, Fut>(
         tracing::warn!(
             open = sessions.len(),
             "mail sessions still open after the grace period; closing them"
-        );
-        sessions.abort_all();
-    }
-}
-
-async fn refuse(mut stream: tokio::net::TcpStream, implicit_tls: bool) {
-    if !implicit_tls {
-        let _ = tokio::time::timeout(Duration::from_secs(2), async {
-            stream.write_all(BUSY_REPLY).await?;
-            stream.shutdown().await
-        })
-        .await;
-    }
-}
-
-async fn accept_loop(
-    listener: TcpListener,
-    server: Arc<SmtpServer>,
-    implicit_tls: bool,
-    limits: Arc<ConnectionLimits>,
-    mut shutdown: watch::Receiver<bool>,
-) {
-    let mut sessions = JoinSet::new();
-    loop {
-        let accepted = tokio::select! {
-            _ = shutdown.changed() => break,
-            r = listener.accept() => r,
-            Some(_) = sessions.join_next(), if !sessions.is_empty() => continue,
-        };
-        let (stream, peer) = match accepted {
-            Ok(x) => x,
-            Err(e) => {
-                tracing::warn!(error = %e, "accepting a mail connection failed");
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                continue;
-            }
-        };
-        let _ = stream.set_nodelay(true);
-        let slot = match limits.acquire(peer.ip()) {
-            Ok(s) => s,
-            Err(b) => {
-                let reason = match b {
-                    Busy::Global => "connections",
-                    Busy::PerIp => "connections_per_ip",
-                };
-                metrics::counter!("fastmock_mail_rejected_total", "reason" => reason).increment(1);
-                tracing::warn!(peer = %peer.ip(), reason, "mail connection refused: limit reached");
-                sessions.spawn(refuse(stream, implicit_tls));
-                continue;
-            }
-        };
-        let server = server.clone();
-        let rx = shutdown.clone();
-        sessions.spawn(async move {
-            let _slot = slot;
-            server.serve(stream, peer, implicit_tls, Some(rx)).await;
-        });
-    }
-    drop(listener);
-    if tokio::time::timeout(DRAIN, async {
-        while sessions.join_next().await.is_some() {}
-    })
-    .await
-    .is_err()
-    {
-        tracing::warn!(
-            open = sessions.len(),
-            "mail sessions still open after the grace period; closing them"
-        );
-        sessions.abort_all();
-    }
-}
-
-/// POP3 and IMAP logins with a managed token: valid, and allowed `mail:read` in the mailbox's space or
-/// globally.
-#[async_trait]
-impl MailboxTokenCheck for ManagedTokens {
-    async fn can_read(&self, area: Option<&str>, token: &str) -> bool {
-        if !looks_managed(token) {
-            return false;
-        }
-        let t = match self.app.tokens.lookup(token).await {
-            Ok(Lookup::Valid(t)) => t,
-            Ok(_) => return false,
-            Err(e) => {
-                tracing::warn!(error = %e, "checking a managed token for a mailbox login failed");
-                return false;
-            }
-        };
-        let Some(p) = principal_of(&self.app.auth, &t) else {
-            return false;
-        };
-        let ok = p.allowed(Permission::MailRead, area);
-        if ok {
-            self.app.tokens.touch(t.id);
-        }
-        ok
-    }
-}
-
-/// The POP3 server of an application (`None` without the mail module).
-pub fn pop3_server(app: &AppState) -> anyhow::Result<Option<Arc<Pop3Server>>> {
-    let Some(mail) = &app.mail else {
-        return Ok(None);
-    };
-    let tls = mail
-        .config
-        .tls
-        .as_ref()
-        .map(fastmock_mail::tls::server_config)
-        .transpose()
-        .context("mail TLS certificate")?;
-    let tokens: Arc<dyn MailboxTokenCheck> = Arc::new(ManagedTokens { app: app.clone() });
-    Ok(Some(Arc::new(Pop3Server::new(
-        mail.clone(),
-        tls,
-        Some(tokens),
-    ))))
-}
-
-/// Binds `FASTMOCK_MAIL_POP3_LISTEN` and `FASTMOCK_MAIL_POP3S_LISTEN` when set; their connections count
-/// towards the limits shared by all mail listeners.
-async fn start_pop3(
-    app: &AppState,
-    limits: &Arc<ConnectionLimits>,
-    shutdown: &watch::Receiver<bool>,
-    addrs: &mut Vec<(&'static str, SocketAddr)>,
-    tasks: &mut JoinSet<()>,
-) -> anyhow::Result<()> {
-    let Some(mail) = &app.mail else {
-        return Ok(());
-    };
-    let l = &mail.config.listeners;
-    let wanted: Vec<_> = [
-        ("FASTMOCK_MAIL_POP3_LISTEN", l.pop3, false),
-        ("FASTMOCK_MAIL_POP3S_LISTEN", l.pop3s, true),
-    ]
-    .into_iter()
-    .filter_map(|(v, a, t)| a.map(|a| (v, a, t)))
-    .collect();
-    if wanted.is_empty() {
-        return Ok(());
-    }
-    let Some(server) = pop3_server(app)? else {
-        return Ok(());
-    };
-    for (var, addr, implicit_tls) in wanted {
-        let listener = TcpListener::bind(addr)
-            .await
-            .with_context(|| format!("binding {var} {addr}"))?;
-        let local = listener.local_addr()?;
-        tracing::info!(listener = var, addr = %local, tls = implicit_tls, "mail listener started");
-        addrs.push((var, local));
-        tasks.spawn(pop3_accept_loop(
-            listener,
-            server.clone(),
-            implicit_tls,
-            limits.clone(),
-            shutdown.clone(),
-        ));
-    }
-    Ok(())
-}
-
-async fn pop3_refuse(mut stream: tokio::net::TcpStream, implicit_tls: bool) {
-    if !implicit_tls {
-        let _ = tokio::time::timeout(Duration::from_secs(2), async {
-            stream.write_all(POP3_BUSY_REPLY).await?;
-            stream.shutdown().await
-        })
-        .await;
-    }
-}
-
-async fn pop3_accept_loop(
-    listener: TcpListener,
-    server: Arc<Pop3Server>,
-    implicit_tls: bool,
-    limits: Arc<ConnectionLimits>,
-    mut shutdown: watch::Receiver<bool>,
-) {
-    let mut sessions = JoinSet::new();
-    loop {
-        let accepted = tokio::select! {
-            _ = shutdown.changed() => break,
-            r = listener.accept() => r,
-            Some(_) = sessions.join_next(), if !sessions.is_empty() => continue,
-        };
-        let (stream, peer) = match accepted {
-            Ok(x) => x,
-            Err(e) => {
-                tracing::warn!(error = %e, "accepting a POP3 connection failed");
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                continue;
-            }
-        };
-        let _ = stream.set_nodelay(true);
-        let slot = match limits.acquire(peer.ip()) {
-            Ok(s) => s,
-            Err(b) => {
-                let reason = match b {
-                    Busy::Global => "connections",
-                    Busy::PerIp => "connections_per_ip",
-                };
-                metrics::counter!("fastmock_mail_rejected_total", "reason" => reason).increment(1);
-                tracing::warn!(peer = %peer.ip(), reason, "mail connection refused: limit reached");
-                sessions.spawn(pop3_refuse(stream, implicit_tls));
-                continue;
-            }
-        };
-        let server = server.clone();
-        let rx = shutdown.clone();
-        sessions.spawn(async move {
-            let _slot = slot;
-            server.serve(stream, peer, implicit_tls, Some(rx)).await;
-        });
-    }
-    drop(listener);
-    if tokio::time::timeout(DRAIN, async {
-        while sessions.join_next().await.is_some() {}
-    })
-    .await
-    .is_err()
-    {
-        tracing::warn!(
-            open = sessions.len(),
-            "POP3 sessions still open after the grace period; closing them"
         );
         sessions.abort_all();
     }
