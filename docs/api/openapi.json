@@ -3730,6 +3730,372 @@
         ]
       }
     },
+    "/__admin/mail/inbound": {
+      "post": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Post an inbound message to provider webhooks",
+        "description": "Builds the provider's inbound payload for a message (SendGrid Inbound Parse multipart, Mailgun route form/JSON/MIME, Postmark inbound JSON, SES receipt in an SNS envelope) and queues it for the inbound webhooks of that provider in the space. The message is not stored. Send JSON (`InboundBody`), or the raw message with `Content-Type: message/rfc822` and `provider` in the query. SNS envelopes are not signed. Needs `mail:write`.",
+        "operationId": "sendMailInbound",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space whose inbound webhooks receive the message.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "description": "With `Content-Type: message/rfc822`: the provider (`ses`, `sendgrid`, `mailgun`, `postmark`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "webhookId",
+            "in": "query",
+            "description": "With `Content-Type: message/rfc822`: only this webhook.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InboundBody"
+              },
+              "example": {
+                "provider": "postmark",
+                "message": {
+                  "from": "Customer <customer@example.com>",
+                  "to": [
+                    "support@inbound.example.test"
+                  ],
+                  "subject": "Help",
+                  "text": "Hello"
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboundResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid message or provider",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires mail:write",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, unknown space, or no inbound webhook of the provider",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The message exceeds the mail message size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/__admin/mail/webhooks": {
+      "get": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Provider webhooks of a space",
+        "description": "The webhooks, the expected provider API keys (SHA-256 digests) and the SendGrid verification key of one area. Signing keys are never returned and URL passwords are shown as `***`. Needs `mail:read`.",
+        "operationId": "getMailWebhooks",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailWebhooksView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires mail:read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Replace the provider webhooks of a space",
+        "description": "Stores the webhooks and expected API keys of one area. Events webhooks receive the provider's delivery events after each message sent through that provider's API in this area (`delivered`, or `bounce`, `complaint`, `deferred`, `dropped` for recipients with that local part); inbound webhooks receive the provider's inbound payload from `POST /__admin/mail/inbound`. Deliveries go through the callbacks outbox (retries, `/__admin/callbacks`). `signingKey` is write-only; a webhook `PUT` again with the same id without it (or with `***` as URL password) keeps the stored value. The first `PUT` creates the space's SendGrid key pair. Needs `mail:write`.",
+        "operationId": "putMailWebhooks",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MailWebhooksBody"
+              },
+              "example": {
+                "webhooks": [
+                  {
+                    "id": "sg-events",
+                    "provider": "sendgrid",
+                    "kind": "events",
+                    "url": "https://app.example.com/hooks/sendgrid",
+                    "events": [
+                      "delivered",
+                      "bounce"
+                    ]
+                  },
+                  {
+                    "id": "mg-inbound",
+                    "provider": "mailgun",
+                    "kind": "inbound",
+                    "url": "https://app.example.com/hooks/mailgun",
+                    "signingKey": "key-example"
+                  }
+                ],
+                "apiKeys": {
+                  "sendgrid": [
+                    "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+                  ]
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailWebhooksView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires mail:write",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "mail"
+        ],
+        "summary": "Remove the provider webhooks of a space",
+        "description": "Removes the webhooks, expected API keys and the SendGrid key pair of one area; queued deliveries stay in the outbox. Needs `mail:write`.",
+        "operationId": "clearMailWebhooks",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires mail:write",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Mail is not enabled, or unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/__admin/plugins": {
       "get": {
         "tags": [
@@ -8798,6 +9164,111 @@
           }
         }
       },
+      "ComposeAttachment": {
+        "type": "object",
+        "required": [
+          "name",
+          "base64"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "invoice.pdf"
+          },
+          "contentType": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Default `application/octet-stream`.",
+            "example": "application/pdf"
+          },
+          "base64": {
+            "type": "string",
+            "description": "The content, base64."
+          },
+          "contentId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Makes the part inline, referenced from the HTML as `cid:<contentId>`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ComposeRequest": {
+        "type": "object",
+        "description": "A message to build (`POST /__admin/mail/messages` with JSON).",
+        "required": [
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "`addr@example.com` or `Name <addr@example.com>`.",
+            "example": "Shop <shop@example.com>"
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "alice@example.test"
+            ]
+          },
+          "cc": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "html": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "headers": {
+            "type": "object",
+            "description": "Further header fields; `Message-ID` and `Date` replace the generated ones.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ComposeAttachment"
+            }
+          },
+          "mailbox": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Mailbox (address) to file the message into instead of the recipients' INBOXes; read by the admin\nAPI, not part of the MIME message."
+          }
+        },
+        "additionalProperties": false
+      },
       "ContractRun": {
         "type": "object",
         "required": [
@@ -9751,6 +10222,97 @@
           }
         }
       },
+      "InboundBody": {
+        "type": "object",
+        "description": "`POST /__admin/mail/inbound` with JSON: the provider and the message, built from fields\n(`message`) or given raw (`raw` text or `rawBase64`).",
+        "required": [
+          "provider"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "`ses`, `sendgrid`, `mailgun` or `postmark`.",
+            "example": "sendgrid"
+          },
+          "webhookId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Only this inbound webhook; default all inbound webhooks of the provider in the space."
+          },
+          "message": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ComposeRequest"
+              }
+            ]
+          },
+          "raw": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The MIME message as text."
+          },
+          "rawBase64": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The MIME message, base64."
+          },
+          "mailFrom": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Envelope sender; default the From address."
+          },
+          "rcptTo": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Envelope recipients; default the To, Cc and Bcc addresses."
+          }
+        },
+        "additionalProperties": false
+      },
+      "InboundDelivery": {
+        "type": "object",
+        "required": [
+          "webhookId",
+          "callbackId"
+        ],
+        "properties": {
+          "webhookId": {
+            "type": "string"
+          },
+          "callbackId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The callback job (`/__admin/callbacks`)."
+          }
+        }
+      },
+      "InboundResult": {
+        "type": "object",
+        "required": [
+          "deliveries"
+        ],
+        "properties": {
+          "deliveries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InboundDelivery"
+            }
+          }
+        }
+      },
       "InfoResponse": {
         "type": "object",
         "required": [
@@ -10190,6 +10752,93 @@
               "$ref": "#/components/schemas/ChaosCounters"
             },
             "description": "How often each rule matched and fired since the rules were stored, over all replicas."
+          }
+        }
+      },
+      "MailEventName": {
+        "type": "string",
+        "description": "A delivery event. FastMock emits `delivered` unless the recipient's local part (without `+tag`) is\n`bounce`, `complaint`, `deferred` or `dropped`; `open` and `click` are accepted in the configuration\nbut not emitted.",
+        "enum": [
+          "delivered",
+          "bounce",
+          "complaint",
+          "deferred",
+          "dropped",
+          "open",
+          "click"
+        ]
+      },
+      "MailWebhooksBody": {
+        "type": "object",
+        "description": "Body of `PUT /__admin/mail/webhooks`.",
+        "properties": {
+          "webhooks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WebhookInput"
+            },
+            "description": "At most 20."
+          },
+          "apiKeys": {
+            "type": "object",
+            "description": "Expected API keys per provider (`ses`, `sendgrid`, `mailgun`, `postmark`, `resend`, `brevo`) as\nlowercase SHA-256 hex digests, at most 20 each. A provider listed here accepts only these keys in\nthis space (SES: the access key id); others accept any key.",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "example": {
+              "sendgrid": [
+                "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "MailWebhooksView": {
+        "type": "object",
+        "required": [
+          "webhooks",
+          "apiKeys"
+        ],
+        "properties": {
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The space; absent for the global area.",
+            "example": "billing"
+          },
+          "webhooks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WebhookView"
+            }
+          },
+          "apiKeys": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "sendgridPublicKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The space's SendGrid verification key (base64 DER `SubjectPublicKeyInfo`), for the application's\nEvent Webhook and Inbound Parse verification settings. Absent until webhooks are first stored."
           }
         }
       },
@@ -12658,6 +13307,123 @@
           }
         },
         "additionalProperties": false
+      },
+      "WebhookInput": {
+        "type": "object",
+        "description": "A webhook as `PUT /__admin/mail/webhooks` takes it.",
+        "required": [
+          "provider",
+          "kind",
+          "url"
+        ],
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Letters, digits, `.`, `_`, `-` (at most 64); `webhook-<n>` when left out. A webhook keeps its\nstored `signingKey` and URL password when `PUT` again with the same id without them.",
+            "example": "sendgrid-events"
+          },
+          "provider": {
+            "type": "string",
+            "description": "`ses`, `sendgrid`, `mailgun` or `postmark`.",
+            "example": "sendgrid"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/WebhookKind"
+          },
+          "url": {
+            "type": "string",
+            "description": "`http(s)://` URL of the application; user info (`https://user:pass@host/`) is sent as basic\nauthentication (Postmark style). Checked against the callback egress policy.",
+            "example": "https://app.example.com/hooks/sendgrid"
+          },
+          "signingKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Write-only. SendGrid: a P-256 private key (PKCS#8, PEM or base64 DER) to sign with instead of the\nspace's generated key. Mailgun: the HTTP webhook signing key for the HMAC. `\"\"` removes a stored\nkey."
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailEventName"
+            },
+            "description": "Events to send (`kind: events`); all when empty."
+          },
+          "raw": {
+            "type": "boolean",
+            "description": "SendGrid inbound: post the full MIME message (`email` field) instead of parsed fields."
+          },
+          "topicArn": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "SES: the SNS topic ARN in notifications (default `arn:aws:sns:us-east-1:123456789012:fastmock-ses`)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "WebhookKind": {
+        "type": "string",
+        "enum": [
+          "events",
+          "inbound"
+        ]
+      },
+      "WebhookView": {
+        "type": "object",
+        "required": [
+          "id",
+          "provider",
+          "kind",
+          "url",
+          "events",
+          "hasSigningKey"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/WebhookKind"
+          },
+          "url": {
+            "type": "string",
+            "description": "The URL with its password replaced by `***`."
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MailEventName"
+            }
+          },
+          "hasSigningKey": {
+            "type": "boolean",
+            "description": "A signing key is stored (never shown)."
+          },
+          "publicKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "SendGrid: the public key that verifies this webhook's signatures (base64 DER)."
+          },
+          "raw": {
+            "type": "boolean"
+          },
+          "topicArn": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       },
       "WireMockImport": {
         "type": "object",
