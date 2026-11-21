@@ -123,10 +123,13 @@ mail:
     maxMessageBytes: 10485760
     maxRecipients: 100
     maxMessages: 1000
+    maxBytes: 268435456
+    maxMailboxes: 10000
     maxAge: 7d
     maxConnections: 256
     maxConnectionsPerIp: 32
     maxAuthFailures: 3
+    loginFailureLimit: 5
     idleTimeout: 30s
     dataTimeout: 60s
     sessionTimeout: 10m

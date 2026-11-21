@@ -37,6 +37,9 @@ mail:
   limits:
     maxMessageBytes: 5242880
     maxMessages: 500
+    maxBytes: 104857600
+    maxMailboxes: 2000
+    loginFailureLimit: 10
     maxAge: 2d
     maxConnections: 64
     maxConnectionsPerIp: 16

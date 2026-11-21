@@ -698,6 +698,14 @@
               "type": "integer",
               "minimum": 1
             },
+            "maxBytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxMailboxes": {
+              "type": "integer",
+              "minimum": 1
+            },
             "maxAge": {
               "type": "string",
               "pattern": "^[0-9]+(ms|s|m|h|d)?$"
@@ -713,6 +721,10 @@
             "maxAuthFailures": {
               "type": "integer",
               "minimum": 1
+            },
+            "loginFailureLimit": {
+              "type": "integer",
+              "minimum": 0
             },
             "idleTimeout": {
               "type": "string",

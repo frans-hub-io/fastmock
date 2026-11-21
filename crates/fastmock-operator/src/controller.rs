@@ -250,6 +250,8 @@ pub fn mail_problem(spec: &FastMockSpec) -> Option<String> {
     for (n, v) in [
         ("maxMessageBytes", l.max_message_bytes),
         ("maxMessages", l.max_messages),
+        ("maxBytes", l.max_bytes),
+        ("maxMailboxes", l.max_mailboxes),
         ("maxConnections", l.max_connections),
         ("maxConnectionsPerIp", l.max_connections_per_ip),
     ] {
@@ -257,8 +259,14 @@ pub fn mail_problem(spec: &FastMockSpec) -> Option<String> {
             return Some(format!("mail.limits.{n} must be greater than zero"));
         }
     }
+    if l.login_failure_limit.is_some_and(|v| v < 0) {
+        return Some("mail.limits.loginFailureLimit must not be negative".into());
+    }
     if l.max_message_bytes.is_some_and(|v| v > 512 * 1024 * 1024) {
         return Some("mail.limits.maxMessageBytes must be at most 536870912".into());
+    }
+    if l.max_bytes.unwrap_or(256 * 1024 * 1024) < l.max_message_bytes.unwrap_or(10 * 1024 * 1024) {
+        return Some("mail.limits.maxBytes must be at least mail.limits.maxMessageBytes".into());
     }
     if l.max_connections_per_ip.unwrap_or(32) > l.max_connections.unwrap_or(256) {
         return Some(
@@ -1765,6 +1773,18 @@ mod tests {
             (
                 json!({"limits": {"maxMessages": 0}}),
                 "mail.limits.maxMessages must be greater than zero",
+            ),
+            (
+                json!({"limits": {"maxMailboxes": 0}}),
+                "mail.limits.maxMailboxes must be greater than zero",
+            ),
+            (
+                json!({"limits": {"loginFailureLimit": -1}}),
+                "mail.limits.loginFailureLimit must not be negative",
+            ),
+            (
+                json!({"limits": {"maxBytes": 1000}}),
+                "mail.limits.maxBytes must be at least mail.limits.maxMessageBytes",
             ),
             (
                 json!({"limits": {"maxMessageBytes": 600000000}}),

@@ -182,6 +182,9 @@ fn mail_env(m: &mut BTreeMap<String, String>, mail: &MailSpec) {
         for (k, v) in [
             ("MAX_MESSAGE_BYTES", l.max_message_bytes),
             ("MAX_MESSAGES", l.max_messages),
+            ("MAX_BYTES", l.max_bytes),
+            ("MAX_MAILBOXES", l.max_mailboxes),
+            ("LOGIN_FAILURE_LIMIT", l.login_failure_limit),
             ("MAX_CONNECTIONS", l.max_connections),
             ("MAX_CONNECTIONS_PER_IP", l.max_connections_per_ip),
         ] {
@@ -634,7 +637,7 @@ mod tests {
                 "tlsSecretRef": {"name": "mail-tls"},
                 "requireAuth": true,
                 "usersSecretRef": {"name": "mail-users", "key": "list"},
-                "limits": {"maxMessages": 50, "maxAge": "2d", "idleTimeout": " "},
+                "limits": {"maxMessages": 50, "maxBytes": 1048576000, "maxMailboxes": 300, "loginFailureLimit": 0, "maxAge": "2d", "idleTimeout": " "},
                 "service": {"type": "LoadBalancer", "annotations": {"example.com/a": "b"}}
             }
         }))
@@ -658,6 +661,9 @@ mod tests {
         assert_eq!(env["FASTMOCK_MAIL_SMTP_REQUIRE_AUTH"], "true");
         assert_eq!(env["FASTMOCK_MAIL_ALLOW_PLAINTEXT_AUTH"], "false");
         assert_eq!(env["FASTMOCK_MAIL_MAX_MESSAGES"], "50");
+        assert_eq!(env["FASTMOCK_MAIL_MAX_BYTES"], "1048576000");
+        assert_eq!(env["FASTMOCK_MAIL_MAX_MAILBOXES"], "300");
+        assert_eq!(env["FASTMOCK_MAIL_LOGIN_FAILURE_LIMIT"], "0");
         assert_eq!(env["FASTMOCK_MAIL_MAX_AGE"], "2d");
         assert!(!env.contains_key("FASTMOCK_MAIL_IDLE_TIMEOUT"));
         assert!(!env.contains_key("FASTMOCK_MAIL_SMTP_USERS"));

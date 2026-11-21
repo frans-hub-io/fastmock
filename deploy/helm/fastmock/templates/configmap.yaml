@@ -93,7 +93,7 @@ data:
   FASTMOCK_MAIL_SMTP_REQUIRE_AUTH: {{ $mail.requireAuth | default false | toString | quote }}
   FASTMOCK_MAIL_ALLOW_PLAINTEXT_AUTH: {{ $mail.allowPlaintextAuth | default false | toString | quote }}
   {{- with $mail.limits }}
-  {{- range $key, $var := dict "maxMessageBytes" "MAX_MESSAGE_BYTES" "maxRecipients" "MAX_RECIPIENTS" "maxMessages" "MAX_MESSAGES" "maxConnections" "MAX_CONNECTIONS" "maxConnectionsPerIp" "MAX_CONNECTIONS_PER_IP" "maxAuthFailures" "MAX_AUTH_FAILURES" }}
+  {{- range $key, $var := dict "maxMessageBytes" "MAX_MESSAGE_BYTES" "maxRecipients" "MAX_RECIPIENTS" "maxMessages" "MAX_MESSAGES" "maxBytes" "MAX_BYTES" "maxMailboxes" "MAX_MAILBOXES" "loginFailureLimit" "LOGIN_FAILURE_LIMIT" "maxConnections" "MAX_CONNECTIONS" "maxConnectionsPerIp" "MAX_CONNECTIONS_PER_IP" "maxAuthFailures" "MAX_AUTH_FAILURES" }}
   {{- if hasKey $.Values.mail.limits $key }}
   FASTMOCK_MAIL_{{ $var }}: {{ index $.Values.mail.limits $key | int64 | quote }}
   {{- end }}

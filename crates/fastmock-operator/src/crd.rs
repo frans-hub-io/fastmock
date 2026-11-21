@@ -273,6 +273,20 @@ pub struct MailLimits {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1))]
     pub max_messages: Option<i64>,
+    /// `FASTMOCK_MAIL_MAX_BYTES` of raw messages per space, default 268435456 (256 MiB); at least the
+    /// message size limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub max_bytes: Option<i64>,
+    /// `FASTMOCK_MAIL_MAX_MAILBOXES` per space, default 10000.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub max_mailboxes: Option<i64>,
+    /// `FASTMOCK_MAIL_LOGIN_FAILURE_LIMIT`: failed logins per client address or user name within 5
+    /// minutes before logins are refused for a while, default 5; `0` turns this off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0))]
+    pub login_failure_limit: Option<i64>,
     /// `FASTMOCK_MAIL_MAX_AGE`, default `7d`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(regex(pattern = r"^[0-9]+(ms|s|m|h|d)?$"))]

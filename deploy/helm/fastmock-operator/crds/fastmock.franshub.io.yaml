@@ -103,11 +103,27 @@ spec:
                         nullable: true
                         pattern: ^[0-9]+(ms|s|m|h|d)?$
                         type: string
+                      loginFailureLimit:
+                        description: |-
+                          `FASTMOCK_MAIL_LOGIN_FAILURE_LIMIT`: failed logins per client address or user name within 5
+                          minutes before logins are refused for a while, default 5; `0` turns this off.
+                        format: int64
+                        minimum: 0.0
+                        nullable: true
+                        type: integer
                       maxAge:
                         description: '`FASTMOCK_MAIL_MAX_AGE`, default `7d`.'
                         nullable: true
                         pattern: ^[0-9]+(ms|s|m|h|d)?$
                         type: string
+                      maxBytes:
+                        description: |-
+                          `FASTMOCK_MAIL_MAX_BYTES` of raw messages per space, default 268435456 (256 MiB); at least the
+                          message size limit.
+                        format: int64
+                        minimum: 1.0
+                        nullable: true
+                        type: integer
                       maxConnections:
                         description: '`FASTMOCK_MAIL_MAX_CONNECTIONS` over all mail listeners, default 256.'
                         format: int64
@@ -116,6 +132,12 @@ spec:
                         type: integer
                       maxConnectionsPerIp:
                         description: '`FASTMOCK_MAIL_MAX_CONNECTIONS_PER_IP`, default 32.'
+                        format: int64
+                        minimum: 1.0
+                        nullable: true
+                        type: integer
+                      maxMailboxes:
+                        description: '`FASTMOCK_MAIL_MAX_MAILBOXES` per space, default 10000.'
                         format: int64
                         minimum: 1.0
                         nullable: true
