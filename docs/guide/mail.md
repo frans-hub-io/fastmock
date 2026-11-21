@@ -224,7 +224,7 @@ provider messages (`providerExtras`: `providerMessageId`, `templateId`, `templat
 | Path below `/__admin/mail/messages/{id}` | Returns |
 |---|---|
 | `/raw` | The message exactly as received, `message/rfc822`, as a download (`<id>.eml`). |
-| `/html` | The HTML body, with `cid:` images of the message turned into `data:` URIs (4 MiB in total). Served with `Content-Security-Policy: sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'`, so no script runs and nothing is loaded. `?images=allow` also allows remote `https:` images. `404` when there is no HTML body. |
+| `/html` | The HTML body, with `cid:` references to parts of the message turned into `data:` URIs: whole `cid:` values only (ended by a quote, a space, `)` or `>`), at most 4 MiB of inlined data in total counting every reference, and the page at most twice the size of the raw message (at least 4 MiB); references beyond that stay `cid:`. Served with `Content-Security-Policy: sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'`, so no script runs and nothing is loaded. `?images=allow` also allows remote `https:` images. `404` when there is no HTML body. |
 | `/text` | The text body (`text/plain; charset=utf-8`); for HTML-only messages, the HTML converted to text. |
 | `/parts/{partId}` | An attachment or inline part as a download, with a sanitised file name. |
 | `/transcript` | `{transcript: [{at, direction, text}]}`: the SMTP session that delivered the message, credentials masked and the message body replaced by its size; empty for messages that did not arrive over SMTP. |
@@ -637,25 +637,34 @@ stored or logged, and the transcript masks the credentials.
 To require authentication, set `FASTMOCK_MAIL_SMTP_REQUIRE_AUTH=true`. `MAIL` without AUTH then answers
 `530 5.7.0 Authentication required`. Two kinds of credentials work:
 
-- users of `FASTMOCK_MAIL_SMTP_USERS`: `user:sha256hex` entries, separated by commas or new lines, where the hash
-  is the hex SHA-256 of the password, as for admin tokens:
+- users of `FASTMOCK_MAIL_SMTP_USERS`: `user:hash` entries, separated by commas or new lines. Use a salted
+  `pbkdf2-sha256$<iterations>$<salt>$<hash>` value, the format FastMock stores mailbox passwords in (recommended);
+  the hex SHA-256 of the password, as for admin tokens, is still accepted:
 
   ```sh
   export FASTMOCK_MAIL_SMTP_USERS="billing-app:$(fastmock hash-token 'a-long-random-password')"
   ```
 
 - a [managed token](../operations/access-control.md#managed-tokens) as the password, with `mail:write` granted
-  globally or in the space named like the user name.
+  globally or in the space named like the user name. Every recipient is checked as well: the token must hold
+  `mail:write` in the space the recipient is routed to (or globally); otherwise `RCPT` answers
+  `550 5.7.1 Not authorized to deliver to this recipient`. Users of `FASTMOCK_MAIL_SMTP_USERS` may send to any
+  recipient.
 
 With required authentication, `CRAM-MD5` is not offered (`AUTH PLAIN LOGIN`). Wrong credentials answer
 `535 5.7.8 Authentication credentials invalid`; after `FASTMOCK_MAIL_MAX_AUTH_FAILURES` (3) failures the
-connection is closed with `421 4.7.0 Too many failed authentication attempts; closing connection`.
+connection is closed with `421 4.7.0 Too many failed authentication attempts; closing connection`. Failed logins
+are also counted per client address and per user name across connections (and replicas):
+after `FASTMOCK_MAIL_LOGIN_FAILURE_LIMIT` (5) failures within 5 minutes, logins from that address or for that user
+are refused for 30 seconds, doubling with each further failure up to 15 minutes, whatever the password. The same
+counters apply to IMAP and POP3. Test suites that check wrong passwords many times can raise the limit or set it
+to `0`.
 
 ### Limits
 
 | Limit | Default | Setting | Reply |
 |---|---|---|---|
-| message size (advertised as `SIZE`) | 10 MiB | `FASTMOCK_MAIL_MAX_MESSAGE_BYTES` | `552 5.3.4 Message size exceeds fixed maximum message size` |
+| message size (advertised as `SIZE`) | 10 MiB | `FASTMOCK_MAIL_MAX_MESSAGE_BYTES` | `552 5.3.4 Message size exceeds fixed maximum message size`; a `BDAT` chunk larger than the limit also closes the connection |
 | recipients per message | 100 | `FASTMOCK_MAIL_MAX_RECIPIENTS` | `452 4.5.3 Too many recipients` |
 | command line | 4096 bytes | `FASTMOCK_MAIL_MAX_LINE_BYTES` | `500 5.5.2 Line too long` |
 | wait for the next command | 30 s | `FASTMOCK_MAIL_IDLE_TIMEOUT` | `421 4.4.2 Timeout waiting for the client; closing connection` |
@@ -665,7 +674,10 @@ connection is closed with `421 4.7.0 Too many failed authentication attempts; cl
 | failed AUTH attempts | 3 | `FASTMOCK_MAIL_MAX_AUTH_FAILURES` | `421 4.7.0` and close |
 | commands per session / refused commands in a row | 10,000 / 20 | fixed | `421 4.7.0 Too many errors; closing connection` |
 
-The message ends only at `<CRLF>.<CRLF>`; a bare line feed or carriage return never ends it.
+The message ends only at `<CRLF>.<CRLF>`; a bare line feed or carriage return never ends it. A line that starts
+with a dot loses that dot (dot-stuffing), except a lone dot followed by a bare line feed, which is kept. The
+`BDAT` size must be decimal digits (at most 20); anything else answers `501 5.5.4 Syntax: BDAT chunk-size [LAST]`.
+`RSET` drops the aborted transaction from the transcript stored with the next message.
 
 ### Replies
 
@@ -682,6 +694,7 @@ The message ends only at `<CRLF>.<CRLF>`; a bare line feed or carriage return ne
 | `QUIT` | `221 2.0.0 Bye` |
 | `STARTTLS` | `220 2.0.0 Ready to start TLS` |
 | AUTH success | `235 2.7.0 Authentication successful` |
+| recipient outside the spaces of a token that passed AUTH | `550 5.7.1 Not authorized to deliver to this recipient` |
 | AUTH before TLS when TLS is available | `538 5.7.11 Encryption required for requested authentication mechanism` |
 | AUTH cancelled with `*` | `501 5.0.0 Authentication cancelled` |
 | unknown AUTH mechanism | `504 5.5.4 Unrecognized authentication type` |
@@ -711,20 +724,32 @@ Every recipient address has a mailbox, created with its first message. The mailb
 case without its plus tag, so `Alice+news@example.test` and `alice@example.test` share one. A mailbox has an
 `INBOX`; IMAP clients may create more folders (at most 100). Messages land in the `INBOX` of each recipient.
 
-A mailbox lives in the space that claims its domain in `mailDomains`, otherwise in the global area. Inject
-messages and set passwords in that area, so that logins find them. `GET /__admin/mail/mailboxes` lists the
-mailboxes with their folders and whether a password is set.
+A mailbox lives in the space that claims its domain in `mailDomains`, otherwise in the global area, or in the space
+a message was routed or injected to (AUTH-user routing, `@<space>` provider URLs, `?space=` of the inject API).
+`GET /__admin/mail/mailboxes` lists the mailboxes with their folders and whether a password is set, sorted by
+area and address, 100 per page (`limit` up to 1000, `cursor` from `nextCursor`).
+
+Each space (and the global area) holds at most `FASTMOCK_MAIL_MAX_MAILBOXES` (10,000) mailboxes. Messages to
+further addresses are stored and visible in the admin API, but get no mailbox until the retention sweep removes
+mailboxes that hold no messages and have no password. IMAP keeps at most 32 keywords per message, each at most
+64 bytes.
 
 Deleting or moving a message over IMAP or POP3 changes only that mailbox; the message stays in the admin API and
 in the other recipients' mailboxes. Deleting it through the admin API (or retention) removes it everywhere.
 
 ### Logging in
 
-The user name is the mailbox address. The password is either:
+The user name is the mailbox address. For an address whose domain no space claims in `mailDomains`, name the area
+in front of it: `<space>/<address>`, or `_global/<address>` for the global area (for example
+`billing/support@other.example`). The password is either:
 
 - a [managed token](../operations/access-control.md#managed-tokens) holding `mail:read` in the mailbox's space or
-  globally (a global-area mailbox needs a global grant), or
-- a mailbox password set through the admin API (`mail:write`):
+  globally (a global-area mailbox needs a global grant). A token with only `mail:read` opens the mailbox read-only:
+  `APPEND`, `STORE` of `\Deleted`, `COPY`, `MOVE`, `CREATE` and `DELETE` need `mail:write` (IMAP answers
+  `NO [NOPERM] ...`), `EXPUNGE` and POP3 `DELE` need `mail:write` or `mail:delete` (POP3 answers
+  `-ERR [AUTH] ...`); `CLOSE` then expunges nothing. Flags other than `\Deleted`, such as `\Seen`, may be set. Or
+- a mailbox password set through the admin API (`mail:write` and `mail:read` in that area). A mailbox password
+  opens its mailbox with full access:
 
 ```sh
 curl -s -X PUT "localhost:9090/__admin/mail/mailboxes/support@billing.example.test/password?space=billing" \
@@ -734,7 +759,9 @@ curl -s -X PUT "localhost:9090/__admin/mail/mailboxes/support@billing.example.te
 
 The password is 1 to 1024 bytes without control characters; only a salted PBKDF2 hash is stored, and the audit
 event `mail.mailbox.password.set` names the address only. `DELETE` on the same path removes it. Wrong credentials
-are answered after a short delay; after `FASTMOCK_MAIL_MAX_AUTH_FAILURES` (3) failures the connection closes.
+are answered after a short delay; after `FASTMOCK_MAIL_MAX_AUTH_FAILURES` (3) failures the connection closes, and
+failed logins count towards `FASTMOCK_MAIL_LOGIN_FAILURE_LIMIT` per client address and user name (see
+[Authentication](#authentication)). At most two password hashes are checked at a time per server.
 
 When a certificate is configured, logins need TLS first (STARTTLS, STLS or the implicit-TLS port) unless
 `FASTMOCK_MAIL_ALLOW_PLAINTEXT_AUTH=true`: IMAP advertises `LOGINDISABLED` and answers
@@ -751,8 +778,14 @@ and `APPENDLIMIT`; the capabilities list only what is implemented. Commands: `CA
 `MOVE`, the `UID` forms, and `IDLE`. `SUBSCRIBE` and `UNSUBSCRIBE` answer `OK` without effect; `RENAME` is not
 supported. `SEARCH` supports `ALL`, `SEEN`, `UNSEEN`, `FROM`, `TO`, `SUBJECT`, `SINCE`, `BEFORE`, `TEXT`,
 `HEADER` and UID sets. `IDLE` is woken by new messages on any replica and ends after
-`FASTMOCK_MAIL_IMAP_IDLE_TIMEOUT` (30 minutes) or with the session (`FASTMOCK_MAIL_SESSION_TIMEOUT`, 10 minutes),
-whichever comes first; clients then log in again.
+`FASTMOCK_MAIL_IMAP_IDLE_TIMEOUT` (30 minutes); time spent in `IDLE` does not count towards the session limit
+(`FASTMOCK_MAIL_SESSION_TIMEOUT`). Before login, literals are accepted only for `LOGIN` and `AUTHENTICATE`, at most
+1 KiB each and synchronizing (`{n}`); a non-synchronizing literal before login closes the connection. After login,
+the literals of one command hold at most the message size for `APPEND` (one message per command) and the line
+size otherwise. A `FETCH` names at most 16 body sections (`BODY[...]`, `RFC822*`; more answer
+`BAD At most 16 body sections in one FETCH`) and its response holds at most four times the message size
+(`NO [LIMIT] FETCH response too large; fetch fewer messages or sections`). `LIST` patterns (reference and pattern
+together) are at most 1024 bytes.
 
 ```python
 import imaplib
@@ -778,6 +811,7 @@ curl -s -u 'support@billing.example.test:support-inbox-test-password' \
 Commands: `USER`, `PASS`, `AUTH PLAIN`, `CAPA`, `STLS`, `STAT`, `LIST`, `UIDL`, `RETR`, `TOP`, `DELE`, `NOOP`,
 `RSET`, `QUIT` (`APOP` is refused). The maildrop is the `INBOX` as it was at login. `DELE` takes effect only at
 `QUIT`; a dropped connection removes nothing. Retrieved messages that were not deleted are marked `\Seen`.
+`STAT`, `LIST` and `RETR` report the size of each message as `RETR` sends it (CRLF line breaks, dot-stuffed).
 
 ```python
 import poplib
@@ -869,13 +903,20 @@ mail. An unknown space answers the provider's own `404`.
 Each sent message is built into MIME and stored with `source: provider`, `provider`, and `providerExtras`: the id
 the API answered with, the template id and template data, tags and metadata, and `testMode` for messages sent in
 the provider's sandbox or test mode. Provider-side templates are not rendered (FastMock does not have them); SES
-templates are rendered when the request carries `TemplateContent`. Attachments given by URL (Resend `path`,
-Brevo `url`) are not fetched and are stored empty.
+templates are rendered when the request carries `TemplateContent` (Handlebars without partials or inline partials,
+blocks and subexpressions nested at most 32 deep, each rendered part at most `FASTMOCK_MAIL_MAX_MESSAGE_BYTES`;
+otherwise SES's validation error). Attachments given by URL (Resend `path`, Brevo `url`) are not fetched and are
+stored empty. The provider fields of one message (tags, metadata, custom arguments, parameters and template data)
+may hold at most 128 KiB as JSON; a call whose messages would hold more than 128 MiB together, substitutions and
+copies per recipient included, gets the provider's too-large error. One call queues at most 1000
+[webhook](#provider-webhooks) requests; further events are dropped and counted in
+`fastmock_mail_webhook_events_dropped_total`.
 
 Any non-empty API key is accepted, and a call without one gets the provider's `401`. SES accepts any well-formed
 SigV4 or SigV4a signature; use dummy credentials such as `test`/`test` and any region. To accept only certain keys
-in a space, list their SHA-256 hex digests in `apiKeys` of the [webhook settings](#provider-webhooks) (SES: the
-access key id); other keys get the provider's invalid-key error.
+in a space, list their SHA-256 hex digests in `apiKeys` of the [webhook settings](#provider-webhooks); other keys
+get the provider's invalid-key error. For SES only the access key id is compared: FastMock does not check the
+signature, so expected keys select which test credentials a space accepts, nothing more.
 
 `/__mail/` is reserved while mail is on: stubs never answer it and these requests are never counted as
 unmatched. They appear in the request journal with `source: mail`, and a response carries
@@ -982,7 +1023,8 @@ has no sandbox flag in the API.
     ```
 
 `POST /v3/mail/send` answers `202` with an empty body and `X-Message-Id`. Each personalization becomes one
-message; gzip request bodies, categories (at most 10) and legacy `substitutions` work; reserved headers are
+message; gzip request bodies, categories (at most 10) and legacy `substitutions` (applied in one pass: a value is
+never substituted again) work; reserved headers are
 refused like SendGrid does. With `mail_settings.sandbox_mode.enable: true` the call answers `200`, and the
 message is stored with `testMode: true`.
 
@@ -1030,8 +1072,9 @@ message is stored with `testMode: true`.
 
 `POST /v3/{domain}/messages` (multipart or urlencoded) and `/messages.mime` answer
 `200 {"id": "<20261121091403.5c0e@example.com>", "message": "Queued. Thank you."}`. `recipient-variables` sends
-one message per recipient with `%recipient.x%` replaced; `o:`, `h:`, `v:` and `t:` values together may hold at
-most 16 KB; templates are stored as `name@version`. `o:testmode=yes` marks the message `testMode`.
+one message per recipient with `%recipient.x%` replaced in one pass; `o:`, `h:`, `v:` and `t:` values together may
+hold at most 16 KB; templates are stored as `name@version`. `o:testmode=yes` marks the message `testMode`. A
+message, also through `/messages.mime`, has at most 1000 recipients.
 
 ### Postmark
 
@@ -1070,8 +1113,8 @@ most 16 KB; templates are stored as `name@version`. `o:testmode=yes` marks the m
 `POST /email` and `/email/withTemplate` answer
 `200 {"To": "...", "SubmittedAt": "...", "MessageID": "...", "ErrorCode": 0, "Message": "OK"}`; the batch
 endpoints answer an array with one result per message and their own `ErrorCode`. At most 50 recipients per
-message and 500 messages per batch. The token `POSTMARK_API_TEST` is always accepted, answers
-`"Message": "Test job accepted"` and marks the message `testMode`.
+message and 500 messages per batch. The token `POSTMARK_API_TEST` answers `"Message": "Test job accepted"` and
+marks the message `testMode`; in a space with expected Postmark keys it must be listed like any other key.
 
 ### Resend
 
@@ -1119,7 +1162,8 @@ message and 500 messages per batch. The token `POSTMARK_API_TEST` is always acce
 
 `POST /emails` answers `200 {"id": "..."}`. A `User-Agent` header is required (`403` without it), as at Resend.
 `Idempotency-Key` returns the same `id` for the same body within 24 hours and answers
-`409 invalid_idempotent_request` for a different body.
+`409 invalid_idempotent_request` for a different body, and `409 concurrent_idempotent_requests` while the first
+request with that key is still being processed. Keys belong to the API key and the space of the call.
 
 ### Brevo
 
@@ -1213,7 +1257,7 @@ curl -s -X PUT "localhost:9090/__admin/mail/webhooks?space=billing" \
 | `provider` | `ses`, `sendgrid`, `mailgun` or `postmark`. |
 | `kind` | `events` (delivery events) or `inbound` (inbound mail). |
 | `url` | The application's `http(s)` URL. User information in the URL (`https://user:pass@host/...`) is sent as basic authentication. Checked against the [egress policy](../operations/security.md#egress-policy). |
-| `signingKey` | Write-only. SendGrid: a P-256 private key (PKCS#8, PEM or base64) to sign with instead of the space's generated key. Mailgun: the webhook signing key. `""` removes a stored key. |
+| `signingKey` | Write-only. SendGrid: a P-256 private key (PKCS#8, PEM or base64) to sign with instead of the space's generated key. Mailgun: the webhook signing key; without one, Mailgun payloads carry no signature fields. `""` removes a stored key. |
 | `events` | `delivered`, `bounce`, `complaint`, `deferred`, `dropped`, `open`, `click`; all when empty. |
 | `raw` | SendGrid inbound: post the full MIME message (`email` field) instead of parsed fields. |
 | `topicArn` | SES: the SNS topic ARN in notifications. |
@@ -1222,6 +1266,12 @@ At most 20 webhooks and 20 expected keys per provider. `GET` (`mail:read`) never
 `hasSigningKey`, URL passwords as `***`, a `publicKey` for each SendGrid webhook and the space's
 `sendgridPublicKey`. A webhook `PUT` again with the same `id` and without `signingKey` (or with `***` as the URL
 password) keeps the stored value. Changes are audited as `mail.webhooks.set` and `mail.webhooks.clear`.
+
+Signing keys, URL passwords and the space's SendGrid key are stored encrypted with the secret `mail-webhook-key`
+(`FASTMOCK_SECRET_MAIL_WEBHOOK_KEY` or the file `mail-webhook-key` in `FASTMOCK_SECRETS_DIR`), and the basic
+authentication of a queued request stays encrypted in the outbox until it is sent. With PostgreSQL storage, a
+webhook with a signing key or a URL password needs that secret (otherwise `400`); with memory storage a key of the
+running process is used when it is not set ([Configuration](../operations/configuration.md#mail)).
 
 ### Delivery events
 
@@ -1246,9 +1296,9 @@ Configure the application's verification against FastMock's keys:
 | Provider | Payload | What to configure in the application |
 |---|---|---|
 | SendGrid | JSON array of events, `custom_args` at the top level, signed with ECDSA in `X-Twilio-Email-Event-Webhook-Signature` and `-Timestamp` | Use the space's `sendgridPublicKey` (or the webhook's `publicKey`) as the Event Webhook verification key; the SDK's verification helpers then verify FastMock's signatures. |
-| Mailgun | one call per recipient, `{signature, event-data}` with HMAC-SHA256 | Set the same webhook signing key in the application and as the webhook's `signingKey`. |
+| Mailgun | one call per recipient, `{signature, event-data}` with HMAC-SHA256 (only `event-data` without a signing key) | Set the same webhook signing key in the application and as the webhook's `signingKey`. |
 | Postmark | `Delivery`, `Bounce` or `SpamComplaint` JSON | Postmark does not sign webhooks; put the basic-auth user and password the application expects into the URL. |
-| SES | an SNS `Notification` per event, `Signature: FASTMOCK-UNSIGNED`, no `SubscriptionConfirmation` | SNS signatures are made with AWS's private keys, and validators fetch the certificate from AWS, so FastMock cannot produce a signature they accept. Switch SNS signature verification off in the application's test configuration, or test the handler below the HTTP layer. |
+| SES | an SNS `Notification` per event, `Signature: FASTMOCK-UNSIGNED` and `SigningCertURL: https://fastmock.invalid/sns-unsigned.pem`, no `SubscriptionConfirmation` | SNS signatures are made with AWS's private keys, and validators fetch the certificate from AWS, so FastMock cannot produce a signature they accept. Switch SNS signature verification off in the application's test configuration, or test the handler below the HTTP layer. |
 
 ### Inbound mail
 
@@ -1292,6 +1342,11 @@ The [web UI](ui.md) is getting a Mail page, shown when mail is enabled and the u
 | Limit | Value |
 |---|---|
 | messages kept per space (and in the global area) | 1000, oldest dropped first (`FASTMOCK_MAIL_MAX_MESSAGES`) |
+| raw bytes kept per space (and in the global area) | 256 MiB, oldest dropped first, the newest message always kept (`FASTMOCK_MAIL_MAX_BYTES`) |
+| mailboxes per space (and in the global area) | 10,000 (`FASTMOCK_MAIL_MAX_MAILBOXES`); empty mailboxes without a password are removed by retention |
+| mailbox list page | 1 to 1000 mailboxes (default 100) |
+| IMAP keywords | 32 per message, 64 bytes each |
+| failed logins per client address or user name | 5 in 5 minutes, then a backoff of 30 s to 15 min (`FASTMOCK_MAIL_LOGIN_FAILURE_LIMIT`) |
 | age of a message | 7 days (`FASTMOCK_MAIL_MAX_AGE`) |
 | message size, also for injected and provider messages | 10 MiB (`FASTMOCK_MAIL_MAX_MESSAGE_BYTES`, at most 512 MiB) |
 | MIME parsing | nesting depth 16, 500 parts; larger or malformed messages are kept raw and marked `unparsed` |
@@ -1299,22 +1354,26 @@ The [web UI](ui.md) is getting a Mail page, shown when mail is enabled and the u
 | search query | 1024 bytes, 32 terms |
 | list page | 1 to 500 messages |
 | wait | 1 to 500 messages, 60 s, 10,000 stored messages scanned; 4 scans at a time per replica (`503` beyond) |
-| event streams (`GET /__admin/mail/stream`) | 512 per replica |
-| inline images in `/html` | 4 MiB of `data:` URIs |
+| event streams (`GET /__admin/mail/stream`) | 512 per replica, 8 per caller (`429` beyond), one hour each |
+| inline images in `/html` | 4 MiB of `data:` URIs counting every reference; the page at most twice the raw size (at least 4 MiB) |
 | code pattern | 256 bytes, at most 100 codes |
 | SMTP transcript | 500 lines of 512 characters |
 | chaos rules | 100 per area; delay at most 10 minutes |
 | webhooks | 20 per area; 20 expected keys per provider |
 | IMAP folders | 100 per mailbox |
-| provider calls | 128 MiB of built messages per call, 10,000 form fields |
+| provider calls | 128 MiB of built messages per call, 128 KiB of provider fields per message, 1000 webhook requests per call, 10,000 form fields |
+| SES templates | 64 KiB per part, nesting depth 32, no partials |
 
 Retention runs once a minute on one replica at a time. The memory store also drops the oldest messages beyond the
-per-space limit as new ones arrive; with PostgreSQL an area can exceed the limit until the next run. Removed
-messages are announced as `message.deleted` on the event stream.
+per-space message and byte limits as new ones arrive; with PostgreSQL an area can exceed them until the next run.
+Removed messages are announced as `message.deleted` on the event stream.
 
 The admin API's `GET /__admin/mail/stream` is a Server-Sent Events stream of `message.received` and
 `message.deleted` events for the areas the caller may read, with a `: heartbeat` comment every
-`heartbeatSeconds` (1 to 60, default 15) and a `resync` event when events were missed.
+`heartbeatSeconds` (1 to 60, default 15) and a `resync` event when events were missed. The stream ends after
+`maxSeconds` (1 to 3600, default one hour; reconnect to go on), and within 30 seconds once the caller may no longer
+read mail there (token revoked or expired, binding removed, session ended). A caller holds at most 8 streams at
+once; a further one answers `429`.
 
 ## Metrics
 
@@ -1328,6 +1387,7 @@ The admin API's `GET /__admin/mail/stream` is a Server-Sent Events stream of `me
 | `fastmock_mail_connections` | gauge | | Open SMTP, IMAP and POP3 connections. |
 | `fastmock_mail_provider_requests_total` | counter | `provider`, `status_class` | Provider API calls. |
 | `fastmock_mail_webhooks_total` | counter | `provider`, `kind` | Webhooks queued in the outbox. |
+| `fastmock_mail_webhook_events_dropped_total` | counter | `provider` | Delivery events not queued because a provider call reached 1000 webhook requests. |
 | `fastmock_mail_waits_total` | counter | `result` (`found`, `timeout`) | Finished waits. |
 | `fastmock_mail_waits_active`, `fastmock_mail_streams_active` | gauge | | Waits and event streams in progress. |
 | `fastmock_mail_messages`, `fastmock_mail_storage_bytes` | gauge | `space` | Stored messages and their raw size per area (PostgreSQL only; cluster-wide, aggregate with `max`). |

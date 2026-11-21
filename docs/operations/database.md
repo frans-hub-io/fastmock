@@ -22,10 +22,10 @@ upgrade PostgreSQL to a new major version. Connection settings and TLS are in
 | PostgreSQL | `fm_outbox` | Callbacks waiting for delivery and their results. |
 | PostgreSQL | `fm_audit` | Audit log of admin actions. |
 | PostgreSQL | `fm_api_tokens` | [Managed tokens](access-control.md#managed-tokens): hashes and metadata, never the values. |
-| PostgreSQL | `fm_mail_messages` | Captured [mail](../guide/mail.md): envelope, parsed summary, labels, provider fields, SMTP transcript and the raw message (kept for `FASTMOCK_MAIL_MAX_AGE`, at most `FASTMOCK_MAIL_MAX_MESSAGES` per space). |
+| PostgreSQL | `fm_mail_messages` | Captured [mail](../guide/mail.md): envelope, parsed summary, labels, provider fields, SMTP transcript and the raw message (kept for `FASTMOCK_MAIL_MAX_AGE`, at most `FASTMOCK_MAIL_MAX_MESSAGES` and `FASTMOCK_MAIL_MAX_BYTES` per space). |
 | PostgreSQL | `fm_mail_mailboxes`, `fm_mail_folders`, `fm_mail_entries`, sequence `fm_mail_uid_validity` | IMAP and POP3 mailboxes: mailbox password hashes, folders with their UID counters, and per-folder message flags. |
 | PostgreSQL | `_sqlx_migrations` | Applied migrations: version, description, checksum, success. |
-| Valkey | keys under `FASTMOCK_VALKEY_PREFIX` | Scenario states, key-value entries, counters, delayed deliveries, caches, OIDC sessions and pending sign-ins, mail chaos counters, Resend idempotency keys. |
+| Valkey | keys under `FASTMOCK_VALKEY_PREFIX` | Scenario states, key-value entries, counters, delayed deliveries, caches, OIDC sessions and pending sign-ins, mail chaos counters, Resend idempotency keys, failed mail logins (`<prefix>mail:login:*`, keyed by a digest, expiring). |
 | Valkey | channels `<prefix>mail:events:<space>` (`_global` for the global area) | New and deleted mail, so waits, event streams and IMAP `IDLE` on every replica see messages accepted by another one. |
 
 ## How migrations run
@@ -194,6 +194,7 @@ primary. Valkey Cluster mode is not supported. Commands used:
 | `SCAN ... MATCH ... COUNT` | listing keys by prefix | 2.8 |
 | `UNLINK` | deleting keys by prefix | 4.0 |
 | `PUBLISH`, `PSUBSCRIBE`, `PING` in subscribe mode | mail events between replicas (only with mail enabled) | 2.0 |
+| `EXISTS`, `INCR`, `PEXPIRE` and `SET ... PX` (inside a script) | failed-login counters of SMTP AUTH, IMAP and POP3 (only with mail enabled) | 2.6.12 |
 | `AUTH <user> <password>` | ACL user (`FASTMOCK_VALKEY_USERNAME`) | 6.0 |
 | TLS (`rediss://`) | encrypted connections | 6.0 |
 

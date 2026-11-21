@@ -262,8 +262,6 @@ request is processed.
 
 ### Mail
 
-<!-- TODO-MAIL: value names taken from the in-progress chart (deploy/helm/fastmock/values.yaml); confirm against the final chart -->
-
 | Key | Default | Meaning |
 |---|---|---|
 | `mail.enabled` | `false` | `FASTMOCK_MAIL_ENABLED`; see [Mail](#mail). |
@@ -273,10 +271,12 @@ request is processed.
 | `mail.tls.existingSecret` | `""` | Secret with the certificate and key for STARTTLS, STLS and the implicit-TLS ports, mounted read-only at `/etc/fastmock/tls/mail/`. |
 | `mail.tls.certKey`, `.keyKey` | `tls.crt`, `tls.key` | Keys inside that Secret (a `kubernetes.io/tls` Secret from cert-manager works as is). |
 | `mail.requireAuth` | `false` | `FASTMOCK_MAIL_SMTP_REQUIRE_AUTH`. |
-| `mail.smtpUsers.existingSecret`, `.key` | `""`, `users` | Secret with the `user:sha256hex` entries of `FASTMOCK_MAIL_SMTP_USERS`. |
+| `mail.smtpUsers.existingSecret`, `.key` | `""`, `users` | Secret with the `user:hash` entries of `FASTMOCK_MAIL_SMTP_USERS` (`pbkdf2-sha256$...` recommended, hex SHA-256 accepted). |
 | `mail.allowPlaintextAuth` | `false` | `FASTMOCK_MAIL_ALLOW_PLAINTEXT_AUTH`. |
 | `mail.limits.maxMessageBytes`, `.maxRecipients`, `.maxMessages`, `.maxAge` | `10485760`, `100`, `1000`, `7d` | `FASTMOCK_MAIL_MAX_MESSAGE_BYTES`, `_MAX_RECIPIENTS`, `_MAX_MESSAGES`, `_MAX_AGE`. |
+| `mail.limits.maxBytes`, `.maxMailboxes` | `268435456`, `10000` | `FASTMOCK_MAIL_MAX_BYTES` (raw bytes kept per space, at least `maxMessageBytes`), `_MAX_MAILBOXES` (mailboxes per space). |
 | `mail.limits.maxConnections`, `.maxConnectionsPerIp`, `.maxAuthFailures` | `256`, `32`, `3` | `FASTMOCK_MAIL_MAX_CONNECTIONS`, `_MAX_CONNECTIONS_PER_IP`, `_MAX_AUTH_FAILURES`. |
+| `mail.limits.loginFailureLimit` | `5` | `FASTMOCK_MAIL_LOGIN_FAILURE_LIMIT`: failed logins per client address and per user name within 5 minutes before logins are refused for a backoff; `0` turns it off. |
 | `mail.limits.idleTimeout`, `.dataTimeout`, `.sessionTimeout`, `.imapIdleTimeout` | `30s`, `60s`, `10m`, `30m` | `FASTMOCK_MAIL_IDLE_TIMEOUT`, `_DATA_TIMEOUT`, `_SESSION_TIMEOUT`, `_IMAP_IDLE_TIMEOUT`. |
 | `mail.service.type`, `.annotations` | `ClusterIP`, `{}` | The `<fullname>-mail` Service. |
 | `networkPolicy.mailFrom` | `[]` (any) | `from` peers allowed on the mail ports. |
@@ -517,8 +517,6 @@ creates a Service `<fullname>-mail` (`ClusterIP` by default) with one port per e
 in the cluster send to `<fullname>-mail:2525`. The provider APIs use the data Service (`/__mail/...`) and the mail
 admin API the admin Service; neither needs extra values. See [Mail](../guide/mail.md).
 
-<!-- TODO-MAIL: confirm value names against the final chart -->
-
 ```yaml
 mail:
   enabled: true
@@ -544,9 +542,14 @@ networkPolicy:
 The chart refuses to render when a mail port equals the data or admin port, when two mail listeners share a
 port, or when an implicit-TLS port is set without `mail.tls.existingSecret`. Messages are stored in PostgreSQL in
 `postgres` mode, so every replica answers waits and IMAP logins for messages accepted by another one; with a
-restricted Valkey ACL user, add the mail event channel ([Database](database.md#valkey-and-redis)). Keep the mail
-Service `ClusterIP` unless systems outside the cluster must send to it, and limit `networkPolicy.mailFrom` to
-the namespaces of the applications under test.
+restricted Valkey ACL user, add the mail event channel and the failed-login keys
+([Database](database.md#valkey-and-redis)). Keep the mail Service `ClusterIP` unless systems outside the cluster
+must send to it, and limit `networkPolicy.mailFrom` to the namespaces of the applications under test.
+
+Provider webhooks with a signing key or a URL password need the secret `mail-webhook-key` in `postgres` mode: add
+a long random value under that key to the Secret of `secrets.existingSecret` (mounted as `FASTMOCK_SECRETS_DIR`),
+for example with `kubectl create secret generic fastmock-secrets --from-literal=mail-webhook-key="$(openssl rand -base64 32)"`.
+Every replica must use the same value.
 
 ## Access control
 

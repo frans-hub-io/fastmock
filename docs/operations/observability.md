@@ -91,11 +91,12 @@ Present only with `FASTMOCK_MAIL_ENABLED=true` ([Mail](../guide/mail.md)).
 | `fastmock_mail_smtp_sessions_total` | counter | `result` (`quit`, `disconnected`, `timeout`, `rejected`, `chaos`, `shutdown`, `error`) | Finished SMTP and SMTPS sessions. |
 | `fastmock_mail_imap_sessions_total` | counter | `result` | Finished IMAP and IMAPS sessions. |
 | `fastmock_mail_pop3_sessions_total` | counter | `result` | Finished POP3 and POP3S sessions. |
-| `fastmock_mail_rejected_total` | counter | `reason` (`auth_failed`, `too_many_auth_failures`, `auth_required`, `auth_before_tls`, `starttls_pipelined`, `tls_handshake`, `size`, `recipients`, `fail_address`, `chaos`, `line_too_long`, `literal_too_large`, `too_many_errors`, `too_many_commands`, `timeout`, `connections`, `connections_per_ip`) | Refused commands, logins and connections on the mail listeners. |
+| `fastmock_mail_rejected_total` | counter | `reason` (`auth_failed`, `too_many_auth_failures`, `auth_required`, `auth_before_tls`, `starttls_pipelined`, `tls_handshake`, `size`, `recipients`, `fail_address`, `chaos`, `line_too_long`, `literal_too_large`, `literal_before_login`, `fetch_too_large`, `permission`, `rcpt_scope`, `login_throttled`, `too_many_errors`, `too_many_commands`, `timeout`, `connections`, `connections_per_ip`) | Refused commands, logins and connections on the mail listeners. |
 | `fastmock_mail_connections` | gauge | | Open connections over all mail listeners of this replica. |
 | `fastmock_mail_chaos_injections_total` | counter | `stage` | Mail chaos rule firings, including provider errors. |
 | `fastmock_mail_provider_requests_total` | counter | `provider`, `status_class` | Calls to the provider APIs under `/__mail/`. |
 | `fastmock_mail_webhooks_total` | counter | `provider`, `kind` (`events`, `inbound`) | Provider webhooks written to the outbox; delivery outcomes are in `fastmock_callbacks_total{source="mail"}`. |
+| `fastmock_mail_webhook_events_dropped_total` | counter | `provider` | Delivery events not queued because one provider call reached 1000 webhook requests. |
 | `fastmock_mail_waits_total` | counter | `result` (`found`, `timeout`) | Finished `POST /__admin/mail/messages/wait` requests. |
 | `fastmock_mail_waits_active`, `fastmock_mail_streams_active` | gauge | | Waits and `GET /__admin/mail/stream` connections in progress on this replica. |
 | `fastmock_mail_messages` | gauge | `space` (`_global` for the global area) | Stored messages per area, refreshed every minute. PostgreSQL only; a cluster-wide value that every replica reports: aggregate it with `max`. |
@@ -246,6 +247,9 @@ SDKs. In Helm: `otel.endpoint`, `otel.serviceName`, `otel.resourceAttributes`; i
 |---|---|---|
 | `fastmock.request` (named `<METHOD> <source>`, for example `POST stubs`) | server | `http.request.method`, `url.path`, `fastmock.source`, `http.response.status_code`, `fastmock.stub_id`, `trace_id` |
 | `fastmock.callback` (named `<source> callback`) | client | `http.request.method`, `url.full` (without query), `fastmock.source`, `fastmock.callback_id`, `fastmock.attempt`, `http.response.status_code` |
+| `fastmock.mail.session` (named `smtp session`, `imap session`, `pop3 session`) | server | `network.protocol.name`, `client.address`, `fastmock.mail.implicit_tls`, `fastmock.space` (the logged-in area), `fastmock.mail.messages` (SMTP), `fastmock.mail.result` |
+| `fastmock.mail.provider` (named `<provider> <path>`) | server | `fastmock.mail.provider`, `url.path`, `fastmock.space` (`@<space>` URLs), `http.response.status_code` |
+| `fastmock.mail.message` (child of a session or provider span) | internal | `fastmock.mail.source`, `fastmock.mail.provider`, `fastmock.mail.size`, `fastmock.space` and `fastmock.mail.ids` of the stored copies, `fastmock.mail.result` (`stored`, `too_large`, `error`) |
 
 Propagation:
 

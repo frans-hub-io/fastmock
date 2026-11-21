@@ -62,13 +62,14 @@ everywhere.
 | `system:reset` | `POST /reset` | global |
 | `tokens:read`, `tokens:write` | `GET /tokens`, `/tokens/{id}`; `POST /tokens`, `DELETE /tokens/{id}` ([managed tokens](#managed-tokens)) | space (the scopes of the token) |
 | `mail:read` | captured mail: `GET /mail/messages*`, `/mail/stream`, `/mail/mailboxes`, `/mail/chaos`, `/mail/webhooks`; `POST /mail/messages/wait`, `/mail/verify` | space |
-| `mail:write` | `POST /mail/messages` (inject), `PUT /mail/messages/{id}/labels`, mailbox passwords, mail chaos rules and webhooks, `POST /mail/inbound` | space |
+| `mail:write` | `POST /mail/messages` (inject), `PUT /mail/messages/{id}/labels`, mailbox passwords (together with `mail:read`), mail chaos rules and webhooks, `POST /mail/inbound` | space |
 | `mail:delete` | `DELETE /mail/messages`, `/mail/messages/{id}` | space |
 
 Mail permissions also apply outside the admin API ([Mail: spaces](../guide/mail.md#spaces)): a managed token with
-`mail:read` is accepted as an IMAP or POP3 password for the mailboxes of its space, and one with `mail:write` as an
-SMTP AUTH password when `FASTMOCK_MAIL_SMTP_REQUIRE_AUTH=true`. Messages of the global area need the permission
-globally.
+`mail:read` is accepted as an IMAP or POP3 password for the mailboxes of its space (changing the mailbox needs
+`mail:write`, expunging `mail:write` or `mail:delete` as well), and one with `mail:write` as an SMTP AUTH password
+when `FASTMOCK_MAIL_SMTP_REQUIRE_AUTH=true`, for recipients routed to spaces where it holds `mail:write`. Messages
+of the global area need the permission globally.
 
 Endpoints without a space of their own need the permission globally:
 

@@ -174,8 +174,6 @@ reconcile, that is within the 5-minute resync or at once when the `FastMock` cha
 mail admin API. The operator sets the `FASTMOCK_MAIL_*` variables, adds the container ports and creates the
 Service `<name>-mail`.
 
-<!-- TODO-MAIL: field names taken from the in-progress operator (crates/fastmock-operator/src/crd.rs); confirm against the final CRD -->
-
 ```yaml
 apiVersion: fastmock.franshub.io/v1alpha1
 kind: FastMock
@@ -207,9 +205,9 @@ spec:
 | `mail.hostname` | `localhost` | `FASTMOCK_MAIL_HOSTNAME`. |
 | `mail.tlsSecretRef` | none | `{name, certKey, keyKey}` of a Secret with the certificate and key (`tls.crt`, `tls.key` by default), mounted read-only. |
 | `mail.requireAuth` | `false` | `FASTMOCK_MAIL_SMTP_REQUIRE_AUTH`. |
-| `mail.usersSecretRef` | none | `{name, key}` of a Secret with the `user:sha256hex` entries of `FASTMOCK_MAIL_SMTP_USERS` (`key` defaults to `users`). |
+| `mail.usersSecretRef` | none | `{name, key}` of a Secret with the `user:hash` entries of `FASTMOCK_MAIL_SMTP_USERS` (`pbkdf2-sha256$...` recommended, hex SHA-256 accepted; `key` defaults to `users`). |
 | `mail.allowPlaintextAuth` | `false` | `FASTMOCK_MAIL_ALLOW_PLAINTEXT_AUTH`. |
-| `mail.limits` | server defaults | `maxMessageBytes`, `maxMessages`, `maxAge`, `maxConnections`, `maxConnectionsPerIp`, `idleTimeout`, `sessionTimeout`, `imapIdleTimeout`, mapped to the `FASTMOCK_MAIL_*` variables of the same names. Other mail settings go through `env`. |
+| `mail.limits` | server defaults | `maxMessageBytes`, `maxMessages`, `maxBytes`, `maxMailboxes`, `maxAge`, `maxConnections`, `maxConnectionsPerIp`, `loginFailureLimit`, `idleTimeout`, `sessionTimeout`, `imapIdleTimeout`, mapped to the `FASTMOCK_MAIL_*` variables of the same names (`loginFailureLimit` is `FASTMOCK_MAIL_LOGIN_FAILURE_LIMIT`, `0` turns it off; `maxBytes` must be at least `maxMessageBytes`). Other mail settings go through `env`. |
 | `mail.service` | `ClusterIP` | `{type, annotations}` of the `<name>-mail` Service (`ClusterIP`, `NodePort` or `LoadBalancer`). |
 
 Both Secrets need the label `fastmock.franshub.io/allow-mount: "true"` like the others ([Policies](#policies)), and
@@ -217,7 +215,9 @@ their content is part of the pod checksum, so a renewed certificate or a changed
 settings the server would refuse (a mail port used twice or equal to 8080 or 9090, an implicit-TLS port without
 `tlsSecretRef`, invalid limits) set `Ready=False` with reason `InvalidSpec` and a message naming the field, for
 example `mail.ports.smtps needs a certificate: set mail.tlsSecretRef`. Mail domains of spaces go into the access
-file (`mailDomains`, [Access file](#access-file)).
+file (`mailDomains`, [Access file](#access-file)). With `storage.mode: postgres`, provider webhooks with a signing
+key or a URL password need the secret `mail-webhook-key` (a long random value, the same for every replica) in the
+Secret of `secretsSecret`.
 
 ### Fields
 
