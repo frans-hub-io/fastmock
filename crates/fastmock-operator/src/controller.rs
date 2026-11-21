@@ -202,6 +202,145 @@ fn oidc_problem(spec: &FastMockSpec) -> Option<&'static str> {
     }
 }
 
+fn duration_ok(v: &str) -> bool {
+    let v = v.trim();
+    let digits = v.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+    let unit = &v[digits.len()..];
+    !digits.is_empty()
+        && digits.bytes().all(|b| b.is_ascii_digit())
+        && digits.bytes().any(|b| b != b'0')
+        && matches!(unit, "" | "ms" | "s" | "m" | "h" | "d")
+}
+
+/// Mail settings the server would refuse at start-up.
+pub fn mail_problem(spec: &FastMockSpec) -> Option<String> {
+    let m = spec.mail_on()?;
+    let ports = m.ports.enabled();
+    let mut seen: Vec<(i32, &str)> = vec![(8080, "the data plane"), (9090, "the admin API")];
+    for (n, p, _, tls) in &ports {
+        if !(1..=65535).contains(p) {
+            return Some(format!(
+                "mail.ports.{n} must be 0 (off) or a port from 1 to 65535"
+            ));
+        }
+        if let Some((_, other)) = seen.iter().find(|(q, _)| q == p) {
+            return Some(format!(
+                "mail.ports.{n} ({p}) uses the same port as {other}"
+            ));
+        }
+        if *tls && m.tls_secret_ref.is_none() {
+            return Some(format!(
+                "mail.ports.{n} needs a certificate: set mail.tlsSecretRef"
+            ));
+        }
+        seen.push((*p, n));
+    }
+    if let Some(h) = &m.hostname {
+        let h = h.trim();
+        if h.is_empty()
+            || h.len() > 253
+            || !h
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
+        {
+            return Some("mail.hostname must be a host name".into());
+        }
+    }
+    let l = m.limits.clone().unwrap_or_default();
+    for (n, v) in [
+        ("maxMessageBytes", l.max_message_bytes),
+        ("maxMessages", l.max_messages),
+        ("maxConnections", l.max_connections),
+        ("maxConnectionsPerIp", l.max_connections_per_ip),
+    ] {
+        if v.is_some_and(|v| v < 1) {
+            return Some(format!("mail.limits.{n} must be greater than zero"));
+        }
+    }
+    if l.max_message_bytes.is_some_and(|v| v > 512 * 1024 * 1024) {
+        return Some("mail.limits.maxMessageBytes must be at most 536870912".into());
+    }
+    if l.max_connections_per_ip.unwrap_or(32) > l.max_connections.unwrap_or(256) {
+        return Some(
+            "mail.limits.maxConnectionsPerIp must not exceed mail.limits.maxConnections".into(),
+        );
+    }
+    for (n, v) in [
+        ("maxAge", &l.max_age),
+        ("idleTimeout", &l.idle_timeout),
+        ("sessionTimeout", &l.session_timeout),
+        ("imapIdleTimeout", &l.imap_idle_timeout),
+    ] {
+        if v.as_deref().is_some_and(|v| !duration_ok(v)) {
+            return Some(format!(
+                "mail.limits.{n} must be a positive duration such as 30s, 10m, 2h or 7d"
+            ));
+        }
+    }
+    None
+}
+
+/// A digest of the mail certificate and SMTP users of a `FastMock` (it goes into the pod checksum, so a
+/// rotated certificate or user list rolls the pods): `Ok(None)` without mail or without these Secrets.
+async fn mail_secrets(
+    secrets: &Api<Secret>,
+    spec: &FastMockSpec,
+) -> Result<Result<Option<String>, (&'static str, String)>, Error> {
+    let Some(m) = spec.mail_on() else {
+        return Ok(Ok(None));
+    };
+    let mut wanted: Vec<(&str, &str, &str)> = vec![];
+    if let Some(r) = &m.tls_secret_ref {
+        wanted.push(("mail.tlsSecretRef", &r.name, &r.cert_key));
+        wanted.push(("mail.tlsSecretRef", &r.name, &r.key_key));
+    }
+    if let Some(r) = &m.users_secret_ref {
+        wanted.push(("mail.usersSecretRef", &r.name, &r.key));
+    }
+    if wanted.is_empty() {
+        return Ok(Ok(None));
+    }
+    let mut basis = String::new();
+    for (field, name, key) in wanted {
+        let secret = secrets.get_opt(name).await?;
+        match mail_secret_value(field, name, key, secret.as_ref()) {
+            Ok(d) => {
+                basis.push_str(&d);
+                basis.push('|');
+            }
+            Err(e) => return Ok(Err(e)),
+        }
+    }
+    Ok(Ok(Some(manifests::sha256_hex(&basis))))
+}
+
+fn mail_secret_value(
+    field: &str,
+    name: &str,
+    key: &str,
+    secret: Option<&Secret>,
+) -> Result<String, (&'static str, String)> {
+    let Some(secret) = secret else {
+        return Err((
+            "SecretNotFound",
+            format!("referenced Secrets not found: {field}={name}"),
+        ));
+    };
+    match secret.data.as_ref().and_then(|d| d.get(key)) {
+        Some(v) if !String::from_utf8_lossy(&v.0).trim().is_empty() => {
+            Ok(manifests::sha256_hex_bytes(&v.0))
+        }
+        Some(_) => Err((
+            "SecretKeyNotFound",
+            format!("Secret {name} key {key} is empty ({field})"),
+        )),
+        None => Err((
+            "SecretKeyNotFound",
+            format!("Secret {name} has no key {key} ({field})"),
+        )),
+    }
+}
+
 fn storage_problem(spec: &FastMockSpec) -> Option<&'static str> {
     let invalid = match spec.storage.mode.as_str() {
         "memory" => None,
@@ -396,39 +535,49 @@ async fn reconcile_server_inner(ms: &FastMock, ctx: &Ctx) -> Result<Action, Erro
     let denied_env = denied_env_keys(&spec.env);
     let mut access_doc = None;
     let mut oidc_digest = None;
-    let refusal: Option<(&str, String, Duration)> =
-        if let Some(msg) = storage_problem(spec).or_else(|| oidc_problem(spec)) {
-            Some(("InvalidSpec", msg.to_string(), RESYNC))
-        } else if let Err(msg) = &image {
-            Some(("ImageNotAllowed", msg.clone(), RESYNC))
-        } else if !denied_env.is_empty() {
-            Some((
-                "EnvNotAllowed",
-                format!(
-                    "spec.env must not set {}; use the dedicated spec fields",
-                    denied_env.join(", ")
-                ),
-                RESYNC,
-            ))
-        } else if let Some((r, m)) = check_secrets(&secrets, spec).await? {
-            Some((r, m, Duration::from_secs(60)))
-        } else if let Some((r, m)) = check_oidc_ca(&cms, spec).await? {
-            Some((r, m, Duration::from_secs(60)))
-        } else {
-            match oidc_client_secret(&secrets, spec).await? {
-                Err((r, m)) => Some((r, m, Duration::from_secs(60))),
-                Ok(d) => {
-                    oidc_digest = d;
-                    match access_file(&cms, spec).await? {
-                        Ok(doc) => {
-                            access_doc = doc;
-                            None
+    let mut mail_digest = None;
+    let refusal: Option<(&str, String, Duration)> = if let Some(msg) = storage_problem(spec)
+        .or_else(|| oidc_problem(spec))
+        .map(String::from)
+        .or_else(|| mail_problem(spec))
+    {
+        Some(("InvalidSpec", msg, RESYNC))
+    } else if let Err(msg) = &image {
+        Some(("ImageNotAllowed", msg.clone(), RESYNC))
+    } else if !denied_env.is_empty() {
+        Some((
+            "EnvNotAllowed",
+            format!(
+                "spec.env must not set {}; use the dedicated spec fields",
+                denied_env.join(", ")
+            ),
+            RESYNC,
+        ))
+    } else if let Some((r, m)) = check_secrets(&secrets, spec).await? {
+        Some((r, m, Duration::from_secs(60)))
+    } else if let Some((r, m)) = check_oidc_ca(&cms, spec).await? {
+        Some((r, m, Duration::from_secs(60)))
+    } else {
+        match oidc_client_secret(&secrets, spec).await? {
+            Err((r, m)) => Some((r, m, Duration::from_secs(60))),
+            Ok(d) => {
+                oidc_digest = d;
+                match access_file(&cms, spec).await? {
+                    Ok(doc) => {
+                        access_doc = doc;
+                        match mail_secrets(&secrets, spec).await? {
+                            Ok(d) => {
+                                mail_digest = d;
+                                None
+                            }
+                            Err((r, m)) => Some((r, m, Duration::from_secs(60))),
                         }
-                        Err((r, m)) => Some((r, m, Duration::from_secs(60))),
                     }
+                    Err((r, m)) => Some((r, m, Duration::from_secs(60))),
                 }
             }
-        };
+        }
+    };
     if let Some((reason, msg, requeue)) = refusal {
         tracing::warn!(fastmock = %name, namespace = %ns, %reason, %msg, "FastMock refused");
         write_status(&servers, &name, prev, &blocked(reason, &msg)).await?;
@@ -478,8 +627,13 @@ async fn reconcile_server_inner(ms: &FastMock, ctx: &Ctx) -> Result<Action, Erro
     .await?;
     let sas: Api<ServiceAccount> = Api::namespaced(ctx.client.clone(), &ns);
     apply(&sas, &name, &manifests::service_account(&name, &ns, &owner)).await?;
-    let checksum =
-        manifests::config_checksum(&env, &tokens, access_doc.as_deref(), oidc_digest.as_deref());
+    let checksum = manifests::config_checksum(
+        &env,
+        &tokens,
+        access_doc.as_deref(),
+        oidc_digest.as_deref(),
+        mail_digest.as_deref(),
+    );
     let deployments: Api<Deployment> = Api::namespaced(ctx.client.clone(), &ns);
     apply(
         &deployments,
@@ -491,6 +645,15 @@ async fn reconcile_server_inner(ms: &FastMock, ctx: &Ctx) -> Result<Action, Erro
     let [data, admin] = manifests::services(&name, &ns, &owner);
     apply(&svcs, &name, &data).await?;
     apply(&svcs, &format!("{name}-admin"), &admin).await?;
+    let mail_svc = format!("{name}-mail");
+    match manifests::mail_service(&name, &ns, &owner, spec) {
+        Some(svc) => apply(&svcs, &mail_svc, &svc).await?,
+        None => {
+            if let Err(e) = delete_owned(&svcs, &mail_svc, &owner_uid).await {
+                tracing::warn!(fastmock = %name, namespace = %ns, error = %e, "removing the mail Service failed");
+            }
+        }
+    }
     let pdbs: Api<PodDisruptionBudget> = Api::namespaced(ctx.client.clone(), &ns);
     if spec.replicas > 1 {
         apply(&pdbs, &name, &manifests::pdb(&name, &ns, &owner)).await?;
@@ -1567,6 +1730,105 @@ mod tests {
         let h2 = trigger_hash(&api);
         api.metadata.generation = Some(2);
         assert_ne!(trigger_hash(&api), h2);
+    }
+
+    #[test]
+    fn mail_rules() {
+        let spec =
+            |m: Value| -> FastMockSpec { serde_json::from_value(json!({"mail": m})).unwrap() };
+        assert_eq!(mail_problem(&spec(json!({"enabled": true}))), None);
+        assert_eq!(
+            mail_problem(&spec(json!({"enabled": false, "ports": {"smtp": 8080}}))),
+            None
+        );
+        for (m, want) in [
+            (
+                json!({"ports": {"imap": 8080}}),
+                "mail.ports.imap (8080) uses the same port as the data plane",
+            ),
+            (
+                json!({"ports": {"pop3": 2525}}),
+                "mail.ports.pop3 (2525) uses the same port as smtp",
+            ),
+            (
+                json!({"ports": {"imaps": 1993}}),
+                "mail.ports.imaps needs a certificate: set mail.tlsSecretRef",
+            ),
+            (
+                json!({"ports": {"pop3": -1}}),
+                "mail.ports.pop3 must be 0 (off) or a port from 1 to 65535",
+            ),
+            (
+                json!({"hostname": "a b"}),
+                "mail.hostname must be a host name",
+            ),
+            (
+                json!({"limits": {"maxMessages": 0}}),
+                "mail.limits.maxMessages must be greater than zero",
+            ),
+            (
+                json!({"limits": {"maxMessageBytes": 600000000}}),
+                "mail.limits.maxMessageBytes must be at most 536870912",
+            ),
+            (
+                json!({"limits": {"maxConnectionsPerIp": 300}}),
+                "mail.limits.maxConnectionsPerIp must not exceed mail.limits.maxConnections",
+            ),
+            (
+                json!({"limits": {"maxAge": "0s"}}),
+                "mail.limits.maxAge must be a positive duration such as 30s, 10m, 2h or 7d",
+            ),
+            (
+                json!({"limits": {"idleTimeout": "5 minutes"}}),
+                "mail.limits.idleTimeout must be a positive duration such as 30s, 10m, 2h or 7d",
+            ),
+        ] {
+            let mut m = m;
+            m["enabled"] = json!(true);
+            assert_eq!(mail_problem(&spec(m.clone())).as_deref(), Some(want), "{m}");
+        }
+        assert_eq!(
+            mail_problem(&spec(json!({
+                "enabled": true,
+                "ports": {"smtps": 4650, "imaps": 1993, "pop3s": 1995},
+                "tlsSecretRef": {"name": "tls"},
+                "limits": {"maxAge": "7d", "idleTimeout": "500ms", "maxConnections": 10, "maxConnectionsPerIp": 10}
+            }))),
+            None
+        );
+    }
+
+    #[test]
+    fn mail_secret_keys_are_checked() {
+        use k8s_openapi::ByteString;
+        let secret = |k: &str, v: &str| Secret {
+            data: Some(std::collections::BTreeMap::from([(
+                k.to_string(),
+                ByteString(v.as_bytes().to_vec()),
+            )])),
+            ..Default::default()
+        };
+        let f = "mail.usersSecretRef";
+        assert_eq!(
+            mail_secret_value(f, "u", "users", None).unwrap_err().0,
+            "SecretNotFound"
+        );
+        assert_eq!(
+            mail_secret_value(f, "u", "users", Some(&secret("other", "x"))).unwrap_err(),
+            (
+                "SecretKeyNotFound",
+                "Secret u has no key users (mail.usersSecretRef)".to_string()
+            )
+        );
+        assert_eq!(
+            mail_secret_value(f, "u", "users", Some(&secret("users", " ")))
+                .unwrap_err()
+                .0,
+            "SecretKeyNotFound"
+        );
+        let a = mail_secret_value(f, "u", "users", Some(&secret("users", "a:1"))).unwrap();
+        let b = mail_secret_value(f, "u", "users", Some(&secret("users", "a:2"))).unwrap();
+        assert_ne!(a, b);
     }
 
     #[test]

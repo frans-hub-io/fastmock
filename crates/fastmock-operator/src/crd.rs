@@ -162,6 +162,185 @@ pub struct RouteSpec {
     pub parent_refs: Vec<Value>,
 }
 
+fn default_smtp_port() -> i32 {
+    2525
+}
+
+/// Mail listener ports; `0` turns a listener off. Every port also goes into the `<name>-mail` Service.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MailPorts {
+    /// SMTP (with STARTTLS when a certificate is set), default 2525.
+    #[serde(default = "default_smtp_port")]
+    #[schemars(range(min = 0, max = 65535))]
+    pub smtp: i32,
+    /// SMTP with implicit TLS; needs `tlsSecretRef`.
+    #[serde(default)]
+    #[schemars(range(min = 0, max = 65535))]
+    pub smtps: i32,
+    /// IMAP (with STARTTLS when a certificate is set).
+    #[serde(default)]
+    #[schemars(range(min = 0, max = 65535))]
+    pub imap: i32,
+    /// IMAP with implicit TLS; needs `tlsSecretRef`.
+    #[serde(default)]
+    #[schemars(range(min = 0, max = 65535))]
+    pub imaps: i32,
+    /// POP3 (with STLS when a certificate is set).
+    #[serde(default)]
+    #[schemars(range(min = 0, max = 65535))]
+    pub pop3: i32,
+    /// POP3 with implicit TLS; needs `tlsSecretRef`.
+    #[serde(default)]
+    #[schemars(range(min = 0, max = 65535))]
+    pub pop3s: i32,
+}
+
+impl Default for MailPorts {
+    fn default() -> Self {
+        Self {
+            smtp: default_smtp_port(),
+            smtps: 0,
+            imap: 0,
+            imaps: 0,
+            pop3: 0,
+            pop3s: 0,
+        }
+    }
+}
+
+impl MailPorts {
+    /// Enabled listeners: (port name, port, environment variable, implicit TLS).
+    pub fn enabled(&self) -> Vec<(&'static str, i32, &'static str, bool)> {
+        [
+            ("smtp", self.smtp, "FASTMOCK_MAIL_SMTP_LISTEN", false),
+            ("smtps", self.smtps, "FASTMOCK_MAIL_SMTPS_LISTEN", true),
+            ("imap", self.imap, "FASTMOCK_MAIL_IMAP_LISTEN", false),
+            ("imaps", self.imaps, "FASTMOCK_MAIL_IMAPS_LISTEN", true),
+            ("pop3", self.pop3, "FASTMOCK_MAIL_POP3_LISTEN", false),
+            ("pop3s", self.pop3s, "FASTMOCK_MAIL_POP3S_LISTEN", true),
+        ]
+        .into_iter()
+        .filter(|(_, p, _, _)| *p != 0)
+        .collect()
+    }
+}
+
+fn default_tls_crt() -> String {
+    "tls.crt".into()
+}
+
+fn default_tls_key() -> String {
+    "tls.key".into()
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MailTlsSecretRef {
+    /// Secret in the namespace of the FastMock; it must carry the label `fastmock.franshub.io/allow-mount: "true"`.
+    pub name: String,
+    /// Key of the PEM certificate chain, default `tls.crt`.
+    #[serde(default = "default_tls_crt")]
+    pub cert_key: String,
+    /// Key of the PEM private key, default `tls.key`.
+    #[serde(default = "default_tls_key")]
+    pub key_key: String,
+}
+
+fn default_users_key() -> String {
+    "users".into()
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MailUsersSecretRef {
+    /// Secret in the namespace of the FastMock; it must carry the label `fastmock.franshub.io/allow-mount: "true"`.
+    pub name: String,
+    /// Key holding `user:sha256hex` entries (comma or newline separated), default `users`.
+    #[serde(default = "default_users_key")]
+    pub key: String,
+}
+
+/// Mail limits; unset values keep the server defaults.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MailLimits {
+    /// `FASTMOCK_MAIL_MAX_MESSAGE_BYTES`, default 10 MiB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 536870912))]
+    pub max_message_bytes: Option<i64>,
+    /// `FASTMOCK_MAIL_MAX_MESSAGES` per space, default 1000.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub max_messages: Option<i64>,
+    /// `FASTMOCK_MAIL_MAX_AGE`, default `7d`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(regex(pattern = r"^[0-9]+(ms|s|m|h|d)?$"))]
+    pub max_age: Option<String>,
+    /// `FASTMOCK_MAIL_MAX_CONNECTIONS` over all mail listeners, default 256.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub max_connections: Option<i64>,
+    /// `FASTMOCK_MAIL_MAX_CONNECTIONS_PER_IP`, default 32.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub max_connections_per_ip: Option<i64>,
+    /// `FASTMOCK_MAIL_IDLE_TIMEOUT`, default `30s`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(regex(pattern = r"^[0-9]+(ms|s|m|h|d)?$"))]
+    pub idle_timeout: Option<String>,
+    /// `FASTMOCK_MAIL_SESSION_TIMEOUT`, default `10m`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(regex(pattern = r"^[0-9]+(ms|s|m|h|d)?$"))]
+    pub session_timeout: Option<String>,
+    /// `FASTMOCK_MAIL_IMAP_IDLE_TIMEOUT`, default `30m`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(regex(pattern = r"^[0-9]+(ms|s|m|h|d)?$"))]
+    pub imap_idle_timeout: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MailServiceSpec {
+    /// `ClusterIP` (default), `NodePort` or `LoadBalancer`.
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    #[schemars(regex(pattern = r"^(ClusterIP|NodePort|LoadBalancer)$"))]
+    pub type_: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub annotations: BTreeMap<String, String>,
+}
+
+/// Mail capture (`FASTMOCK_MAIL_*`): SMTP, IMAP and POP3 listeners, the provider APIs and the mail admin API.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MailSpec {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub ports: MailPorts,
+    /// Name in the SMTP greeting, default `localhost`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(regex(pattern = r"^[A-Za-z0-9.-]{1,253}$"))]
+    pub hostname: Option<String>,
+    /// Certificate for SMTPS/IMAPS/POP3S and STARTTLS/STLS, mounted read-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_secret_ref: Option<MailTlsSecretRef>,
+    /// SMTP clients must authenticate (a user of `usersSecretRef` or a managed token with `mail:write`).
+    #[serde(default)]
+    pub require_auth: bool,
+    /// SMTP users, passed as `FASTMOCK_MAIL_SMTP_USERS`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub users_secret_ref: Option<MailUsersSecretRef>,
+    /// Offer AUTH/LOGIN before TLS even when a certificate is set.
+    #[serde(default)]
+    pub allow_plaintext_auth: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<MailLimits>,
+    /// The `<name>-mail` Service.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<MailServiceSpec>,
+}
+
 #[derive(CustomResource, Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[kube(
     group = "fastmock.franshub.io",
@@ -207,10 +386,20 @@ pub struct FastMockSpec {
     /// SSO sign-in (OIDC) for the UI and bearer JWTs for the admin API.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oidc: Option<OidcSpec>,
+    /// Mail capture: SMTP, IMAP and POP3 listeners with their Service.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail: Option<MailSpec>,
 }
 
 fn one() -> i32 {
     1
+}
+
+impl FastMockSpec {
+    /// The mail settings when mail is enabled.
+    pub fn mail_on(&self) -> Option<&MailSpec> {
+        self.mail.as_ref().filter(|m| m.enabled)
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
