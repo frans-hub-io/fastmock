@@ -31,7 +31,7 @@ import lockupDark from '../assets/brand/FransHub_FastMock_dark.svg';
 import lockupLight from '../assets/brand/FransHub_FastMock_light.svg';
 import monogramDark from '../assets/brand/FransHub_monogram_dark.svg';
 import monogramLight from '../assets/brand/FransHub_monogram_light.svg';
-import { useTokensApi } from '../api/features';
+import { useTokensApi, useVersion } from '../api/features';
 import { accessSummary, can, kindLabel, spaceScoped, summaryLabel } from '../auth/permissions';
 import { useAuth, useSpace } from '../auth/useAuth';
 import { readLocal, writeLocal } from '../lib/ui';
@@ -68,9 +68,10 @@ function readClosed(): string[] {
 function Nav({ onNavigate, collapsed = false }: { onNavigate?: () => void; collapsed?: boolean }) {
   const { permissions } = useAuth();
   const tokensApi = useTokensApi() === 'available';
+  const features = useVersion().data?.features;
   const loc = useLocation();
   const [closed, setClosed] = useState<string[]>(readClosed);
-  const groups = visibleNav(permissions, tokensApi);
+  const groups = visibleNav(permissions, tokensApi, features);
   const toggle = (g: string) =>
     setClosed((c) => {
       const next = c.includes(g) ? c.filter((x) => x !== g) : [...c, g];

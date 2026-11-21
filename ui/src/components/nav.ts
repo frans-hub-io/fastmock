@@ -11,6 +11,7 @@ import {
   IconGauge,
   IconHistory,
   IconKey,
+  IconMail,
   IconPlayerRecord,
   IconRoute,
   IconSearch,
@@ -32,6 +33,8 @@ export interface NavItem {
   global?: boolean;
   /** Shown only when the server offers the managed-token API. */
   tokensApi?: boolean;
+  /** Shown only when `GET /__admin/version` lists this feature. */
+  feature?: string;
   /** Extra words the command palette matches. */
   keywords?: string;
 }
@@ -60,6 +63,7 @@ export const NAV: NavGroup[] = [
       { to: '/requests', label: 'Request journal', icon: IconActivity, perm: 'journal:read', keywords: 'requests log history' },
       { to: '/near-misses', label: 'Near misses', icon: IconSearch, perm: 'journal:read', keywords: 'unmatched explain diff' },
       { to: '/verify', label: 'Verify', icon: IconShieldCheck, perm: 'journal:read', keywords: 'count assert sequence' },
+      { to: '/mail', label: 'Mail', icon: IconMail, perm: 'mail:read', feature: 'mail', keywords: 'email smtp inbox messages imap pop3' },
       { to: '/callbacks', label: 'Callbacks', icon: IconWebhook, perm: 'callbacks:read', keywords: 'webhooks outbox' },
       { to: '/recordings', label: 'Recordings', icon: IconPlayerRecord, perm: 'recordings:read', keywords: 'record proxy snapshot' },
     ],
@@ -95,9 +99,10 @@ export function isActive(item: NavItem, pathname: string): boolean {
   return item.to === '/' ? pathname === '/' : pathname === item.to || pathname.startsWith(`${item.to}/`);
 }
 
-/** The groups and entries the principal may open. */
-export function visibleNav(permissions: Permissions | null | undefined, tokensApi: boolean): NavGroup[] {
-  const shown = (i: NavItem) => (!i.perm || can(permissions, i.perm, i.global ? null : undefined)) && (!i.tokensApi || tokensApi);
+/** The groups and entries the principal may open; entries of optional features only when `features` lists them. */
+export function visibleNav(permissions: Permissions | null | undefined, tokensApi: boolean, features: readonly string[] = []): NavGroup[] {
+  const shown = (i: NavItem) =>
+    (!i.perm || can(permissions, i.perm, i.global ? null : undefined)) && (!i.tokensApi || tokensApi) && (!i.feature || features.includes(i.feature));
   return NAV.map((g) => ({ ...g, items: g.items.filter(shown) })).filter((g) => g.items.length > 0);
 }
 

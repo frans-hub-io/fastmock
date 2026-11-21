@@ -1,7 +1,7 @@
 import { Anchor, Button, Group, Text, Title } from '@mantine/core';
 import { IconArrowRight, IconBook2, IconGauge } from '@tabler/icons-react';
 import { Link, useLocation } from 'react-router';
-import { useTokensApi } from '../api/features';
+import { useTokensApi, useVersion } from '../api/features';
 import { useAuth } from '../auth/useAuth';
 import { visibleNav } from '../components/nav';
 import { docsUrl } from '../lib/docs';
@@ -12,7 +12,8 @@ export default function NotFound() {
   const { pathname } = useLocation();
   const { permissions } = useAuth();
   const tokensApi = useTokensApi() === 'available';
-  const items = visibleNav(permissions, tokensApi)
+  const features = useVersion().data?.features;
+  const items = visibleNav(permissions, tokensApi, features)
     .flatMap((g) => g.items)
     .filter((i) => i.to !== '/');
   const suggestions = suggestScreens(pathname, items, ['/stubs', '/requests', '/near-misses', '/services']);
