@@ -33,3 +33,10 @@ path = "fuzz_targets/smtp_codec.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "pop3_session"
+path = "fuzz_targets/pop3_session.rs"
+test = false
+doc = false
+bench = false
