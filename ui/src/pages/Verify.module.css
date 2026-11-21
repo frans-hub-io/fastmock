@@ -1,0 +1,126 @@
+.pattern {
+  display: grid;
+  grid-template-columns: 130px 190px minmax(0, 1fr);
+  gap: var(--mantine-spacing-xs);
+  align-items: start;
+}
+
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--mantine-spacing-sm);
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: var(--mantine-spacing-sm);
+}
+
+.stepRail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding-top: 8px;
+}
+
+.stepRail::after {
+  content: '';
+  flex: 1;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--fm-hairline);
+}
+
+.stepNo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  font-size: 0.85rem;
+  font-weight: 800;
+  color: var(--fm-param-fg);
+  background: var(--fm-param-bg);
+  border: 1px solid var(--fm-param-border);
+}
+
+.stepArrow {
+  order: 2;
+  color: var(--fh-color-text-muted);
+}
+
+.stepBody {
+  min-width: 0;
+  padding: var(--mantine-spacing-sm);
+  border-radius: var(--mantine-radius-md);
+  border: 1px solid var(--fm-hairline);
+  background: var(--fm-subtle-bg);
+}
+
+.addStep {
+  padding-left: 44px;
+}
+
+.outcome {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mantine-spacing-md);
+  padding: var(--mantine-spacing-md);
+  border-radius: var(--mantine-radius-lg);
+  border: 1px solid var(--fh-semantic-danger-border);
+  background:
+    linear-gradient(180deg, var(--fh-semantic-danger-bg) 0%, transparent 140px),
+    var(--fm-tile-bg);
+  box-shadow: var(--fm-shadow-sm);
+}
+
+.outcome[data-verified] {
+  border-color: var(--fh-semantic-success-border);
+  background:
+    linear-gradient(180deg, var(--fh-semantic-success-bg) 0%, transparent 140px),
+    var(--fm-tile-bg);
+}
+
+.outcomeIcon {
+  display: inline-flex;
+  color: var(--fh-semantic-danger-fg);
+}
+
+.outcome[data-verified] .outcomeIcon {
+  color: var(--fh-semantic-success-fg);
+}
+
+.miss {
+  padding: 10px 12px;
+  border-radius: var(--mantine-radius-md);
+  border: 1px solid var(--fm-hairline);
+  background: var(--fm-subtle-bg);
+}
+
+@media (max-width: 47.99em) {
+  .pattern {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .url {
+    grid-column: 1 / -1;
+  }
+
+  .step {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .stepRail {
+    display: none;
+  }
+
+  .addStep {
+    padding-left: 0;
+  }
+}
