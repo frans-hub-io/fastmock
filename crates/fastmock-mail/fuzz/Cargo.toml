@@ -33,3 +33,17 @@ path = "fuzz_targets/smtp_codec.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "imap_session"
+path = "fuzz_targets/imap_session.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "imap_command"
+path = "fuzz_targets/imap_command.rs"
+test = false
+doc = false
+bench = false
