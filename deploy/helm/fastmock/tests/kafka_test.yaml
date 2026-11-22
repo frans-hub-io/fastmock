@@ -1,0 +1,58 @@
+suite: bundled kafka
+templates:
+  - charts/kafka/templates/statefulset.yaml
+  - charts/kafka/templates/serviceaccount.yaml
+  - templates/configmap.yaml
+release:
+  name: fm
+  namespace: qa
+values:
+  - ../ci/kafka-values.yaml
+tests:
+  - it: runs the broker under its own ServiceAccount without a token
+    template: charts/kafka/templates/statefulset.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: fm-kafka
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: '^docker\.io/apache/kafka:4\.4\.0@sha256:[a-f0-9]{64}$'
+
+  - it: creates that ServiceAccount
+    template: charts/kafka/templates/serviceaccount.yaml
+    asserts:
+      - isKind:
+          of: ServiceAccount
+      - equal:
+          path: metadata.name
+          value: fm-kafka
+      - equal:
+          path: automountServiceAccountToken
+          value: false
+
+  - it: uses an existing ServiceAccount when asked
+    template: charts/kafka/templates/statefulset.yaml
+    set:
+      kafka.serviceAccount.create: false
+      kafka.serviceAccount.name: kafka-broker
+    asserts:
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: kafka-broker
+
+  - it: points FastMock at the bundled broker with SASL PLAIN
+    template: templates/configmap.yaml
+    documentSelector:
+      path: metadata.name
+      value: fm-fastmock
+    asserts:
+      - equal:
+          path: data.FASTMOCK_KAFKA_BOOTSTRAP
+          value: fm-kafka:9092
+      - equal:
+          path: data.FASTMOCK_KAFKA_SASL_MECHANISM
+          value: PLAIN
