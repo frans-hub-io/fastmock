@@ -19,6 +19,8 @@ env:
   CARGO_PROFILE_TEST_DEBUG: "0"
   RUST_TOOLCHAIN: 1.100.0
   NODE_VERSION: 22.23.5
+  HELM_VERSION: v3.22.1
+  HELM_UNITTEST_VERSION: v1.2.1
 
 jobs:
   ui:
@@ -128,7 +130,7 @@ jobs:
           persist-credentials: false
       - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e
         with:
-          version: v3.17.4
+          version: ${{ env.HELM_VERSION }}
       - name: fetch chart dependencies
         run: |
           helm repo add cnpg https://cloudnative-pg.github.io/charts
@@ -144,6 +146,10 @@ jobs:
             helm template fastmock deploy/helm/fastmock -f "$f" --api-versions postgresql.cnpg.io/v1 > /dev/null
             echo "::endgroup::"
           done
+      - name: unit tests
+        run: |
+          helm plugin install https://github.com/helm-unittest/helm-unittest.git --version "$HELM_UNITTEST_VERSION"
+          helm unittest deploy/helm/fastmock
       - name: lint and render fastmock-operator
         run: |
           helm lint --strict deploy/helm/fastmock-operator

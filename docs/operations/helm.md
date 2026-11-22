@@ -252,8 +252,10 @@ helm uninstall fastmock -n mocks
 | `kafka.enabled` | `false` | Install the CloudPirates `kafka` chart (one broker, KRaft) and connect FastMock to it with SASL/PLAIN. |
 | `kafka.auth.existingSecret` | `""` (required when enabled) | Secret with `client-password`, `inter-broker-password` and `controller-password`. |
 | `kafka.auth.clientUser` | `fastmock` | SASL user FastMock connects as. |
-| `kafka.image.tag` | `4.4.0` | Official `apache/kafka` image. |
-| `kafka.persistence.size`, `kafka.resources` | `8Gi`, requests `250m`/`768Mi`, limits `1`/`1Gi` | Other keys: the [chart's values](https://github.com/cloudpirates-io/helm-charts/blob/main/charts/kafka/values.yaml). The chart runs the broker under the namespace's `default` ServiceAccount (without a token); clusters whose policies forbid that need an exception or an external Kafka. |
+| `kafka.image.registry`, `.repository`, `.tag` | chart default: `docker.io`, `apache/kafka`, `4.4.0` pinned by digest | Official `apache/kafka` image; override all three for a mirror. |
+| `kafka.serviceAccount.create`, `.name`, `.annotations` | `true`, `""` (`<release>-kafka`), `{}` | Dedicated ServiceAccount for the broker; set `create: false` and `name` to use an existing one. |
+| `kafka.serviceAccount.automountServiceAccountToken` | `false` | The broker does not call the Kubernetes API. |
+| `kafka.persistence.size`, `kafka.resources` | `8Gi`, requests `250m`/`768Mi`, limits `1`/`1Gi` | Other keys: the [chart's values](https://github.com/cloudpirates-io/helm-charts/blob/main/charts/kafka/values.yaml) (version 0.3.0). |
 | `plugins` | `[]` (all) | `FASTMOCK_PLUGINS` |
 | `pluginSettings` | `{}` | Map `plugin → {key: value}`, rendered as `FASTMOCK_PLUGIN_<PLUGIN>_<KEY>`. |
 

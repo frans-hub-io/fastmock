@@ -283,10 +283,10 @@ valkey:
 kafka:
   enabled: false
   image:
-    registry: docker.io
-    repository: apache/kafka
-    tag: "4.4.0"
     imagePullPolicy: IfNotPresent
+  serviceAccount:
+    create: true
+    automountServiceAccountToken: false
   replicaCount: 1
   podDisruptionBudget:
     enabled: false
