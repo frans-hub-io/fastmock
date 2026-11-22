@@ -1189,9 +1189,29 @@ mod tests {
             def(json!({"protocol": "amqp", "routingKey": "q", "exchangeType": "x-delayed"}))
                 .is_err()
         );
+        let avro = json!({"type": "string"});
+        assert!(def(json!({"protocol": "amqp", "routingKey": "q", "avroSchema": avro})).is_ok());
+        assert!(def(json!({"protocol": "mqtt", "topic": "a/b", "avroSchema": avro})).is_ok());
         assert!(
-            def(json!({"protocol": "amqp", "routingKey": "q", "avroSchema": {"type": "string"}}))
-                .is_err()
+            def(json!({"protocol": "mqtt", "topic": "a/{{request.pathParams.id}}", "avroSchema": avro}))
+                .unwrap_err()
+                .contains("avroSubject is required")
+        );
+        assert!(
+            def(json!({"protocol": "amqp", "exchange": "x", "routingKey": "{{uuid}}", "avroSchema": avro}))
+                .unwrap_err()
+                .contains("avroSubject is required")
+        );
+        assert!(def(json!({"protocol": "mqtt", "topic": "a/{{uuid}}", "avroSchema": avro, "avroSubject": "a-value"})).is_ok());
+        assert!(def(json!({"topic": "a-{{uuid}}", "avroSchema": avro})).is_ok());
+        assert!(
+            def(json!({"topic": "t", "avroSubject": "t-value"}))
+                .unwrap_err()
+                .contains("needs avroSchema")
+        );
+        assert!(def(json!({"topic": "t", "avroSchema": avro, "avroSubject": "a/b"})).is_err());
+        assert!(
+            def(json!({"topic": "t", "avroSchema": avro, "avroSubject": "a".repeat(250)})).is_err()
         );
         assert!(def(json!({"topic": "t", "delayMs": 4_000_000})).is_err());
         assert!(serde_json::from_value::<MessageDef>(json!({"topic": "t", "qoss": 1})).is_err());

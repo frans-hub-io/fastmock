@@ -3362,8 +3362,18 @@ export interface components {
             headers?: {
                 [key: string]: string;
             };
-            /** @description Kafka only: publish as Confluent-framed Avro with this schema. */
+            /**
+             * @description Publish `jsonValue` as Confluent-framed Avro with this schema (Kafka, MQTT and AMQP). The schema is
+             *     registered in the Schema Registry under the subject `avroSubject`.
+             */
             avroSchema?: unknown;
+            /**
+             * @description Schema Registry subject of `avroSchema` (letters, digits, `.`, `_`, `-`, at most 249 characters).
+             *     Default: `<topic>-value` for Kafka, `<topic>-value` for MQTT, `<exchange>.<routingKey>-value` for
+             *     AMQP (`<routingKey>-value` on the default exchange). MQTT and AMQP messages whose topic, exchange or
+             *     routing key is a template need it, so a request cannot make FastMock register arbitrary subjects.
+             */
+            avroSubject?: string | null;
             /**
              * @description Content type (template): MQTT 5 `content-type` property, AMQP `content_type` property, Kafka
              *     `content-type` header unless `headers` sets it.

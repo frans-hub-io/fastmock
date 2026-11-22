@@ -201,6 +201,10 @@ starts with `application/vnd.apache.avro` (for example `application/vnd.apache.a
 `FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL`, and each JSON example is converted to Avro with the same rules (unions, logical
 types, defaults, named types). The schema may be inline JSON or a JSON string.
 
+The same holds for `mqtt` and `amqp` channels (see [Avro payloads](mqtt-amqp.md#avro-payloads)): the import keeps
+the schema, and the subject is `<channel>-value` for MQTT and `<exchange>.<channel>-value` for AMQP (`<channel>-value`
+on the default exchange), with characters such as `/` percent-encoded in the registry request.
+
 Generated Avro examples use the field `default` when there is one, `0` for numbers, `"string"` for strings, the
 first enum symbol, one item for arrays, `{"key": ...}` for maps, the first non-null branch of unions,
 `"2026-01-01"` for `date`, `"2026-01-01T00:00:00Z"` for timestamps and `"0"` for decimals. A named type that
@@ -222,7 +226,7 @@ values and 1 MiB.
 | `enabled` | boolean | `true` | Disabled mocks are kept but not published. |
 | `templated` | boolean | `true` | Render `payload`, `key` and header values as templates. |
 | `contentType` | string | none | Sent as the `content-type` header unless an example sets it. |
-| `avroSchema` | object | none | Kafka only: publish as Confluent Avro with this schema. |
+| `avroSchema` | object | none | Publish as Confluent Avro with this schema (Kafka, MQTT and AMQP, see [Avro](#avro)). |
 | `payloadSchema` | object | none | JSON Schema of the payload, kept for [contract testing](contract-testing.md). |
 | `operation`, `service` | string | none | Where the mock came from. |
 | `tags` | array | none | At most 32 tags of up to 128 characters. |

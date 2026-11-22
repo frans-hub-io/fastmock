@@ -10,6 +10,7 @@ creates them from `mqtt` and `amqp` bindings. To check what *your application* p
 - [Publishing from stubs](#publishing-from-stubs)
 - [MQTT messages](#mqtt-messages)
 - [AMQP messages](#amqp-messages)
+- [Avro payloads](#avro-payloads)
 - [Connections, reconnects and readiness](#connections-reconnects-and-readiness)
 - [Allow-lists](#allow-lists)
 - [TLS and authentication](#tls-and-authentication)
@@ -117,7 +118,7 @@ messages due now beyond that are dropped and counted as `dropped`. Delayed messa
 take a publication slot only when they are due: at most 4096 messages and 64 MiB wait per replica, at most 1024 of
 them from one stub; messages beyond that are dropped and counted as `dropped`, and a due message that finds no free
 slot within 10 seconds too. Messages that do not fit the protocol (an MQTT `key`, an AMQP
-`topic`, `qos` for Kafka, `avroSchema` outside Kafka) are rejected when the stub is saved:
+`topic`, `qos` for Kafka) are rejected when the stub is saved:
 `messages[0]: key not used with protocol mqtt`.
 
 ## MQTT messages
@@ -137,6 +138,18 @@ correlation data at most 65535 bytes): a bad value fails that message only inste
 connection that every publication shares. A publication counts as sent when the broker acknowledged it: on the write for QoS 0, on `PUBACK` for QoS 1, on
 `PUBCOMP` for QoS 2. An MQTT 5 acknowledgement with an error reason (`NotAuthorized`, `TopicNameInvalid`, ...) fails
 the message; `NoMatchingSubscribers` counts as sent. A publication waits at most 10 seconds for its acknowledgement.
+
+### Topics consumed through shared subscriptions
+
+An application that reads a topic through a shared subscription (`$share/<group>/orders/#`, an MQTT 5 feature that
+brokers such as Mosquitto 2, EMQX and HiveMQ support) needs nothing special from the publisher: a stub or async mock publishes to the plain
+topic (`orders/A-1/status`, never `$share/...`: that is a subscription filter, not a topic name), and the broker
+hands each message to one member of the group. This is tested against Mosquitto 2.0:
+two members of one group received every publication of FastMock exactly once between them.
+
+To read what an application under test publishes, use [message capture](message-capture.md#mqtt-shared-subscriptions):
+capture sources cannot subscribe to `$share/...`, because a member of the group would take messages away from the
+application under test.
 
 Example with Mosquitto (`mosquitto_sub -V mqttv5 -t 'orders/#' -F '%t %p %P'` shows the topic, payload and user
 properties):
@@ -169,6 +182,46 @@ arrives within 10 seconds. Before the first message to an exchange FastMock chec
 exists, so a missing exchange fails only the messages to it, never the confirms of other messages on the shared
 channel. It remembers up to 256 exchanges as existing. A message routed to no queue is confirmed and dropped by the
 broker, as for any AMQP producer.
+
+## Avro payloads
+
+`avroSchema` works for MQTT and AMQP messages as for [Kafka](kafka.md#avro): `jsonValue` is converted to Avro
+with the schema, and the message body is Confluent-framed Avro (byte `0`, the 4-byte schema id, the Avro binary
+encoding), so the schema must be registered. FastMock registers it in `FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL` (the
+one Schema Registry setting of the server, with `FASTMOCK_KAFKA_SCHEMA_REGISTRY_USERNAME` and `_PASSWORD`);
+without it the message fails with `avroSchema needs FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL`. Kafka itself needs not be
+configured.
+
+```json
+{
+  "protocol": "mqtt",
+  "topic": "sensors/{{request.pathParams.id}}/reading",
+  "avroSubject": "sensor-reading-value",
+  "contentType": "avro/binary",
+  "avroSchema": {"type": "record", "name": "Reading",
+                 "fields": [{"name": "device", "type": "string"}, {"name": "temp", "type": "int"}]},
+  "jsonValue": {"device": "{{request.pathParams.id}}", "temp": "{{json 21}}"}
+}
+```
+
+The Schema Registry subject is `avroSubject` when set. Otherwise it is `<topic>-value` for MQTT and
+`<exchange>.<routingKey>-value` for AMQP (`<routingKey>-value` on the default exchange); characters outside
+letters, digits, `.`, `_` and `-` (the `/` of MQTT topics) are percent-encoded in the registry request, so a subject
+is always one path segment. `avroSubject` takes 1 to 249 characters of letters, digits, `.`, `_` and `-` and is
+required when the topic, the exchange or the routing key is a template: otherwise a request could make FastMock
+register one subject per value of a request field. Saving the stub fails with `avroSubject is required when ...`.
+
+The conversion rules, the limits and the registry errors (`schema registry returned 409 ...`) are those of
+[Kafka Avro](kafka.md#avro): the rendered value follows the same 16 MiB budget as every message field, and the
+payload limits of the broker apply to the encoded bytes. [Async mocks](asyncapi.md#avro) accept `avroSchema` for
+every protocol, and the AsyncAPI import maps Avro payload schemas of `mqtt` and `amqp` channels to it; the subject
+is derived from the channel (and the exchange for AMQP).
+
+[Message capture](message-capture.md#reading-captured-messages) decodes these bodies: with
+`FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL` set, a captured MQTT or AMQP message in the Confluent frame has
+`body.encoding` `avro`, and JSON body matchers (`jsonPath`, `equalToJson`, `jsonSchema`) see the decoded record.
+Avro without the Confluent frame (raw binary datum) cannot be decoded, because nothing says which schema wrote it;
+it is shown as `base64`.
 
 ## Connections, reconnects and readiness
 

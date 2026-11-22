@@ -202,9 +202,6 @@ impl AsyncMock {
         if self.protocol != AsyncProtocol::Amqp && self.amqp.is_some() {
             return Err("amqp options need protocol amqp".into());
         }
-        if self.protocol != AsyncProtocol::Kafka && self.avro_schema.is_some() {
-            return Err("avroSchema is only supported for Kafka".into());
-        }
         if let Some(m) = &self.mqtt
             && m.qos > 2
         {
@@ -1288,11 +1285,7 @@ pub fn import_named(
                     enabled: true,
                     templated: true,
                     content_type: info.content_type.clone(),
-                    avro_schema: if *proto == AsyncProtocol::Kafka {
-                        info.avro_schema.clone()
-                    } else {
-                        None
-                    },
+                    avro_schema: info.avro_schema.clone(),
                     payload_schema: info.payload_schema.clone(),
                     mqtt,
                     amqp,
@@ -1812,7 +1805,33 @@ channels:
         assert!(ok(&m).unwrap_err().contains("expiration"));
         let mut m = base(AsyncProtocol::Mqtt, "a");
         m.avro_schema = Some(json!({"type": "string"}));
-        assert!(ok(&m).unwrap_err().contains("avroSchema"));
+        assert!(ok(&m).is_ok());
+    }
+
+    #[test]
+    fn avro_payloads_of_mqtt_and_amqp_channels_are_mapped() {
+        let schema = json!({"type": "record", "name": "Reading", "fields": [
+            {"name": "device", "type": "string"}, {"name": "temp", "type": "int"}]});
+        let doc = json!({"asyncapi": "2.6.0", "info": {"title": "t", "version": "1"},
+            "servers": {"m": {"url": "mqtt://broker.example.com", "protocol": "mqtt"},
+                        "r": {"url": "amqp://rabbit.example.com", "protocol": "amqp"}},
+            "channels": {
+                "sensors/readings": {"servers": ["m"], "bindings": {"mqtt": {}}, "subscribe": {"operationId": "readings", "message": {
+                    "schemaFormat": "application/vnd.apache.avro;version=1.9.0", "payload": schema}}},
+                "readings.created": {"servers": ["r"], "bindings": {"amqp": {"is": "routingKey", "exchange": {"name": "sensors"}}}, "subscribe": {"operationId": "amqpReadings", "message": {
+                    "schemaFormat": "application/vnd.apache.avro;version=1.9.0", "payload": schema}}}}});
+        let r = import(&doc, &opts()).unwrap();
+        let by = |p: AsyncProtocol| r.mocks.iter().find(|m| m.protocol == p).unwrap();
+        for p in [AsyncProtocol::Mqtt, AsyncProtocol::Amqp] {
+            let m = by(p);
+            assert_eq!(m.avro_schema.as_ref().unwrap()["name"], "Reading", "{p:?}");
+            assert_eq!(
+                m.messages[0].payload,
+                json!({"device": "string", "temp": 0}),
+                "{p:?}"
+            );
+            assert!(m.validate(|_| Ok(())).is_ok(), "{p:?}");
+        }
     }
 
     #[test]

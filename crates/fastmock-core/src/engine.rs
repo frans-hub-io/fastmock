@@ -161,6 +161,8 @@ pub struct RenderedMessage {
     pub value: Value,
     pub headers: std::collections::BTreeMap<String, String>,
     pub avro_schema: Option<Value>,
+    /// Schema Registry subject of `avro_schema`; when `None` the publisher derives it from the destination.
+    pub avro_subject: Option<String>,
     pub content_type: Option<String>,
     /// Publish this long after the match.
     pub delay_ms: u64,
@@ -1087,6 +1089,7 @@ impl Engine {
                 value,
                 headers,
                 avro_schema: m.avro_schema.clone(),
+                avro_subject: m.avro_subject.clone(),
                 content_type: opt("contentType", &m.content_type, short)?,
                 delay_ms: m.delay_ms.unwrap_or(0),
                 mqtt,

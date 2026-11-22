@@ -10,6 +10,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
 
@@ -122,5 +123,66 @@ class FastMockClientIT {
         var snap = fm.snapshot(FastMock.JSON.readTree("{\"filters\": {\"request\": {\"urlPath\": \"" + path + "\"}}, \"persist\": false}"));
         assertEquals(1, snap.path("stubs").size());
         fm.deleteStubsByTag(tag);
+    }
+
+    @Test
+    void messageCapture() throws Exception {
+        assumeTrue(System.getenv("FASTMOCK_TEST_MQTT") != null, "FASTMOCK_TEST_MQTT is not set");
+        assumeTrue(fm.call("GET", "version", null).path("features").toString().contains("\"capture\""),
+                "message capture is not enabled on this FastMock");
+        String id = UUID.randomUUID().toString().substring(0, 8);
+        String source = "it-" + id;
+        String tag = "it-capture-" + id;
+        var created = fm.createCaptureSource(CaptureSource.mqtt(source, "it/" + id + "/#").qos(1).description("Java client test"));
+        assertEquals(source, created.name());
+        var uuid = UUID.fromString(created.id());
+        try {
+            assertEquals("running", fm.awaitCaptureSourceRunning(uuid, Duration.ofSeconds(20)).status().state());
+            assertTrue(fm.captureSources().stream().anyMatch(s -> s.name().equals(source)));
+
+            fm.createStub(Stub.post("/it-capture/" + id + "/{order}").respond(202).body("ok").tag(tag));
+            var raw = FastMock.JSON.readTree("""
+                    {"tags": ["%s"], "request": {"method": "POST", "urlPathTemplate": "/it-capture/%s/ship/{order}"},
+                     "response": {"status": 202},
+                     "messages": [{"protocol": "mqtt", "topic": "it/%s/status", "qos": 1,
+                       "headers": {"event-type": "OrderShipped"},
+                       "jsonValue": {"orderId": "{{request.pathParams.order}}", "status": "SHIPPED"}}]}
+                    """.formatted(tag, id, id));
+            fm.createStub(raw);
+
+            Instant before = Instant.now().minusSeconds(1);
+            assertEquals(202, send("POST", "/it-capture/" + id + "/ship/A-1", "{}").statusCode());
+            assertEquals(202, send("POST", "/it-capture/" + id + "/ship/A-2", "{}").statusCode());
+
+            var match = MessageMatch.source(source).bodyJsonPath("$.orderId", "A-1");
+            var found = fm.waitForMessages(match, Duration.ofSeconds(15), before);
+            assertEquals(1, found.size());
+            assertEquals("it/" + id + "/status", found.getFirst().topic());
+            assertEquals("OrderShipped", found.getFirst().headers().get("event-type"));
+
+            var detail = fm.capturedMessage(UUID.fromString(found.getFirst().id()));
+            assertEquals("json", detail.body().encoding());
+            assertEquals("SHIPPED", detail.body().value().get("status").asText());
+
+            assertEquals(2, fm.waitForMessages(MessageMatch.source(source), 2, Duration.ofSeconds(15), before).size());
+            assertEquals(2, fm.capturedMessages(CaptureFilter.source(source)).size());
+            assertEquals(1, fm.findMessages(match, before, 10).size());
+            assertEquals(1, fm.verifyMessageCount(match, 1, before).count());
+            fm.verifyMessagesAtLeast(MessageMatch.source(source), 2, before);
+            fm.verifyNoMessages(MessageMatch.source(source).key("nobody"), before);
+
+            var late = assertThrows(AssertionError.class,
+                    () -> fm.waitForMessages(MessageMatch.source(source).bodyJsonPath("$.orderId", "nope"), Duration.ofMillis(300), before));
+            assertTrue(late.getMessage().contains("timed out"), late.getMessage());
+            var wrong = assertThrows(AssertionError.class, () -> fm.verifyMessageCount(match, 2, before));
+            assertTrue(wrong.getMessage().contains("exactly 2"), wrong.getMessage());
+
+            assertEquals(2, fm.clearCapturedMessages(source));
+            fm.verifyNoMessages(MessageMatch.source(source), null);
+        } finally {
+            fm.deleteCaptureSource(uuid, true);
+            fm.deleteStubsByTag(tag);
+        }
+        assertTrue(fm.captureSources().stream().noneMatch(s -> s.name().equals(source)));
     }
 }

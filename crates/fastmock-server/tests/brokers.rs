@@ -988,6 +988,347 @@ async fn mqtt_stubs_async_mocks_and_capture() {
     assert_eq!(s["status"]["state"], "disabled");
 }
 
+#[tokio::test]
+async fn mqtt_publishes_reach_shared_subscriptions_and_capture_does_not_join_a_group() {
+    let Ok(url) = std::env::var("FASTMOCK_TEST_MQTT") else {
+        eprintln!("FASTMOCK_TEST_MQTT not set: skipped");
+        return;
+    };
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let base = format!("fm-it/{}", Uuid::new_v4().simple());
+    let group = format!("workers-{}", Uuid::new_v4().simple());
+    let mut cfg = capture_cfg(StorageKind::Memory);
+    cfg.mqtt = Some(MqttSettings::new(&url).unwrap());
+    cfg.mqtt_allowed_topics = Some(vec![format!("{base}/*")]);
+    cfg.capture.mqtt_topics = Some(vec![format!("{base}/*")]);
+    let h = H::start(cfg, true).await;
+
+    let direct = MqttSettings::new(&url).unwrap();
+    let mut workers = Vec::new();
+    for n in 0..2 {
+        let (tx, rx) = capture_channel(
+            "mqtt",
+            CaptureLimits {
+                max_messages: 64,
+                ..Default::default()
+            },
+        );
+        let conn = MqttConnection::start(
+            &direct,
+            direct.client_id(&format!("worker{n}")),
+            vec![(format!("$share/{group}/{base}/#"), 1)],
+            Some(tx),
+        )
+        .unwrap();
+        workers.push((conn, rx));
+    }
+    for (conn, _) in &workers {
+        for _ in 0..100 {
+            if conn.status().connected {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(conn.status().connected);
+    }
+
+    let src = h
+        .put_source(
+            "",
+            json!({"name": "all", "protocol": "mqtt", "topics": [format!("{base}/#")], "qos": 1}),
+        )
+        .await;
+    h.wait_running(src["id"].as_str().unwrap()).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let (st, v) = h
+        .call(Method::POST, "/stubs", EDITOR, Some(json!({
+            "request": {"method": "POST", "urlPathTemplate": "/jobs/{id}"},
+            "response": {"status": 202},
+            "messages": [{"protocol": "mqtt", "topic": format!("{base}/jobs/{{{{request.pathParams.id}}}}"), "qos": 1,
+                          "jsonValue": {"job": "{{request.pathParams.id}}"}}]
+        })))
+        .await;
+    assert_eq!(st, 201, "{v}");
+    let jobs: Vec<String> = (0..8).map(|i| format!("job{i}")).collect();
+    for j in &jobs {
+        let r = h
+            .http
+            .post(format!("{}/jobs/{j}", h.data))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 202);
+    }
+
+    let mut got: Vec<String> = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while got.len() < jobs.len() && tokio::time::Instant::now() < deadline {
+        for (_, rx) in workers.iter_mut() {
+            if let Ok(Some(m)) = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+                let v: Value = serde_json::from_slice(&m.payload).unwrap();
+                assert_eq!(
+                    m.topic,
+                    format!("{base}/jobs/{}", v["job"].as_str().unwrap())
+                );
+                got.push(v["job"].as_str().unwrap().to_string());
+            }
+        }
+    }
+    got.sort();
+    assert_eq!(
+        got, jobs,
+        "every publication reaches exactly one member of the shared group"
+    );
+
+    let v = h
+        .wait_for(json!({"match": {"source": {"equalTo": "all"}}, "count": 8, "lookbackMs": 20000, "timeoutMs": 10000}))
+        .await;
+    assert_eq!(
+        v["count"], 8,
+        "the capture source got its own copy of every message, so the group took nothing away"
+    );
+}
+
+type Registered = Arc<Mutex<(Vec<String>, Vec<(String, i32)>)>>;
+
+async fn fake_registry() -> (String, Registered) {
+    use axum::extract::{Path, State};
+    use axum::routing::{get, post};
+    let state: Registered = Arc::default();
+    async fn register(
+        State(s): State<Registered>,
+        Path(subject): Path<String>,
+        axum::Json(b): axum::Json<Value>,
+    ) -> axum::Json<Value> {
+        let schema = b["schema"].as_str().unwrap().to_string();
+        let mut g = s.lock().unwrap();
+        let id = match g.0.iter().position(|x| *x == schema) {
+            Some(i) => i,
+            None => {
+                g.0.push(schema);
+                g.0.len() - 1
+            }
+        } as i32
+            + 1;
+        g.1.push((subject, id));
+        axum::Json(json!({"id": id}))
+    }
+    async fn by_id(
+        State(s): State<Registered>,
+        Path(id): Path<usize>,
+    ) -> Result<axum::Json<Value>, axum::http::StatusCode> {
+        let g = s.lock().unwrap();
+        match g.0.get(id.wrapping_sub(1)) {
+            Some(schema) => Ok(axum::Json(json!({"schema": schema}))),
+            None => Err(axum::http::StatusCode::NOT_FOUND),
+        }
+    }
+    let router = axum::Router::new()
+        .route("/subjects/{subject}/versions", post(register))
+        .route("/schemas/ids/{id}", get(by_id))
+        .with_state(state.clone());
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", l.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(l, router).await.unwrap() });
+    (url, state)
+}
+
+fn reading_schema() -> Value {
+    json!({"type": "record", "name": "Reading", "fields": [
+        {"name": "device", "type": "string"}, {"name": "temp", "type": "int"}]})
+}
+
+#[tokio::test]
+async fn mqtt_stubs_publish_avro_that_capture_decodes() {
+    let Ok(url) = std::env::var("FASTMOCK_TEST_MQTT") else {
+        eprintln!("FASTMOCK_TEST_MQTT not set: skipped");
+        return;
+    };
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let (registry, seen) = fake_registry().await;
+    let base = format!("fm-it/{}", Uuid::new_v4().simple());
+    let mut cfg = capture_cfg(StorageKind::Memory);
+    cfg.mqtt = Some(MqttSettings::new(&url).unwrap());
+    cfg.mqtt_allowed_topics = Some(vec![format!("{base}/*")]);
+    cfg.capture.mqtt_topics = Some(vec![format!("{base}/*")]);
+    cfg.kafka_schema_registry = Some(registry);
+    let h = H::start(cfg, true).await;
+    let src = h
+        .put_source("", json!({"name": "readings", "protocol": "mqtt", "topics": [format!("{base}/#")], "qos": 1}))
+        .await;
+    h.wait_running(src["id"].as_str().unwrap()).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let (st, v) = h
+        .call(Method::POST, "/stubs", EDITOR, Some(json!({
+            "request": {"method": "POST", "urlPathTemplate": "/readings/{id}"},
+            "response": {"status": 202},
+            "messages": [
+                {"protocol": "mqtt", "topic": format!("{base}/fixed/state"), "qos": 1, "avroSchema": reading_schema(),
+                 "jsonValue": {"device": "{{request.pathParams.id}}", "temp": "{{json 21}}"}},
+                {"protocol": "mqtt", "topic": format!("{base}/by-id/{{{{request.pathParams.id}}}}"), "qos": 1,
+                 "avroSchema": reading_schema(), "avroSubject": "readings-by-id-value",
+                 "jsonValue": {"device": "{{request.pathParams.id}}", "temp": 30}}
+            ]
+        })))
+        .await;
+    assert_eq!(st, 201, "{v}");
+    let (st, v) = h
+        .call(Method::POST, "/stubs", EDITOR, Some(json!({
+            "request": {"method": "POST", "urlPathTemplate": "/bad/{id}"},
+            "response": {"status": 202},
+            "messages": [{"protocol": "mqtt", "topic": format!("{base}/{{{{request.pathParams.id}}}}"), "avroSchema": reading_schema(), "jsonValue": {}}]
+        })))
+        .await;
+    assert_eq!(st, 400, "{v}");
+    assert!(v.to_string().contains("avroSubject is required"), "{v}");
+
+    let r = h
+        .http
+        .post(format!("{}/readings/d7", h.data))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 202);
+    let v = h
+        .wait_for(json!({"match": {"source": {"equalTo": "readings"}, "body": [{"jsonPath": "$.temp", "value": {"equalTo": "30"}}]},
+                         "count": 1, "lookbackMs": 20000, "timeoutMs": 10000}))
+        .await;
+    let d = h
+        .ok(
+            Method::GET,
+            &format!(
+                "/capture/messages/{}",
+                v["messages"][0]["id"].as_str().unwrap()
+            ),
+            VIEWER,
+            None,
+        )
+        .await;
+    assert_eq!(d["topic"], format!("{base}/by-id/d7"));
+    assert_eq!(d["body"]["encoding"], "avro", "{d}");
+    assert_eq!(d["body"]["value"], json!({"device": "d7", "temp": 30}));
+    let v = h
+        .wait_for(json!({"match": {"topic": {"equalTo": format!("{base}/fixed/state")}, "body": [{"jsonPath": "$.device", "value": {"equalTo": "d7"}}]},
+                         "lookbackMs": 20000, "timeoutMs": 10000}))
+        .await;
+    assert_eq!(v["count"], 1);
+    let mock = Uuid::now_v7();
+    let (st, v) = h
+        .call(Method::PUT, &format!("/async-mocks/{mock}"), EDITOR, Some(json!({
+            "name": "avro lamp", "protocol": "mqtt", "channel": format!("{base}/lamp/reading"), "frequencyMs": 60000,
+            "enabled": false, "avroSchema": reading_schema(), "mqtt": {"qos": 1, "retain": false},
+            "messages": [{"payload": {"device": "lamp", "temp": 5}}]
+        })))
+        .await;
+    assert_eq!(st, 200, "{v}");
+    h.ok(
+        Method::POST,
+        &format!("/async-mocks/{mock}/trigger"),
+        EDITOR,
+        None,
+    )
+    .await;
+    let v = h
+        .wait_for(json!({"match": {"topic": {"equalTo": format!("{base}/lamp/reading")}, "body": [{"jsonPath": "$.temp", "value": {"equalTo": "5"}}]},
+                         "lookbackMs": 20000, "timeoutMs": 10000}))
+        .await;
+    assert_eq!(v["count"], 1, "the async mock publishes Avro on MQTT too");
+    let subjects: Vec<String> = seen
+        .lock()
+        .unwrap()
+        .1
+        .iter()
+        .map(|(s, _)| s.clone())
+        .collect();
+    assert!(
+        subjects.contains(&format!("{base}/fixed/state-value")),
+        "the default subject is the topic and stays one path segment: {subjects:?}"
+    );
+    assert!(
+        subjects.contains(&"readings-by-id-value".to_string()),
+        "{subjects:?}"
+    );
+}
+
+#[tokio::test]
+async fn amqp_stubs_publish_avro_that_capture_decodes() {
+    let Ok(url) = std::env::var("FASTMOCK_TEST_AMQP") else {
+        eprintln!("FASTMOCK_TEST_AMQP not set: skipped");
+        return;
+    };
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let (registry, seen) = fake_registry().await;
+    let exchange = format!("fm-it-avro-{}", Uuid::new_v4().simple());
+    let mut settings = amqp_settings(&url);
+    settings.declare_exchanges = true;
+    let mut cfg = capture_cfg(StorageKind::Memory);
+    cfg.amqp = Some(settings.clone());
+    cfg.amqp_allowed_exchanges = Some(vec!["fm-it-avro-*".into()]);
+    cfg.kafka_schema_registry = Some(registry);
+    let h = H::start(cfg, true).await;
+    AmqpPublisher::new(settings, "test setup")
+        .publish(
+            &AmqpMessage {
+                exchange: exchange.clone(),
+                routing_key: "init".into(),
+                ..Default::default()
+            },
+            Some(&fastmock_brokers::amqp::ExchangeDeclaration::default()),
+        )
+        .await
+        .unwrap();
+    let src = h
+        .put_source("", json!({"name": "readings", "protocol": "amqp", "exchange": exchange, "bindingKeys": ["reading.#"]}))
+        .await;
+    h.wait_running(src["id"].as_str().unwrap()).await;
+
+    let (st, v) = h
+        .call(Method::POST, "/stubs", EDITOR, Some(json!({
+            "request": {"method": "POST", "urlPathTemplate": "/readings/{id}"},
+            "response": {"status": 202},
+            "messages": [{"protocol": "amqp", "exchange": exchange, "routingKey": "reading.created",
+                          "avroSchema": reading_schema(), "contentType": "avro/binary",
+                          "jsonValue": {"device": "{{request.pathParams.id}}", "temp": 18}}]
+        })))
+        .await;
+    assert_eq!(st, 201, "{v}");
+    let r = h
+        .http
+        .post(format!("{}/readings/d9", h.data))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 202);
+    let v = h
+        .wait_for(json!({"match": {"exchange": {"equalTo": exchange}, "body": [{"jsonPath": "$.device", "value": {"equalTo": "d9"}}]},
+                         "lookbackMs": 20000, "timeoutMs": 10000}))
+        .await;
+    let d = h
+        .ok(
+            Method::GET,
+            &format!(
+                "/capture/messages/{}",
+                v["messages"][0]["id"].as_str().unwrap()
+            ),
+            VIEWER,
+            None,
+        )
+        .await;
+    assert_eq!(d["contentType"], "avro/binary");
+    assert_eq!(d["body"]["encoding"], "avro", "{d}");
+    assert_eq!(d["body"]["value"], json!({"device": "d9", "temp": 18}));
+    let subjects: Vec<String> = seen
+        .lock()
+        .unwrap()
+        .1
+        .iter()
+        .map(|(s, _)| s.clone())
+        .collect();
+    assert_eq!(subjects, vec![format!("{exchange}.reading.created-value")]);
+}
+
 fn amqp_settings(url: &str) -> AmqpSettings {
     let mut s = AmqpSettings::new(url).unwrap();
     s.credentials = Some(Credentials {
