@@ -141,7 +141,9 @@ impl KafkaHub {
 
     pub async fn publish_one(&self, m: &RenderedMessage) -> anyhow::Result<(i32, i64)> {
         if !topic_allowed(self.allowed_topics.as_deref(), &m.topic) {
-            anyhow::bail!("topic is not in FASTMOCK_KAFKA_ALLOWED_TOPICS");
+            return Err(fastmock_brokers::public(
+                "topic is not in FASTMOCK_KAFKA_ALLOWED_TOPICS",
+            ));
         }
         let value = self.encode(m).await?;
         let mut headers: BTreeMap<String, Vec<u8>> = m

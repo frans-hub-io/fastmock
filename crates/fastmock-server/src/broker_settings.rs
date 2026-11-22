@@ -175,8 +175,13 @@ pub struct CaptureConfig {
     pub max_messages: usize,
     /// Body bytes kept per message; longer bodies are cut and marked `truncated`.
     pub max_message_bytes: usize,
+    /// Bytes of stored messages in all (`FASTMOCK_CAPTURE_MAX_BYTES`); the oldest go first.
+    pub max_bytes: u64,
+    /// Bytes of stored messages per space, and of the global area (`FASTMOCK_CAPTURE_MAX_SPACE_BYTES`).
+    pub max_space_bytes: u64,
     pub max_age: Duration,
-    /// Allow-lists of what sources may read (`name` or `prefix*`); `None` allows everything.
+    /// Allow-lists of what sources may read (`name` or `prefix*`, `*` for all). Without one, only sources
+    /// from the configuration can read that protocol; sources created through the API need it.
     pub kafka_topics: Option<Vec<String>>,
     pub mqtt_topics: Option<Vec<String>>,
     pub amqp_exchanges: Option<Vec<String>>,
@@ -191,6 +196,8 @@ impl Default for CaptureConfig {
             max_sources: 50,
             max_messages: 1000,
             max_message_bytes: 1024 * 1024,
+            max_bytes: DEFAULT_MAX_BYTES,
+            max_space_bytes: DEFAULT_MAX_BYTES / 4,
             max_age: Duration::from_secs(86_400),
             kafka_topics: None,
             mqtt_topics: None,
@@ -199,6 +206,9 @@ impl Default for CaptureConfig {
         }
     }
 }
+
+/// Default of `FASTMOCK_CAPTURE_MAX_BYTES`: 256 MiB.
+pub const DEFAULT_MAX_BYTES: u64 = 256 * 1024 * 1024;
 
 /// A stable id for a source defined in the configuration: derived from its space and name.
 pub fn config_source_id(space: Option<&str>, name: &str) -> Uuid {
@@ -259,11 +269,14 @@ pub fn capture_settings(get: Get) -> anyhow::Result<CaptureConfig> {
             );
         }
     }
+    let max_bytes: u64 = number(get, "CAPTURE_MAX_BYTES", d.max_bytes)?;
     let cfg = CaptureConfig {
         enabled,
         max_sources: number(get, "CAPTURE_MAX_SOURCES", d.max_sources)?,
         max_messages: number(get, "CAPTURE_MAX_MESSAGES", d.max_messages)?,
         max_message_bytes: number(get, "CAPTURE_MAX_MESSAGE_BYTES", d.max_message_bytes)?,
+        max_bytes,
+        max_space_bytes: number(get, "CAPTURE_MAX_SPACE_BYTES", max_bytes / 4)?,
         max_age: duration(get, "CAPTURE_MAX_AGE", "24h")?,
         kafka_topics: get("CAPTURE_KAFKA_TOPICS").map(|v| list(&v)),
         mqtt_topics: get("CAPTURE_MQTT_TOPICS").map(|v| list(&v)),
@@ -278,6 +291,17 @@ pub fn capture_settings(get: Get) -> anyhow::Result<CaptureConfig> {
     }
     if !(1..=16 * 1024 * 1024).contains(&cfg.max_message_bytes) {
         bail!("FASTMOCK_CAPTURE_MAX_MESSAGE_BYTES must be between 1 and 16777216");
+    }
+    if !(1024 * 1024..=1024 * 1024 * 1024 * 1024).contains(&cfg.max_bytes) {
+        bail!(
+            "FASTMOCK_CAPTURE_MAX_BYTES must be between 1048576 (1 MiB) and 1099511627776 (1 TiB)"
+        );
+    }
+    if cfg.max_space_bytes < 64 * 1024 || cfg.max_space_bytes > cfg.max_bytes {
+        bail!(
+            "FASTMOCK_CAPTURE_MAX_SPACE_BYTES must be between 65536 and FASTMOCK_CAPTURE_MAX_BYTES ({})",
+            cfg.max_bytes
+        );
     }
     if cfg.max_age.is_zero() {
         bail!("FASTMOCK_CAPTURE_MAX_AGE must be positive");
@@ -411,5 +435,27 @@ mod tests {
         .unwrap_err();
         assert!(e.to_string().contains("twice"));
         assert!(capture_settings(&vars(&[("CAPTURE_MAX_MESSAGES", "0")])).is_err());
+    }
+
+    #[test]
+    fn capture_storage_has_byte_budgets() {
+        let c = capture_settings(&vars(&[])).unwrap();
+        assert_eq!(c.max_bytes, 256 * 1024 * 1024);
+        assert_eq!(c.max_space_bytes, 64 * 1024 * 1024);
+        let c = capture_settings(&vars(&[("CAPTURE_MAX_BYTES", "8388608")])).unwrap();
+        assert_eq!(c.max_space_bytes, 2 * 1024 * 1024);
+        let c = capture_settings(&vars(&[
+            ("CAPTURE_MAX_BYTES", "8388608"),
+            ("CAPTURE_MAX_SPACE_BYTES", "8388608"),
+        ]))
+        .unwrap();
+        assert_eq!(c.max_space_bytes, 8 * 1024 * 1024);
+        assert!(capture_settings(&vars(&[("CAPTURE_MAX_BYTES", "1000")])).is_err());
+        let e = capture_settings(&vars(&[
+            ("CAPTURE_MAX_BYTES", "8388608"),
+            ("CAPTURE_MAX_SPACE_BYTES", "9000000"),
+        ]))
+        .unwrap_err();
+        assert!(e.to_string().contains("FASTMOCK_CAPTURE_MAX_SPACE_BYTES"));
     }
 }

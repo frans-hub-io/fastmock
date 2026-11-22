@@ -134,6 +134,7 @@ messaging:
       maxSources: 50
       maxMessages: 1000
       maxMessageBytes: 1048576
+      maxBytes: 268435456
       maxAge: 24h
     allowedKafkaTopics: []
     allowedMqttTopics: []

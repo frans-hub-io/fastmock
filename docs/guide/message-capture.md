@@ -38,14 +38,27 @@ to: `FASTMOCK_KAFKA_*` ([Kafka](kafka.md#server-settings)), `FASTMOCK_MQTT_*` an
 | `FASTMOCK_CAPTURE_MAX_SOURCES` | `50` | Sources in total (configuration and API), 1..1000. |
 | `FASTMOCK_CAPTURE_MAX_MESSAGES` | `1000` | Messages kept per source, oldest dropped first, 1..100000. A source may ask for fewer (`maxMessages`). |
 | `FASTMOCK_CAPTURE_MAX_MESSAGE_BYTES` | `1048576` | Body bytes kept per message; longer bodies are cut and marked `truncated` (`size` keeps the full length). At most 16 MiB. |
+| `FASTMOCK_CAPTURE_MAX_BYTES` | `268435456` (256 MiB) | Bytes of all stored messages (bodies, topics, keys, headers and properties); beyond it the oldest messages are removed. 1 MiB to 1 TiB. |
+| `FASTMOCK_CAPTURE_MAX_SPACE_BYTES` | a quarter of `FASTMOCK_CAPTURE_MAX_BYTES` | Bytes of the stored messages of one space, and of the global area; beyond it the oldest messages of that space are removed. At least 64 KiB, at most `FASTMOCK_CAPTURE_MAX_BYTES`. |
 | `FASTMOCK_CAPTURE_MAX_AGE` | `24h` | Messages older than this are removed once a minute. |
-| `FASTMOCK_CAPTURE_KAFKA_TOPICS` | none (any) | Allow-list of topics sources may read: names or `prefix*`. |
-| `FASTMOCK_CAPTURE_MQTT_TOPICS` | none (any) | Allow-list of MQTT topic filters sources may use (`devices/*` allows `devices/+/state`; `#` needs `#` or `*`). |
-| `FASTMOCK_CAPTURE_AMQP_EXCHANGES` | none (any) | Allow-list of exchanges sources may bind to. |
+| `FASTMOCK_CAPTURE_KAFKA_TOPICS` | none | Allow-list of topics sources may read: names, `prefix*`, or `*` for every topic. |
+| `FASTMOCK_CAPTURE_MQTT_TOPICS` | none | Allow-list of MQTT topic filters sources may use (`devices/*` allows `devices/+/state`; `#` needs `#` or `*`). |
+| `FASTMOCK_CAPTURE_AMQP_EXCHANGES` | none | Allow-list of exchanges sources may bind to. |
 
-The allow-lists limit what a token with `messages:write` can read through FastMock's broker credentials; set them in
-shared brokers. A start with an invalid source, a source whose broker is not configured, a source outside an
-allow-list or a space the access file does not define stops with an error naming it.
+The allow-lists limit what a token with `messages:write` can read through FastMock's broker credentials. Sources
+created through the API need the allow-list of their protocol: without `FASTMOCK_CAPTURE_KAFKA_TOPICS`, for example,
+`PUT /capture/sources/...` with a Kafka source answers `400` naming the variable. Set it to the topics your tests
+read, or to `*` on a broker that only test applications use. Sources from the configuration (`FASTMOCK_CAPTURE_SOURCES`,
+`FASTMOCK_CAPTURE_SOURCES_FILE`) need no allow-list, but must match one when it is set. The allow-lists apply to
+every space alike: a token with `messages:write` in any space may read every allowed destination, so keep them as
+narrow as your tests allow.
+
+Whatever the allow-lists say, sources never read broker internals: MQTT filters starting with `$` (`$SYS/#`, shared
+subscriptions `$share/<group>/...`, which would take messages away from the application's subscribers), Kafka topics
+starting with `__` (`__consumer_offsets`, `__transaction_state`) and AMQP exchanges `amq.rabbitmq.*` are refused.
+
+A start with an invalid source, a source whose broker is not configured, a source outside an allow-list or a space
+the access file does not define stops with an error naming it.
 
 ## Capture sources
 
@@ -55,10 +68,10 @@ A source subscribes to one broker and stores what it receives in its space:
 |---|---|---|
 | `name` | all | 1..64 characters of `a-z 0-9 . _ -`, unique in the space. Filters and matchers use it. |
 | `protocol` | all | `kafka`, `mqtt` or `amqp`. |
-| `topics` | Kafka, MQTT | Kafka topics, or MQTT topic filters with `+` and `#`; at most 20. |
+| `topics` | Kafka, MQTT | Kafka topics, or MQTT topic filters with `+` and `#`; at most 20. Not Kafka internal topics (`__*`) nor MQTT filters starting with `$`. |
 | `startFrom` | Kafka | `latest` (default): only messages published after the source started; `earliest`: the whole topic first. |
 | `qos` | MQTT | Subscription QoS, default `1`. A message is delivered with the lower of its QoS and this one. |
-| `exchange` | AMQP | A named exchange (not the default exchange, which cannot be bound). |
+| `exchange` | AMQP | A named exchange (not the default exchange, which cannot be bound, nor `amq.rabbitmq.*`). |
 | `bindingKeys` | AMQP | Binding keys of FastMock's queue, default `["#"]` (everything on a topic exchange; ignored by fanout exchanges). |
 | `maxMessages` | all | Messages kept, at most `FASTMOCK_CAPTURE_MAX_MESSAGES`. |
 | `enabled` | all | `false` keeps the source and its messages but stops the subscription. |
@@ -99,7 +112,7 @@ across restarts):
 | `GET /capture/sources` | `messages:read` | Sources with their state, message counts and the limits. |
 | `GET /capture/sources/{id}` | `messages:read` | One source. |
 | `PUT /capture/sources/{id}` | `messages:write` | Create or replace (audit `capture.source.put`). Sources from the configuration answer `409`. |
-| `DELETE /capture/sources/{id}` | `messages:write` | Delete (audit `capture.source.delete`); `?purge=true` also deletes its messages (needs `messages:delete`). |
+| `DELETE /capture/sources/{id}` | `messages:write` | Delete (audit `capture.source.delete`); `?purge=true` also deletes its messages and needs `messages:delete`, checked before anything is deleted. Without `purge`, the messages stay until the age limit or the byte budgets remove them. |
 
 Every source in a list has a `status`:
 
@@ -113,8 +126,10 @@ Every source in a list has a `status`:
 ```
 
 `state` is `running` (subscribed), `connecting`, `error` (with `lastError`, for example
-`exchange billing does not exist` or `FASTMOCK_MQTT_URL is not configured`), `disabled`, or `stopped` (no replica
-runs it yet, for example in the first seconds after a start). `connects` above 1 means the consumer reconnected.
+`exchange billing does not exist`, `FASTMOCK_MQTT_URL is not configured`, `broker connection refused` or
+`TLS handshake failed`), `disabled`, or `stopped` (no replica runs it yet, for example in the first seconds after a
+start). `lastError` is a short description that names no broker address, certificate detail or broker response;
+the server log of the leading replica has the full error. `connects` above 1 means the consumer reconnected.
 Changes take effect within about 5 seconds.
 
 ## How each broker is read
@@ -177,7 +192,7 @@ Kafka headers, MQTT 5 user properties or AMQP headers (values as text; a name pr
 | `json` | The body is JSON. | The JSON value. |
 | `avro` | The body is Confluent-framed Avro (byte 0, then the schema id) and `FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL` knows the id. | The record as JSON, with `schemaId`. |
 | `text` | Other UTF-8 text (also a truncated JSON body). | The text. |
-| `base64` | Binary data, or Avro that cannot be decoded (then `error` says why). | The base64 of the bytes. |
+| `base64` | Binary data, or Avro that cannot be decoded (then `error` says why, for example `schema registry returned 404 Not Found for schema id 7`). | The base64 of the bytes. |
 | `empty` | No body. | `""` |
 
 ```json
@@ -325,19 +340,27 @@ replicas it reads the store again every 500 ms. With `FASTMOCK_STORAGE=memory` t
 | messages per source | 1000, oldest dropped first (`FASTMOCK_CAPTURE_MAX_MESSAGES`, or the source's `maxMessages`) |
 | body bytes per message | 1 MiB, longer bodies cut and marked `truncated` (`FASTMOCK_CAPTURE_MAX_MESSAGE_BYTES`) |
 | age | 24 hours (`FASTMOCK_CAPTURE_MAX_AGE`), removed once a minute |
-| headers per message | 100, values up to 8 KiB |
+| stored bytes | 256 MiB in all (`FASTMOCK_CAPTURE_MAX_BYTES`), 64 MiB per space and for the global area (`FASTMOCK_CAPTURE_MAX_SPACE_BYTES`); the oldest messages are removed first, also those of deleted sources |
+| topic, key, headers and properties per message | 64 KiB together; topics and keys up to 4 KiB, at most 100 headers, header and property values up to 8 KiB; what does not fit is dropped and the message marked `truncated` |
 | topics, filters or binding keys per source | 20 |
-| buffered messages per source | 4096 between the broker and the store; beyond, messages are dropped and counted |
+| buffered messages per source | 4096 messages and 16 MiB (at least two messages of the largest size) between the broker and the store, counted after cutting; beyond, messages are dropped and counted in `dropped` |
+| MQTT packets of capture connections | `FASTMOCK_CAPTURE_MAX_MESSAGE_BYTES` + 1 MiB, at most 16 MiB; MQTT 5 brokers do not send larger messages to FastMock, an MQTT 3.1.1 connection that receives one reconnects |
 | AMQP capture queue | `x-max-length` 10000 at the broker |
 | list page | 1 to 500 |
-| find, wait, verify | 10,000 stored messages scanned (`422` beyond; narrow with `space` or `since`); 4 scans at a time per replica (`503` beyond) |
+| find, wait, verify | 10,000 stored messages looked at and 64 MiB of bodies loaded, counting only the bodies of messages that meet the other conditions (`422` beyond; narrow with `space`, `since`, or conditions on source, topic or headers) |
+| concurrent find, wait, verify | 8 per replica, at most 2 of them per space (or, for reads across spaces, per caller); a request waits up to 5 s for a slot, then `503` |
+| Avro bodies | decoded only for JSON body matchers (`equalToJson`, `jsonPath`, `jsonSchema`); at most 16 schema registry requests per find, wait or verify; a failed lookup is answered from memory for 30 s |
 | wait | 1 to 500 messages, 60 s |
+
+Verification reports near misses from the messages it looked at. Body conditions are checked only on messages that
+meet the other conditions, so a near miss that fails, say, `topic` lists `topic` alone, and its score counts its
+body conditions as failed.
 
 ## Metrics
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `fastmock_capture_messages_total` | counter | `protocol`, `result` = `stored`, `truncated`, `dropped` | Captured messages (`truncated` also counts as `stored`; `dropped`: the buffer was full or storing failed). |
+| `fastmock_capture_messages_total` | counter | `protocol`, `result` = `stored`, `truncated`, `dropped`, `evicted` | Captured messages (`truncated` also counts as `stored`; `dropped`: the buffer was full or storing failed; `evicted`: removed to stay within the byte budgets or the per-source count). |
 | `fastmock_capture_leader` | gauge | | `1` on the replica that runs the consumers. |
 | `fastmock_capture_sources_active` | gauge | | Consumers running on the leader. |
 | `fastmock_capture_waits_total` | counter | `result` = `found`, `timeout` | Finished waits. |
@@ -358,6 +381,9 @@ warnings when a consumer is interrupted (`... capture interrupted`, with `retry_
 | `state: error`, `the broker refused the subscription to ...` | The MQTT broker's ACL denies the filter to FastMock's user. |
 | `state: error`, `Kafka topic ... does not exist` | Create the topic. |
 | `wait` answers `408` although the message is listed | It arrived before the wait started: pass `since` or `includeExisting: true`. |
+| `PUT /capture/sources/...` answers `400 capture sources created through the API need FASTMOCK_CAPTURE_..._TOPICS` | Set the allow-list of the protocol (`*` allows every name). |
+| find, wait or verify answers `422 the messages to check hold more than 64 MiB of bodies` | Add conditions on source, topic or headers, or `since`: only the bodies of messages that meet them are read. |
+| Old messages disappear before `FASTMOCK_CAPTURE_MAX_AGE` | The byte budgets are reached; raise `FASTMOCK_CAPTURE_MAX_BYTES` or `FASTMOCK_CAPTURE_MAX_SPACE_BYTES`, or delete messages between tests. |
 | A Kafka message published right after creating the source is missing | The source starts at the latest offsets once it runs (`state: running`, within about 5 s); wait for it, or use `startFrom: earliest`. |
 | `body.encoding` is `base64` with `error` for Avro | Set `FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL`, or the body was truncated. |
 | `dropped` grows | The broker delivers faster than the store writes; reduce the topics or raise the database capacity. |

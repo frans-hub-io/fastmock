@@ -13,11 +13,15 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use fastmock_brokers::amqp::AmqpCapture;
 use fastmock_brokers::mqtt::MqttConnection;
-use fastmock_brokers::{Backoff, LinkStatus, Received, text_or_hex};
+use fastmock_brokers::{
+    Backoff, CaptureLimits, CaptureQueue, CaptureSink, LinkStatus, MAX_CAPTURE_META_BYTES,
+    MAX_CAPTURE_NAME_BYTES, MAX_CAPTURE_VALUE_BYTES, Offer, Received, capture_channel,
+    text_or_hex_capped,
+};
 use fastmock_core::MessageProtocol;
-use fastmock_core::capture::{CaptureSource, CapturedMessage, StartFrom};
+use fastmock_core::capture::{CaptureSource, CapturedMessage, InsertLimits, StartFrom};
 use serde_json::json;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tokio::time::Instant;
 use uuid::Uuid;
 
@@ -25,10 +29,19 @@ use super::{CaptureService, LEASE_KEY, STATUS_PREFIX, SourceStatus, load_sources
 use crate::asyncmock::Leader;
 use crate::state::AppState;
 
-const MAX_HEADERS: usize = 100;
-const MAX_HEADER_VALUE: usize = 8192;
 /// Messages a consumer buffers between the broker and the store.
 const BUFFER: usize = 4096;
+/// Bytes a consumer buffers between the broker and the store (at least two messages of the largest size).
+const BUFFER_BYTES: usize = 16 * 1024 * 1024;
+
+/// The queue bounds of a consumer.
+pub fn queue_limits(max_message_bytes: usize) -> CaptureLimits {
+    CaptureLimits {
+        max_messages: BUFFER,
+        max_bytes: BUFFER_BYTES.max(2 * (max_message_bytes + MAX_CAPTURE_META_BYTES + 1024)),
+        max_payload: max_message_bytes,
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct RuntimeOptions {
@@ -74,6 +87,8 @@ struct Consumer {
     fingerprint: String,
     stop: watch::Sender<bool>,
     stats: Arc<Stats>,
+    /// Messages the queue between the broker and the store dropped.
+    queue_dropped: Arc<AtomicU64>,
     link: Link,
     since: DateTime<Utc>,
 }
@@ -99,7 +114,8 @@ impl Consumer {
             last_error: l.last_error,
             connects: l.connects,
             received: self.stats.received.load(Ordering::Relaxed),
-            dropped: self.stats.dropped.load(Ordering::Relaxed),
+            dropped: self.stats.dropped.load(Ordering::Relaxed)
+                + self.queue_dropped.load(Ordering::Relaxed),
             last_message_at: *self.stats.last_at.lock().unwrap_or_else(|e| e.into_inner()),
             since: Some(self.since),
             stored: 0,
@@ -107,27 +123,15 @@ impl Consumer {
     }
 }
 
-/// A received message as stored: the body cut to the limit, headers joined and bounded.
-pub fn convert(svc: &CaptureService, src: &CaptureSource, r: Received) -> CapturedMessage {
-    let size = r.payload.len();
-    let max = svc.config.max_message_bytes;
-    let truncated = size > max;
-    let mut body = r.payload;
-    if truncated {
-        body.truncate(max);
-    }
+/// A received message as stored: bounded ([`Received::bound`], already done before queueing), repeated
+/// headers joined.
+pub fn convert(svc: &CaptureService, src: &CaptureSource, mut r: Received) -> CapturedMessage {
+    r.bound(svc.config.max_message_bytes);
+    let size = r.size;
+    let truncated = r.truncated;
+    let body = r.payload;
     let mut headers: BTreeMap<String, String> = BTreeMap::new();
-    for (k, mut v) in r.headers.into_iter() {
-        if headers.len() >= MAX_HEADERS && !headers.contains_key(&k) {
-            continue;
-        }
-        if v.len() > MAX_HEADER_VALUE {
-            let mut cut = MAX_HEADER_VALUE;
-            while !v.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            v.truncate(cut);
-        }
+    for (k, v) in r.headers.into_iter() {
         headers
             .entry(k)
             .and_modify(|e| {
@@ -150,7 +154,9 @@ pub fn convert(svc: &CaptureService, src: &CaptureSource, r: Received) -> Captur
         protocol: src.protocol,
         topic: r.topic,
         exchange: r.exchange,
-        key: r.key.map(|k| text_or_hex(&k)),
+        key: r
+            .key
+            .map(|k| text_or_hex_capped(&k, 2 * MAX_CAPTURE_NAME_BYTES)),
         headers,
         properties: r.properties,
         content_type,
@@ -165,14 +171,18 @@ pub fn convert(svc: &CaptureService, src: &CaptureSource, r: Received) -> Captur
 async fn store_loop(
     svc: Arc<CaptureService>,
     src: CaptureSource,
-    mut rx: mpsc::Receiver<Received>,
+    mut rx: CaptureQueue,
     stats: Arc<Stats>,
     mut stopped: watch::Receiver<bool>,
 ) {
-    let keep = src
-        .max_messages
-        .unwrap_or(svc.config.max_messages)
-        .min(svc.config.max_messages);
+    let limits = InsertLimits {
+        keep: src
+            .max_messages
+            .unwrap_or(svc.config.max_messages)
+            .min(svc.config.max_messages),
+        area_bytes: svc.config.max_space_bytes,
+        total_bytes: svc.config.max_bytes,
+    };
     let protocol = src.protocol.as_str();
     let mut batch = Vec::with_capacity(200);
     loop {
@@ -186,8 +196,12 @@ async fn store_loop(
         }
         let msgs: Vec<CapturedMessage> = batch.drain(..).map(|r| convert(&svc, &src, r)).collect();
         let truncated = msgs.iter().filter(|m| m.truncated).count() as u64;
-        match svc.store.insert(&msgs, keep).await {
-            Ok(_) => {
+        match svc.store.insert(&msgs, &limits).await {
+            Ok(evicted) => {
+                if evicted > 0 {
+                    metrics::counter!("fastmock_capture_messages_total", "protocol" => protocol, "result" => "evicted")
+                        .increment(evicted);
+                }
                 metrics::counter!("fastmock_capture_messages_total", "protocol" => protocol, "result" => "stored")
                     .increment(msgs.len() as u64);
                 if truncated > 0 {
@@ -219,7 +233,7 @@ async fn kafka_consume(
     settings: fastmock_kafka::KafkaSettings,
     src: CaptureSource,
     max_bytes: usize,
-    tx: mpsc::Sender<Received>,
+    tx: CaptureSink,
     status: Arc<Mutex<LinkStatus>>,
     mut stop: watch::Receiver<bool>,
 ) {
@@ -264,17 +278,14 @@ async fn kafka_consume(
                             headers: rec
                                 .headers
                                 .into_iter()
-                                .map(|(k, v)| (k, text_or_hex(&v)))
+                                .take(fastmock_brokers::MAX_CAPTURE_HEADERS)
+                                .map(|(k, v)| (k, text_or_hex_capped(&v, MAX_CAPTURE_VALUE_BYTES)))
                                 .collect(),
                             properties,
                             ..Default::default()
                         };
-                        match tx.try_send(m) {
-                            Ok(()) => {}
-                            Err(mpsc::error::TrySendError::Full(_)) => {
-                                metrics::counter!("fastmock_capture_messages_total", "protocol" => "kafka", "result" => "dropped").increment(1);
-                            }
-                            Err(mpsc::error::TrySendError::Closed(_)) => return Ok(()),
+                        if tx.offer(m) == Offer::Closed {
+                            return Ok(());
                         }
                     }
                 }
@@ -286,7 +297,7 @@ async fn kafka_consume(
             let was = s.connected;
             s.connected = false;
             if let Err(e) = &r {
-                s.last_error = Some(format!("{e:#}"));
+                s.last_error = Some(fastmock_brokers::public_message(e));
             }
             was
         };
@@ -319,69 +330,70 @@ fn blocker(app: &AppState, svc: &CaptureService, s: &CaptureSource) -> Option<St
 }
 
 fn start(app: &AppState, svc: &Arc<CaptureService>, s: &CaptureSource) -> anyhow::Result<Consumer> {
-    let (tx, rx) = mpsc::channel::<Received>(BUFFER);
+    let (tx, rx) = capture_channel(
+        s.protocol.as_str(),
+        queue_limits(svc.config.max_message_bytes),
+    );
+    let queue_dropped = tx.dropped_counter();
     let (stop, stopped) = watch::channel(false);
     let stats = Arc::new(Stats::default());
-    let link = match s.protocol {
-        MessageProtocol::Mqtt => {
-            let settings = app
-                .cfg
-                .mqtt
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("FASTMOCK_MQTT_URL is not configured"))?;
-            let filters = s
-                .topics
-                .iter()
-                .map(|t| (t.clone(), s.qos.unwrap_or(1)))
-                .collect();
-            Link::Mqtt(MqttConnection::start(
-                &settings,
-                settings.client_id("cap"),
-                filters,
-                Some(tx),
-            )?)
-        }
-        MessageProtocol::Amqp => {
-            let settings = app
-                .cfg
-                .amqp
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("FASTMOCK_AMQP_URL is not configured"))?;
-            let status = Arc::new(Mutex::new(LinkStatus::default()));
-            tokio::spawn(fastmock_brokers::amqp::consume(
-                settings,
-                AmqpCapture {
-                    exchange: s.exchange.clone().unwrap_or_default(),
-                    binding_keys: s.binding_keys.clone(),
-                    max_queue_length: 10_000,
-                    label: s.name.clone(),
-                },
-                tx,
-                status.clone(),
-                stopped.clone(),
-            ));
-            Link::Shared(status)
-        }
-        MessageProtocol::Kafka => {
-            let mut settings = app
-                .kafka
-                .settings()
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("FASTMOCK_KAFKA_BOOTSTRAP is not configured"))?;
-            settings.client_id = "fastmock-capture".into();
-            settings.create_topics = None;
-            let status = Arc::new(Mutex::new(LinkStatus::default()));
-            tokio::spawn(kafka_consume(
-                settings,
-                s.clone(),
-                svc.config.max_message_bytes,
-                tx,
-                status.clone(),
-                stopped.clone(),
-            ));
-            Link::Shared(status)
-        }
-    };
+    let link =
+        match s.protocol {
+            MessageProtocol::Mqtt => {
+                let mut settings = app.cfg.mqtt.clone().ok_or_else(|| {
+                    fastmock_brokers::public("FASTMOCK_MQTT_URL is not configured")
+                })?;
+                settings.max_packet_bytes =
+                    fastmock_brokers::mqtt::capture_packet_limit(svc.config.max_message_bytes);
+                let filters = s
+                    .topics
+                    .iter()
+                    .map(|t| (t.clone(), s.qos.unwrap_or(1)))
+                    .collect();
+                Link::Mqtt(MqttConnection::start(
+                    &settings,
+                    settings.client_id("cap"),
+                    filters,
+                    Some(tx),
+                )?)
+            }
+            MessageProtocol::Amqp => {
+                let settings = app.cfg.amqp.clone().ok_or_else(|| {
+                    fastmock_brokers::public("FASTMOCK_AMQP_URL is not configured")
+                })?;
+                let status = Arc::new(Mutex::new(LinkStatus::default()));
+                tokio::spawn(fastmock_brokers::amqp::consume(
+                    settings,
+                    AmqpCapture {
+                        exchange: s.exchange.clone().unwrap_or_default(),
+                        binding_keys: s.binding_keys.clone(),
+                        max_queue_length: 10_000,
+                        label: s.name.clone(),
+                    },
+                    tx,
+                    status.clone(),
+                    stopped.clone(),
+                ));
+                Link::Shared(status)
+            }
+            MessageProtocol::Kafka => {
+                let mut settings = app.kafka.settings().cloned().ok_or_else(|| {
+                    fastmock_brokers::public("FASTMOCK_KAFKA_BOOTSTRAP is not configured")
+                })?;
+                settings.client_id = "fastmock-capture".into();
+                settings.create_topics = None;
+                let status = Arc::new(Mutex::new(LinkStatus::default()));
+                tokio::spawn(kafka_consume(
+                    settings,
+                    s.clone(),
+                    svc.config.max_message_bytes,
+                    tx,
+                    status.clone(),
+                    stopped.clone(),
+                ));
+                Link::Shared(status)
+            }
+        };
     tokio::spawn(store_loop(
         svc.clone(),
         s.clone(),
@@ -393,6 +405,7 @@ fn start(app: &AppState, svc: &Arc<CaptureService>, s: &CaptureSource) -> anyhow
         fingerprint: s.fingerprint(),
         stop,
         stats,
+        queue_dropped,
         link,
         since: Utc::now(),
     })
@@ -491,14 +504,17 @@ pub async fn run_with(app: AppState, mut shutdown: watch::Receiver<bool>, opts: 
                     tracing::info!(source = %s.name, protocol = %s.protocol, "capture consumer started");
                     running.insert(*id, c);
                 }
-                Err(e) => statuses.push((
-                    *id,
-                    SourceStatus {
-                        state: "error".into(),
-                        last_error: Some(format!("{e:#}")),
-                        ..Default::default()
-                    },
-                )),
+                Err(e) => {
+                    tracing::warn!(source = %s.name, error = %format!("{e:#}"), "capture consumer could not start");
+                    statuses.push((
+                        *id,
+                        SourceStatus {
+                            state: "error".into(),
+                            last_error: Some(fastmock_brokers::public_message(&e)),
+                            ..Default::default()
+                        },
+                    ))
+                }
             }
         }
         metrics::gauge!("fastmock_capture_sources_active").set(running.len() as f64);
@@ -566,5 +582,30 @@ mod tests {
         assert_eq!(m.key.as_deref(), Some("ff"));
         assert_eq!(m.space.as_deref(), Some("billing"));
         assert_eq!(m.preview.as_deref(), Some("abcd"));
+        let repeated = convert(
+            &svc,
+            &src,
+            Received {
+                topic: "t".into(),
+                headers: (0..1000)
+                    .map(|_| ("a".to_string(), "v".repeat(8192)))
+                    .collect(),
+                ..Default::default()
+            },
+        );
+        assert!(repeated.headers["a"].len() <= MAX_CAPTURE_META_BYTES);
+        assert!(repeated.truncated);
+        assert!(repeated.stored_bytes() < 2 * MAX_CAPTURE_META_BYTES as u64);
+    }
+
+    #[test]
+    fn mqtt_capture_connections_take_smaller_packets() {
+        let l = queue_limits(1024 * 1024);
+        assert_eq!(l.max_payload, 1024 * 1024);
+        assert!(l.max_bytes >= 2 * 1024 * 1024);
+        assert_eq!(
+            fastmock_brokers::mqtt::capture_packet_limit(1024 * 1024),
+            2 * 1024 * 1024
+        );
     }
 }

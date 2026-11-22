@@ -1,6 +1,6 @@
 //! Captured broker messages in PostgreSQL: [`PgCaptureStore`] implements [`CaptureStore`] on the table of
-//! migration 0016. The body is `bytea`; everything else of a message is one `jsonb` column, with the
-//! space, source, protocol, topic and time as columns for filters and retention.
+//! migrations 0016 and 0017. The body is `bytea`; everything else of a message is one `jsonb` column, with
+//! the space, source, protocol, topic, time and counted bytes as columns for filters and retention.
 
 use std::collections::HashMap;
 
@@ -9,7 +9,9 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use fastmock_core::SpaceFilter;
 use fastmock_core::StoreResult;
-use fastmock_core::capture::{CapturePage, CaptureQuery, CaptureStore, CapturedMessage, MAX_PAGE};
+use fastmock_core::capture::{
+    CapturePage, CaptureQuery, CaptureStore, CapturedMessage, InsertLimits, MAX_PAGE,
+};
 use serde_json::Value;
 use sqlx::{PgPool, Postgres, QueryBuilder, Row};
 use uuid::Uuid;
@@ -78,16 +80,17 @@ fn row_message(row: &sqlx::postgres::PgRow, with_body: bool) -> StoreResult<Capt
 
 #[async_trait]
 impl CaptureStore for PgCaptureStore {
-    async fn insert(&self, msgs: &[CapturedMessage], keep: usize) -> StoreResult<u64> {
+    async fn insert(&self, msgs: &[CapturedMessage], limits: &InsertLimits) -> StoreResult<u64> {
         if msgs.is_empty() {
             return Ok(0);
         }
         let mut tx = self.pool.begin().await?;
         let mut sources = Vec::new();
+        let mut areas: Vec<Option<String>> = Vec::new();
         for m in msgs {
             sqlx::query(
-                "insert into fm_captured_messages (id, space, source_id, protocol, topic, received_at, entry, body)
-                 values ($1, $2, $3, $4, $5, $6, $7, $8) on conflict (id) do nothing",
+                "insert into fm_captured_messages (id, space, source_id, protocol, topic, received_at, entry, body, bytes)
+                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9) on conflict (id) do nothing",
             )
             .bind(m.id)
             .bind(m.space.as_deref().map(no_nul))
@@ -97,13 +100,18 @@ impl CaptureStore for PgCaptureStore {
             .bind(m.received_at)
             .bind(entry(m)?)
             .bind(m.body.as_ref())
+            .bind(i64::try_from(m.stored_bytes()).unwrap_or(i64::MAX))
             .execute(&mut *tx)
             .await?;
             if !sources.contains(&m.source_id) {
                 sources.push(m.source_id);
             }
+            let area = m.space.as_deref().map(no_nul);
+            if !areas.contains(&area) {
+                areas.push(area);
+            }
         }
-        let keep = i64::try_from(keep.max(1)).unwrap_or(i64::MAX);
+        let keep = i64::try_from(limits.keep.max(1)).unwrap_or(i64::MAX);
         let mut dropped = 0;
         for s in sources {
             let r = sqlx::query(
@@ -117,8 +125,72 @@ impl CaptureStore for PgCaptureStore {
             .await?;
             dropped += r.rows_affected();
         }
+        let cap = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
+        for area in areas {
+            let used: i64 = sqlx::query_scalar(
+                "select coalesce(sum(bytes), 0)::bigint from fm_captured_messages where space is not distinct from $1",
+            )
+            .bind(&area)
+            .fetch_one(&mut *tx)
+            .await?;
+            if used > cap(limits.area_bytes) {
+                let r = sqlx::query(
+                    "delete from fm_captured_messages where id in (
+                        select id from (
+                            select id, sum(bytes) over (order by id) - bytes as before
+                            from fm_captured_messages where space is not distinct from $1
+                        ) t where before < $2
+                     )",
+                )
+                .bind(&area)
+                .bind(used - cap(limits.area_bytes))
+                .execute(&mut *tx)
+                .await?;
+                dropped += r.rows_affected();
+            }
+        }
+        let used: i64 =
+            sqlx::query_scalar("select coalesce(sum(bytes), 0)::bigint from fm_captured_messages")
+                .fetch_one(&mut *tx)
+                .await?;
+        if used > cap(limits.total_bytes) {
+            let r = sqlx::query(
+                "delete from fm_captured_messages where id in (
+                    select id from (
+                        select id, sum(bytes) over (order by id) - bytes as before from fm_captured_messages
+                    ) t where before < $1
+                 )",
+            )
+            .bind(used - cap(limits.total_bytes))
+            .execute(&mut *tx)
+            .await?;
+            dropped += r.rows_affected();
+        }
         tx.commit().await?;
         Ok(dropped)
+    }
+
+    async fn bodies(&self, ids: &[Uuid]) -> StoreResult<HashMap<Uuid, Bytes>> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows: Vec<(Uuid, Vec<u8>)> =
+            sqlx::query_as("select id, body from fm_captured_messages where id = any($1)")
+                .bind(ids.to_vec())
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, b)| (id, Bytes::from(b)))
+            .collect())
+    }
+
+    async fn total_bytes(&self) -> StoreResult<u64> {
+        let n: i64 =
+            sqlx::query_scalar("select coalesce(sum(bytes), 0)::bigint from fm_captured_messages")
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(n.max(0) as u64)
     }
 
     async fn get(&self, id: Uuid, spaces: &SpaceFilter) -> StoreResult<Option<CapturedMessage>> {

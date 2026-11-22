@@ -147,6 +147,12 @@ tests:
           path: data.FASTMOCK_CAPTURE_MAX_AGE
           value: 12h
       - equal:
+          path: data.FASTMOCK_CAPTURE_MAX_BYTES
+          value: "67108864"
+      - equal:
+          path: data.FASTMOCK_CAPTURE_MAX_SPACE_BYTES
+          value: "16777216"
+      - equal:
           path: data.FASTMOCK_CAPTURE_KAFKA_TOPICS
           value: orders.*
       - equal:
@@ -177,6 +183,11 @@ tests:
       - equal:
           path: data.FASTMOCK_CAPTURE_MAX_AGE
           value: 24h
+      - equal:
+          path: data.FASTMOCK_CAPTURE_MAX_BYTES
+          value: "268435456"
+      - notExists:
+          path: data.FASTMOCK_CAPTURE_MAX_SPACE_BYTES
       - notExists:
           path: data.FASTMOCK_CAPTURE_SOURCES_FILE
       - notExists:
@@ -204,23 +215,21 @@ tests:
                 name: fastmock-amqp
                 key: amqp-password
 
-  - it: gives the MQTT TLS bridge a writable /tmp only with mqtts
+  - it: needs no writable /tmp for the MQTT TLS bridge
     template: templates/deployment.yaml
     values:
       - ../ci/brokers-values.yaml
     asserts:
-      - contains:
+      - notContains:
           path: spec.template.spec.volumes
+          any: true
           content:
             name: tmp
-            emptyDir:
-              medium: Memory
-              sizeLimit: 1Mi
-      - contains:
+      - notContains:
           path: spec.template.spec.containers[0].volumeMounts
+          any: true
           content:
             name: tmp
-            mountPath: /tmp
 
   - it: needs no /tmp volume for plain MQTT
     template: templates/deployment.yaml

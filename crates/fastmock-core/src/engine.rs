@@ -26,6 +26,19 @@ pub const MAX_SCENARIO_NAME: usize = 512;
 pub const MAX_TTL_SECS: u64 = 365 * 24 * 3600;
 pub const DEFAULT_SCENARIO_TTL_SECS: u64 = 7 * 24 * 3600;
 pub const MAX_RESPONSES_PER_STUB: usize = 100;
+/// Messages one stub publishes at most.
+pub const MAX_MESSAGES_PER_STUB: usize = 100;
+/// Headers (MQTT user properties) of one stub message at most.
+pub const MAX_MESSAGE_HEADERS: usize = 100;
+/// Bytes all rendered fields of all messages of one response produce together.
+pub const MAX_MESSAGES_RENDER_BYTES: usize = 16 * 1024 * 1024;
+/// AMQP 0-9-1 short strings (exchange, routing key, message id, ...) and Kafka topic names.
+const AMQP_SHORT: usize = 255;
+const KAFKA_TOPIC: usize = 249;
+/// MQTT UTF-8 strings and binary data.
+const MQTT_STRING: usize = 65_535;
+/// Kafka header names.
+const MAX_HEADER_NAME_BYTES: usize = 1024;
 pub const MAX_DRIBBLE_CHUNKS: u32 = 1000;
 pub const MAX_STATUS_MESSAGE: usize = 256;
 pub const MAX_BODY_FILE_NAME: usize = 512;
@@ -168,6 +181,8 @@ pub struct RenderedMqtt {
 pub struct RenderedAmqp {
     /// As the API names it: empty or `amq.default` is the default exchange.
     pub exchange: String,
+    /// The exchange name was rendered from a template, so it is never declared.
+    pub exchange_templated: bool,
     pub exchange_type: Option<String>,
     /// Declare a missing exchange durable (async mocks may ask for a transient one).
     pub durable: bool,
@@ -441,9 +456,32 @@ impl Engine {
         if stub.ttl_seconds.is_some_and(|x| x == 0 || x > MAX_TTL_SECS) {
             return Err("ttlSeconds must be between 1 and 31536000".into());
         }
+        if stub.messages.len() > MAX_MESSAGES_PER_STUB {
+            return Err(format!("at most {MAX_MESSAGES_PER_STUB} messages per stub"));
+        }
         for (i, m) in stub.messages.iter().enumerate() {
             m.check_fields()
                 .map_err(|e| format!("messages[{i}]: {e}"))?;
+            if m.headers.len() > MAX_MESSAGE_HEADERS {
+                return Err(format!(
+                    "messages[{i}]: at most {MAX_MESSAGE_HEADERS} headers per message"
+                ));
+            }
+            let name_max = match m.protocol {
+                crate::model::MessageProtocol::Amqp => AMQP_SHORT,
+                crate::model::MessageProtocol::Mqtt => MQTT_STRING,
+                crate::model::MessageProtocol::Kafka => MAX_HEADER_NAME_BYTES,
+            };
+            if let Some(k) = m
+                .headers
+                .keys()
+                .find(|k| k.is_empty() || k.len() > name_max)
+            {
+                return Err(format!(
+                    "messages[{i}]: header name `{}` must be 1..{name_max} bytes",
+                    k.chars().take(40).collect::<String>()
+                ));
+            }
             for (name, tpl) in m.template_fields() {
                 t.validate(tpl)
                     .map_err(|x| format!("messages[{i}].{name}: {x}"))?;
@@ -928,63 +966,7 @@ impl Engine {
                 Some(out)
             }
         };
-        let mut messages = Vec::with_capacity(stub.messages.len());
-        for m in &stub.messages {
-            let mut headers = std::collections::BTreeMap::new();
-            for (k, v) in &m.headers {
-                headers.insert(k.clone(), t.render_in(v, ctx)?);
-            }
-            let value = match (&m.json_value, &m.value) {
-                (Some(j), _) => t.render_json_in(j, ctx)?,
-                (None, Some(v)) => Value::String(t.render_in(v, ctx)?),
-                (None, None) => Value::Null,
-            };
-            let opt = |x: &Option<String>| x.as_ref().map(|v| t.render_in(v, ctx)).transpose();
-            let protocol = m.protocol;
-            let (topic, mqtt, amqp) = match protocol {
-                crate::model::MessageProtocol::Kafka => (t.render_in(&m.topic, ctx)?, None, None),
-                crate::model::MessageProtocol::Mqtt => (
-                    t.render_in(&m.topic, ctx)?,
-                    Some(RenderedMqtt {
-                        qos: m.qos.unwrap_or(0),
-                        retain: m.retain.unwrap_or(false),
-                        correlation_data: opt(&m.correlation_data)?,
-                        response_topic: opt(&m.response_topic)?,
-                        message_expiry_seconds: m.message_expiry_seconds,
-                    }),
-                    None,
-                ),
-                crate::model::MessageProtocol::Amqp => (
-                    opt(&m.routing_key)?.unwrap_or_default(),
-                    None,
-                    Some(RenderedAmqp {
-                        exchange: opt(&m.exchange)?.unwrap_or_default(),
-                        exchange_type: m.exchange_type.clone(),
-                        durable: true,
-                        message_id: opt(&m.message_id)?,
-                        correlation_id: opt(&m.correlation_id)?,
-                        reply_to: opt(&m.reply_to)?,
-                        expiration: opt(&m.expiration)?,
-                        persistent: m.persistent.unwrap_or(false),
-                        priority: m.priority,
-                        message_type: opt(&m.message_type)?,
-                        app_id: opt(&m.app_id)?,
-                    }),
-                ),
-            };
-            messages.push(RenderedMessage {
-                protocol,
-                topic,
-                key: opt(&m.key)?,
-                value,
-                headers,
-                avro_schema: m.avro_schema.clone(),
-                content_type: opt(&m.content_type)?,
-                delay_ms: m.delay_ms.unwrap_or(0),
-                mqtt,
-                amqp,
-            });
-        }
+        let messages = self.render_messages(stub, ctx)?;
         let mut correlation = None;
         for c in &stub.callbacks {
             let mut job = self.build_callback(c, ctx).await;
@@ -1028,6 +1010,90 @@ impl Engine {
                 })
             }),
         })
+    }
+
+    /// Renders the messages of a stub with one shared budget for all their fields, each field cut off at
+    /// the length its protocol allows.
+    fn render_messages(
+        &self,
+        stub: &Stub,
+        ctx: &crate::template::TemplateContext,
+    ) -> anyhow::Result<Vec<RenderedMessage>> {
+        use crate::model::MessageProtocol;
+        let t = &self.templates;
+        let _scope = t.limit_scope(MAX_MESSAGES_RENDER_BYTES);
+        let mut messages = Vec::with_capacity(stub.messages.len().min(MAX_MESSAGES_PER_STUB));
+        for (i, m) in stub.messages.iter().enumerate() {
+            let field = |name: &str, tpl: &str, cap: usize| {
+                t.render_in_capped(tpl, ctx, cap)
+                    .map_err(|e| anyhow::anyhow!("messages[{i}].{name}: {e}"))
+            };
+            let opt = |name: &str, x: &Option<String>, cap: usize| {
+                x.as_ref().map(|v| field(name, v, cap)).transpose()
+            };
+            let protocol = m.protocol;
+            let (short, header_cap, topic_cap) = match protocol {
+                MessageProtocol::Kafka => (usize::MAX, usize::MAX, KAFKA_TOPIC),
+                MessageProtocol::Mqtt => (MQTT_STRING, MQTT_STRING, MQTT_STRING),
+                MessageProtocol::Amqp => (AMQP_SHORT, usize::MAX, AMQP_SHORT),
+            };
+            let mut headers = std::collections::BTreeMap::new();
+            for (k, v) in m.headers.iter().take(MAX_MESSAGE_HEADERS) {
+                headers.insert(k.clone(), field(&format!("headers.{k}"), v, header_cap)?);
+            }
+            let value = match (&m.json_value, &m.value) {
+                (Some(j), _) => t
+                    .render_json_in(j, ctx)
+                    .map_err(|e| anyhow::anyhow!("messages[{i}].jsonValue: {e}"))?,
+                (None, Some(v)) => Value::String(field("value", v, usize::MAX)?),
+                (None, None) => Value::Null,
+            };
+            let (topic, mqtt, amqp) = match protocol {
+                MessageProtocol::Kafka => (field("topic", &m.topic, topic_cap)?, None, None),
+                MessageProtocol::Mqtt => (
+                    field("topic", &m.topic, topic_cap)?,
+                    Some(RenderedMqtt {
+                        qos: m.qos.unwrap_or(0),
+                        retain: m.retain.unwrap_or(false),
+                        correlation_data: opt("correlationData", &m.correlation_data, short)?,
+                        response_topic: opt("responseTopic", &m.response_topic, short)?,
+                        message_expiry_seconds: m.message_expiry_seconds,
+                    }),
+                    None,
+                ),
+                MessageProtocol::Amqp => (
+                    opt("routingKey", &m.routing_key, short)?.unwrap_or_default(),
+                    None,
+                    Some(RenderedAmqp {
+                        exchange: opt("exchange", &m.exchange, short)?.unwrap_or_default(),
+                        exchange_templated: m.exchange.as_ref().is_some_and(|e| e.contains("{{")),
+                        exchange_type: m.exchange_type.clone(),
+                        durable: true,
+                        message_id: opt("messageId", &m.message_id, short)?,
+                        correlation_id: opt("correlationId", &m.correlation_id, short)?,
+                        reply_to: opt("replyTo", &m.reply_to, short)?,
+                        expiration: opt("expiration", &m.expiration, short)?,
+                        persistent: m.persistent.unwrap_or(false),
+                        priority: m.priority,
+                        message_type: opt("messageType", &m.message_type, short)?,
+                        app_id: opt("appId", &m.app_id, short)?,
+                    }),
+                ),
+            };
+            messages.push(RenderedMessage {
+                protocol,
+                topic,
+                key: opt("key", &m.key, usize::MAX)?,
+                value,
+                headers,
+                avro_schema: m.avro_schema.clone(),
+                content_type: opt("contentType", &m.content_type, short)?,
+                delay_ms: m.delay_ms.unwrap_or(0),
+                mqtt,
+                amqp,
+            });
+        }
+        Ok(messages)
     }
 
     async fn build_callback(
@@ -1277,6 +1343,86 @@ mod tests {
         assert_eq!(plan.json_body.unwrap()["n"], "{{size request.json}}");
         assert_eq!(plan.context["request"]["json"][1]["a"], 2);
         assert_eq!(plan.def.unwrap().messages.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn message_fields_share_one_render_budget_and_protocol_limits() {
+        let (e, s) = engine();
+        add(&e, &s, json!({"request": {"urlPath": "/amqp"}, "response": {"status": 202},
+            "messages": [{"protocol": "amqp", "exchange": "orders", "routingKey": "{{request.body}}"}]})).await;
+        let r = e
+            .handle(&CapturedRequest::new(
+                "POST",
+                "/amqp",
+                None,
+                vec![],
+                Bytes::from("k".repeat(300)),
+            ))
+            .await;
+        let err = format!("{:#}", r.expect_err("a routing key over 255 bytes fails"));
+        assert!(
+            err.contains("messages[0].routingKey") && err.contains("255"),
+            "{err}"
+        );
+        let many: Vec<Value> = (0..12)
+            .map(|i| json!({"topic": format!("t{i}"), "value": "{{request.body}}", "headers": {"a": "{{request.body}}", "b": "{{request.body}}"}}))
+            .collect();
+        add(
+            &e,
+            &s,
+            json!({"request": {"urlPath": "/many"}, "response": {"status": 202}, "messages": many}),
+        )
+        .await;
+        let big = "x".repeat(600 * 1024);
+        let r = e
+            .handle(&CapturedRequest::new(
+                "POST",
+                "/many",
+                None,
+                vec![],
+                Bytes::from(big),
+            ))
+            .await;
+        let err = format!(
+            "{:#}",
+            r.expect_err("36 fields of 600 KiB exceed the shared budget")
+        );
+        assert!(err.contains("budget"), "{err}");
+        let ok = e
+            .handle(&CapturedRequest::new(
+                "POST",
+                "/many",
+                None,
+                vec![],
+                Bytes::from("y"),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ok.messages.len(), 12);
+        let too_many: Vec<Value> = (0..=MAX_MESSAGES_PER_STUB)
+            .map(|_| json!({"topic": "t"}))
+            .collect();
+        let stub: Stub =
+            serde_json::from_value(json!({"request": {"urlPath": "/x"}, "messages": too_many}))
+                .unwrap();
+        assert!(e.validate(&stub).unwrap_err().contains("messages per stub"));
+        let headers: serde_json::Map<String, Value> = (0..=MAX_MESSAGE_HEADERS)
+            .map(|i| (format!("h{i}"), json!("v")))
+            .collect();
+        let stub: Stub = serde_json::from_value(
+            json!({"request": {"urlPath": "/x"}, "messages": [{"topic": "t", "headers": headers}]}),
+        )
+        .unwrap();
+        assert!(
+            e.validate(&stub)
+                .unwrap_err()
+                .contains("headers per message")
+        );
+        let mut long_name = serde_json::Map::new();
+        long_name.insert("h".repeat(256), json!("v"));
+        let stub: Stub = serde_json::from_value(json!({"request": {"urlPath": "/x"}, "messages": [{"protocol": "amqp", "routingKey": "k", "headers": long_name}]})).unwrap();
+        assert!(e.validate(&stub).unwrap_err().contains("header name"));
     }
 
     #[tokio::test]

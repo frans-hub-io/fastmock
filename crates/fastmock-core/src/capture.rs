@@ -23,6 +23,8 @@ use crate::storage::StoreResult;
 pub const MAX_PAGE: usize = 500;
 /// Topics, filters or binding keys per source.
 pub const MAX_SOURCE_TOPICS: usize = 20;
+/// Bytes counted for a stored message besides its body, topic, key, headers and properties.
+pub const MESSAGE_OVERHEAD_BYTES: u64 = 256;
 
 fn yes() -> bool {
     true
@@ -49,10 +51,11 @@ pub struct CaptureSource {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space: Option<String>,
     pub protocol: MessageProtocol,
-    /// Kafka topics, or MQTT topic filters (`+` and `#` wildcards).
+    /// Kafka topics, or MQTT topic filters (`+` and `#` wildcards). Kafka internal topics (`__*`) and MQTT
+    /// filters starting with `$` (`$SYS/...`, shared subscriptions `$share/...`) are refused.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub topics: Vec<String>,
-    /// AMQP: the exchange to bind FastMock's own queue to (not the default exchange).
+    /// AMQP: the exchange to bind FastMock's own queue to (not the default exchange, not `amq.rabbitmq.*`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exchange: Option<String>,
     /// AMQP: binding keys of FastMock's queue (default `#`, every message of a topic exchange).
@@ -125,6 +128,11 @@ impl CaptureSource {
                 {
                     return Err(format!("`{t}` is not a valid Kafka topic name"));
                 }
+                if let Some(t) = self.topics.iter().find(|t| t.starts_with("__")) {
+                    return Err(format!(
+                        "`{t}` is a Kafka internal topic; capture reads application topics only"
+                    ));
+                }
                 if self.exchange.is_some() || !self.binding_keys.is_empty() || self.qos.is_some() {
                     return Err("exchange, bindingKeys and qos are not used with Kafka".into());
                 }
@@ -136,6 +144,11 @@ impl CaptureSource {
                 if let Some(t) = self.topics.iter().find(|t| !valid_mqtt_filter(t)) {
                     return Err(format!(
                         "`{t}` is not a valid MQTT topic filter (+ and # only as whole levels, # last)"
+                    ));
+                }
+                if let Some(t) = self.topics.iter().find(|t| t.starts_with('$')) {
+                    return Err(format!(
+                        "`{t}` starts with $: broker topics ($SYS) and shared subscriptions ($share) cannot be captured"
                     ));
                 }
                 if self.qos.is_some_and(|q| q > 2) {
@@ -162,6 +175,11 @@ impl CaptureSource {
                     })
                 {
                     return Err(format!("`{ex}` is not a valid exchange name"));
+                }
+                if ex.starts_with("amq.rabbitmq.") {
+                    return Err(format!(
+                        "`{ex}` is a broker exchange (tracing, logs); capture reads application exchanges only"
+                    ));
                 }
                 if !self.topics.is_empty() || self.qos.is_some() || self.start_from.is_some() {
                     return Err("topics, qos and startFrom are not used with AMQP; use exchange and bindingKeys".into());
@@ -229,7 +247,8 @@ pub struct CapturedMessage {
     pub content_type: Option<String>,
     /// Bytes of the body as received.
     pub size: u64,
-    /// The stored body was cut to `FASTMOCK_CAPTURE_MAX_MESSAGE_BYTES`.
+    /// Something was cut: the body to `FASTMOCK_CAPTURE_MAX_MESSAGE_BYTES`, or long topics, keys, headers
+    /// or properties beyond the 64 KiB kept for them.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
     /// The start of a text body.
@@ -281,6 +300,38 @@ impl CapturedMessage {
 
     pub fn body_base64(&self) -> String {
         base64::engine::general_purpose::STANDARD.encode(&self.body)
+    }
+
+    /// Bytes the message counts against the storage budgets: the body, topic, key, headers and
+    /// properties, plus a fixed overhead.
+    pub fn stored_bytes(&self) -> u64 {
+        fn value_bytes(v: &Value) -> usize {
+            match v {
+                Value::String(s) => s.len(),
+                Value::Array(a) => a.iter().map(value_bytes).sum::<usize>() + 2,
+                Value::Object(o) => o.iter().map(|(k, v)| k.len() + value_bytes(v) + 4).sum(),
+                _ => 8,
+            }
+        }
+        let n = self.body.len()
+            + self.topic.len()
+            + self.source.len()
+            + self.exchange.as_ref().map_or(0, String::len)
+            + self.key.as_ref().map_or(0, String::len)
+            + self.content_type.as_ref().map_or(0, String::len)
+            + self.preview.as_ref().map_or(0, String::len)
+            + self.space.as_ref().map_or(0, String::len)
+            + self
+                .headers
+                .iter()
+                .map(|(k, v)| k.len() + v.len())
+                .sum::<usize>()
+            + self
+                .properties
+                .iter()
+                .map(|(k, v)| k.len() + value_bytes(v))
+                .sum::<usize>();
+        n as u64 + MESSAGE_OVERHEAD_BYTES
     }
 }
 
@@ -346,12 +397,46 @@ impl Default for CaptureRetention {
     }
 }
 
+/// What an insert keeps: per source by count, per area (a space, or the global area) and in all by bytes
+/// ([`CapturedMessage::stored_bytes`]); the oldest messages beyond a limit are dropped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InsertLimits {
+    /// Messages kept per source.
+    pub keep: usize,
+    /// Bytes kept per area.
+    pub area_bytes: u64,
+    /// Bytes kept in all.
+    pub total_bytes: u64,
+}
+
+impl InsertLimits {
+    /// Only a per-source count, no byte limits.
+    pub fn keep(keep: usize) -> Self {
+        Self {
+            keep,
+            area_bytes: u64::MAX,
+            total_bytes: u64::MAX,
+        }
+    }
+}
+
 /// Storage of captured messages.
 #[async_trait]
 pub trait CaptureStore: Send + Sync {
-    /// Stores messages of one source and drops its oldest beyond `keep`; returns how many were dropped.
-    async fn insert(&self, msgs: &[CapturedMessage], keep: usize) -> StoreResult<u64>;
+    /// Stores messages and drops the oldest beyond the limits (per source by count, then the area of each
+    /// message, then in all by bytes); returns how many were dropped.
+    async fn insert(&self, msgs: &[CapturedMessage], limits: &InsertLimits) -> StoreResult<u64>;
     async fn get(&self, id: Uuid, spaces: &SpaceFilter) -> StoreResult<Option<CapturedMessage>>;
+    /// The bodies of the given messages that still exist.
+    async fn bodies(&self, ids: &[Uuid]) -> StoreResult<HashMap<Uuid, Bytes>> {
+        let mut out = HashMap::new();
+        for id in ids {
+            if let Some(m) = self.get(*id, &SpaceFilter::Any).await? {
+                out.insert(*id, m.body);
+            }
+        }
+        Ok(out)
+    }
     /// A page in id order (newest first unless `oldest_first`).
     async fn list(&self, q: &CaptureQuery) -> StoreResult<CapturePage>;
     /// The space of a deleted message: `Some(space)` when it existed.
@@ -363,6 +448,8 @@ pub trait CaptureStore: Send + Sync {
     async fn sweep(&self, before: DateTime<Utc>) -> StoreResult<u64>;
     /// Stored messages per source.
     async fn counts(&self) -> StoreResult<HashMap<Uuid, u64>>;
+    /// Stored bytes ([`CapturedMessage::stored_bytes`]) in all.
+    async fn total_bytes(&self) -> StoreResult<u64>;
 }
 
 /// Captured messages of one process (memory storage).
@@ -375,6 +462,8 @@ pub struct MemoryCaptureStore {
 struct MemoryInner {
     messages: BTreeMap<Uuid, CapturedMessage>,
     by_source: HashMap<Uuid, VecDeque<Uuid>>,
+    area_bytes: HashMap<Option<String>, u64>,
+    total_bytes: u64,
 }
 
 impl MemoryInner {
@@ -386,20 +475,60 @@ impl MemoryInner {
                 self.by_source.remove(&m.source_id);
             }
         }
+        self.uncount(&m);
         Some(m)
+    }
+
+    fn uncount(&mut self, m: &CapturedMessage) {
+        let n = m.stored_bytes();
+        self.total_bytes = self.total_bytes.saturating_sub(n);
+        if let Some(a) = self.area_bytes.get_mut(&m.space) {
+            *a = a.saturating_sub(n);
+            if *a == 0 {
+                self.area_bytes.remove(&m.space);
+            }
+        }
+    }
+
+    /// Removes the oldest messages of `area` (or of every area with `None`) until `over` bytes are gone.
+    fn evict(&mut self, area: Option<&Option<String>>, over: u64) -> u64 {
+        let mut freed = 0;
+        let mut ids = Vec::new();
+        for m in self.messages.values() {
+            if freed >= over {
+                break;
+            }
+            if area.is_none_or(|a| &m.space == a) {
+                freed += m.stored_bytes();
+                ids.push(m.id);
+            }
+        }
+        for id in &ids {
+            self.remove(*id);
+        }
+        ids.len() as u64
     }
 }
 
 #[async_trait]
 impl CaptureStore for MemoryCaptureStore {
-    async fn insert(&self, msgs: &[CapturedMessage], keep: usize) -> StoreResult<u64> {
+    async fn insert(&self, msgs: &[CapturedMessage], limits: &InsertLimits) -> StoreResult<u64> {
+        let keep = limits.keep;
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let mut dropped = 0;
         let mut sources = BTreeSet::new();
+        let mut areas = BTreeSet::new();
         for m in msgs {
-            g.messages.insert(m.id, m.clone());
-            g.by_source.entry(m.source_id).or_default().push_back(m.id);
+            if let Some(old) = g.messages.insert(m.id, m.clone()) {
+                g.uncount(&old);
+            } else {
+                g.by_source.entry(m.source_id).or_default().push_back(m.id);
+            }
+            let n = m.stored_bytes();
+            g.total_bytes += n;
+            *g.area_bytes.entry(m.space.clone()).or_default() += n;
             sources.insert(m.source_id);
+            areas.insert(m.space.clone());
         }
         for s in sources {
             loop {
@@ -407,12 +536,22 @@ impl CaptureStore for MemoryCaptureStore {
                 if !over {
                     break;
                 }
-                let Some(oldest) = g.by_source.get_mut(&s).and_then(|q| q.pop_front()) else {
+                let Some(oldest) = g.by_source.get(&s).and_then(|q| q.front().copied()) else {
                     break;
                 };
-                g.messages.remove(&oldest);
+                g.remove(oldest);
                 dropped += 1;
             }
+        }
+        for a in areas {
+            let used = g.area_bytes.get(&a).copied().unwrap_or(0);
+            if used > limits.area_bytes {
+                dropped += g.evict(Some(&a), used - limits.area_bytes);
+            }
+        }
+        if g.total_bytes > limits.total_bytes {
+            let over = g.total_bytes - limits.total_bytes;
+            dropped += g.evict(None, over);
         }
         Ok(dropped)
     }
@@ -506,6 +645,22 @@ impl CaptureStore for MemoryCaptureStore {
             .map(|(k, v)| (*k, v.len() as u64))
             .collect())
     }
+
+    async fn bodies(&self, ids: &[Uuid]) -> StoreResult<HashMap<Uuid, Bytes>> {
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(ids
+            .iter()
+            .filter_map(|id| g.messages.get(id).map(|m| (*id, m.body.clone())))
+            .collect())
+    }
+
+    async fn total_bytes(&self) -> StoreResult<u64> {
+        Ok(self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .total_bytes)
+    }
 }
 
 /// Conditions on a captured message; all given ones must hold. String conditions are string matchers
@@ -561,6 +716,18 @@ impl MessageMatch {
 
     pub fn needs_body(&self) -> bool {
         !self.body.is_empty()
+    }
+
+    /// Whether a body matcher reads the body as JSON (`equalToJson`, `jsonPath`, `jsonSchema`), so JSON
+    /// must be parsed and Avro decoded for it.
+    pub fn needs_json(&self) -> bool {
+        fn json(b: &BodyMatcher) -> bool {
+            b.equal_to_json.is_some()
+                || b.json_path.is_some()
+                || b.json_schema.is_some()
+                || b.value_body.as_deref().is_some_and(json)
+        }
+        self.body.iter().any(json)
     }
 }
 
@@ -625,10 +792,40 @@ impl CompiledMessageMatch {
         })
     }
 
+    /// Whether the match has body matchers.
+    pub fn has_body(&self) -> bool {
+        !self.body.is_empty()
+    }
+
+    /// The failing conditions other than the body ones.
+    pub fn meta_failures(&self, m: &CapturedMessage) -> Vec<String> {
+        let mut c = self.failures_inner(m, None, false);
+        c.shrink_to_fit();
+        c
+    }
+
+    /// The failing body conditions (`body[0]`, ...).
+    pub fn body_failures(&self, b: &BodyView<'_>) -> Vec<String> {
+        self.body
+            .failures(b.text, b.raw, b.json)
+            .into_iter()
+            .map(|i| format!("body[{i}]"))
+            .collect()
+    }
+
     /// The names of the failing conditions (empty when the message matches): `source`, `topic`,
     /// `headers.x-event`, `properties.correlationId`, `body[0]`, ... `body` is needed only when the
     /// match has body matchers; without it they fail.
     pub fn failures(&self, m: &CapturedMessage, body: Option<&BodyView<'_>>) -> Vec<String> {
+        self.failures_inner(m, body, true)
+    }
+
+    fn failures_inner(
+        &self,
+        m: &CapturedMessage,
+        body: Option<&BodyView<'_>>,
+        with_body: bool,
+    ) -> Vec<String> {
         let mut out = Vec::new();
         let mut check = |name: &str, c: &Option<CompiledString>, v: Option<&str>| {
             if let Some(c) = c
@@ -663,7 +860,7 @@ impl CompiledMessageMatch {
                 out.push(format!("properties.{name}"));
             }
         }
-        if !self.body.is_empty() {
+        if with_body && !self.body.is_empty() {
             match body {
                 Some(b) => {
                     for i in self.body.failures(b.text, b.raw, b.json) {
@@ -713,10 +910,12 @@ pub mod conformance {
         let a = Uuid::now_v7();
         let b = Uuid::now_v7();
         let first: Vec<CapturedMessage> = (0..5).map(|n| msg(a, n)).collect();
-        assert_eq!(s.insert(&first, 3).await.unwrap(), 2);
+        assert_eq!(s.insert(&first, &InsertLimits::keep(3)).await.unwrap(), 2);
         let mut other = msg(b, 9);
         other.space = Some("billing".into());
-        s.insert(std::slice::from_ref(&other), 3).await.unwrap();
+        s.insert(std::slice::from_ref(&other), &InsertLimits::keep(3))
+            .await
+            .unwrap();
         let counts = s.counts().await.unwrap();
         assert_eq!(counts[&a], 3);
         assert_eq!(counts[&b], 1);
@@ -781,7 +980,9 @@ pub mod conformance {
             s.delete_matching(&SpaceFilter::Any, Some(a)).await.unwrap(),
             3
         );
-        s.insert(&[msg(a, 1)], 3).await.unwrap();
+        s.insert(&[msg(a, 1)], &InsertLimits::keep(3))
+            .await
+            .unwrap();
         assert_eq!(
             s.sweep(Utc::now() + chrono::Duration::seconds(1))
                 .await
@@ -789,6 +990,52 @@ pub mod conformance {
             1
         );
         assert!(s.counts().await.unwrap().is_empty());
+        assert_eq!(s.total_bytes().await.unwrap(), 0);
+
+        // Bytes: per area first, then in all, the oldest first.
+        let billing = |n| {
+            let mut m = msg(b, n);
+            m.space = Some("billing".into());
+            m
+        };
+        let big = billing(1).stored_bytes();
+        let small = msg(a, 1).stored_bytes();
+        let limits = InsertLimits {
+            keep: 100,
+            area_bytes: 3 * big,
+            total_bytes: 3 * big + 2 * small,
+        };
+        let first: Vec<CapturedMessage> = (0..4).map(billing).collect();
+        assert_eq!(s.insert(&first, &limits).await.unwrap(), 1);
+        let global: Vec<CapturedMessage> = (0..4).map(|n| msg(a, n)).collect();
+        assert_eq!(s.insert(&global, &limits).await.unwrap(), 2);
+        let counts = s.counts().await.unwrap();
+        assert_eq!(counts[&b], 2);
+        assert_eq!(counts[&a], 3);
+        assert!(
+            s.get(first[1].id, &SpaceFilter::Any)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            s.get(first[2].id, &SpaceFilter::Any)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            s.get(global[0].id, &SpaceFilter::Any)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(s.total_bytes().await.unwrap(), 2 * big + 3 * small);
+        let bodies = s.bodies(&[global[3].id, first[0].id]).await.unwrap();
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(bodies[&global[3].id], global[3].body);
+        s.delete_matching(&SpaceFilter::Any, None).await.unwrap();
+        assert_eq!(s.total_bytes().await.unwrap(), 0);
     }
 }
 
@@ -845,6 +1092,28 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn sources_cannot_read_broker_internals() {
+        let src = |v: Value| {
+            serde_json::from_value::<CaptureSource>(v)
+                .unwrap()
+                .validate()
+        };
+        for t in ["$share/app/orders/#", "$SYS/#", "$queue/x"] {
+            let e = src(json!({"name": "d", "protocol": "mqtt", "topics": [t]})).unwrap_err();
+            assert!(e.contains("starts with $"), "{t}: {e}");
+        }
+        for t in ["__consumer_offsets", "__transaction_state"] {
+            let e = src(json!({"name": "k", "protocol": "kafka", "topics": [t]})).unwrap_err();
+            assert!(e.contains("internal"), "{t}: {e}");
+        }
+        let e = src(json!({"name": "a", "protocol": "amqp", "exchange": "amq.rabbitmq.trace"}))
+            .unwrap_err();
+        assert!(e.contains("broker exchange"), "{e}");
+        assert!(src(json!({"name": "a", "protocol": "amqp", "exchange": "amq.topic"})).is_ok());
+        assert!(src(json!({"name": "k", "protocol": "kafka", "topics": ["_orders"]})).is_ok());
     }
 
     #[test]

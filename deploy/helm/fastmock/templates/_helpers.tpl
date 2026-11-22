@@ -138,7 +138,7 @@ verify-full
 {{- if and $mqtt.existingSecret (not $mqtt.username) -}}
 {{- fail "messaging.mqtt.username is required when messaging.mqtt.existingSecret is set" -}}
 {{- end -}}
-{{- if and (or $mqtt.tls.caSecret $mqtt.tls.clientCertSecret) (not (hasPrefix "mqtts://" $mqtt.url)) -}}
+{{- if and (or $mqtt.tls.caSecret $mqtt.tls.clientCertSecret) (not (regexMatch "^(?i)\\s*(mqtts|ssl|tls)://" $mqtt.url)) -}}
 {{- fail "messaging.mqtt.tls needs an mqtts:// URL in messaging.mqtt.url" -}}
 {{- end -}}
 {{- else if or $mqtt.username $mqtt.existingSecret $mqtt.tls.caSecret $mqtt.tls.clientCertSecret $mqtt.allowedTopics -}}
@@ -146,7 +146,7 @@ verify-full
 {{- end -}}
 {{- $amqp := .Values.messaging.amqp -}}
 {{- if $amqp.url -}}
-{{- $tls := hasPrefix "amqps://" $amqp.url -}}
+{{- $tls := regexMatch "^(?i)\\s*amqps://" $amqp.url -}}
 {{- if and (or $amqp.tls.caSecret $amqp.tls.clientCertSecret) (not $tls) -}}
 {{- fail "messaging.amqp.tls needs an amqps:// URL in messaging.amqp.url" -}}
 {{- end -}}

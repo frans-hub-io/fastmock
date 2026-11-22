@@ -215,7 +215,7 @@ data:
   FASTMOCK_CAPTURE_SOURCES_FILE: "/etc/fastmock/capture/sources.json"
   {{- end }}
   {{- with $capture.limits }}
-  {{- range $key, $var := dict "maxSources" "MAX_SOURCES" "maxMessages" "MAX_MESSAGES" "maxMessageBytes" "MAX_MESSAGE_BYTES" }}
+  {{- range $key, $var := dict "maxSources" "MAX_SOURCES" "maxMessages" "MAX_MESSAGES" "maxMessageBytes" "MAX_MESSAGE_BYTES" "maxBytes" "MAX_BYTES" "maxSpaceBytes" "MAX_SPACE_BYTES" }}
   {{- if hasKey $.Values.messaging.capture.limits $key }}
   FASTMOCK_CAPTURE_{{ $var }}: {{ index $.Values.messaging.capture.limits $key | int64 | quote }}
   {{- end }}

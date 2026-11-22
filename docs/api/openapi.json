@@ -1130,7 +1130,7 @@
           "capture"
         ],
         "summary": "Find captured messages",
-        "description": "The stored messages of `space` (or of the areas the caller may read) matching `match`: source, protocol, topic, exchange, key, headers, properties, content type (string matchers) and `body` (the body matchers of stubs; JSON matchers see Avro bodies decoded). Looks at up to 10000 stored messages.",
+        "description": "The stored messages of `space` (or of the areas the caller may read) matching `match`: source, protocol, topic, exchange, key, headers, properties, content type (string matchers) and `body` (the body matchers of stubs; JSON matchers see Avro bodies decoded). Looks at up to 10000 stored messages and loads at most 64 MiB of bodies: only those of messages that meet the other conditions.",
         "operationId": "findCapturedMessages",
         "parameters": [
           {
@@ -1226,7 +1226,7 @@
             }
           },
           "422": {
-            "description": "More than 10000 stored messages to check",
+            "description": "More than 10000 stored messages or 64 MiB of bodies to check",
             "content": {
               "application/json": {
                 "schema": {
@@ -1361,7 +1361,7 @@
             }
           },
           "422": {
-            "description": "More than 10000 stored messages to check",
+            "description": "More than 10000 stored messages or 64 MiB of bodies to check",
             "content": {
               "application/json": {
                 "schema": {
@@ -1861,7 +1861,7 @@
           "capture"
         ],
         "summary": "Delete a capture source",
-        "description": "Stops its consumer within a few seconds. Stored messages stay until retention removes them, unless `purge=true`. Audited as `capture.source.delete`.",
+        "description": "Stops its consumer within a few seconds. Stored messages stay until retention removes them (age, or the storage budgets, oldest first), unless `purge=true`, which also needs `messages:delete` and is checked before anything is deleted. Audited as `capture.source.delete`.",
         "operationId": "deleteCaptureSource",
         "parameters": [
           {
@@ -1899,7 +1899,7 @@
             }
           },
           "403": {
-            "description": "The caller lacks messages:write",
+            "description": "The caller lacks messages:write, or messages:delete with purge=true",
             "content": {
               "application/json": {
                 "schema": {
@@ -1942,7 +1942,7 @@
           "capture"
         ],
         "summary": "Verify how many messages were captured",
-        "description": "Counts the stored messages of `space` (or of the areas the caller may read) matching `match`. Give `count` for an exact number, or `atLeast` and/or `atMost` (default: at least 1). 200 when it holds; 422 with the count and the closest non-matching messages and their failed conditions when it does not.",
+        "description": "Counts the stored messages of `space` (or of the areas the caller may read) matching `match`. Give `count` for an exact number, or `atLeast` and/or `atMost` (default: at least 1). 200 when it holds; 422 with the count and the closest non-matching messages and their failed conditions when it does not. Body conditions are checked only on messages that meet the other conditions; a near miss that fails those lists only them.",
         "operationId": "verifyCapturedMessages",
         "parameters": [
           {
@@ -2025,7 +2025,7 @@
             }
           },
           "422": {
-            "description": "Expectation not met (`VerifyResult`), or more than 10000 stored messages to check (`ErrorBody`)",
+            "description": "Expectation not met (`VerifyResult`), or more than 10000 stored messages or 64 MiB of bodies to check (`ErrorBody`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -11992,14 +11992,14 @@
             "items": {
               "type": "string"
             },
-            "description": "Kafka topics, or MQTT topic filters (`+` and `#` wildcards)."
+            "description": "Kafka topics, or MQTT topic filters (`+` and `#` wildcards). Kafka internal topics (`__*`) and MQTT\nfilters starting with `$` (`$SYS/...`, shared subscriptions `$share/...`) are refused."
           },
           "exchange": {
             "type": [
               "string",
               "null"
             ],
-            "description": "AMQP: the exchange to bind FastMock's own queue to (not the default exchange)."
+            "description": "AMQP: the exchange to bind FastMock's own queue to (not the default exchange, not `amq.rabbitmq.*`)."
           },
           "bindingKeys": {
             "type": "array",

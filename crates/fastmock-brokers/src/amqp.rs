@@ -3,13 +3,16 @@
 //! [`AmqpPublisher`] connects on first use and keeps one connection with one channel in confirm mode; a
 //! publication waits for the broker's confirm. After a failure the connection is rebuilt on the next
 //! publication, at most once per growing pause ([`crate::Backoff`]); publications in between fail at once.
+//! Before the first publication to an exchange it checks on a separate channel that the exchange exists
+//! (declaring it when asked to), so a missing exchange fails that publication only and never closes the
+//! shared channel under the confirms of other publications.
 //!
 //! [`consume`] runs a capture subscription: it declares a server-named, exclusive, auto-delete queue, binds
 //! it to the exchange with each binding key and consumes without acknowledgements. The queue belongs to
 //! FastMock's connection only, so the application's own queues and consumers never lose a message to it; it
 //! disappears with the connection.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -26,10 +29,10 @@ use lapin::{
     BasicProperties, Channel, Confirmation, Connection, ConnectionProperties, ExchangeKind,
 };
 use serde_json::json;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tokio::time::Instant;
 
-use crate::{Backoff, Credentials, LinkStatus, Received, TlsFiles};
+use crate::{Backoff, CaptureSink, Credentials, LinkStatus, Offer, Received, TlsFiles};
 
 /// Name the allow-list and the API use for the default exchange (`""`).
 pub const DEFAULT_EXCHANGE: &str = "amq.default";
@@ -313,12 +316,57 @@ pub struct AmqpMessage {
 
 fn short(s: &str) -> anyhow::Result<ShortString> {
     if s.len() > 255 {
-        bail!(
+        return Err(crate::public(format!(
             "`{}...` exceeds the 255 bytes of an AMQP short string",
-            &s[..32.min(s.len())]
-        );
+            crate::cut(s, 32)
+        )));
     }
     Ok(s.into())
+}
+
+/// Exchanges known to exist, the most recently used last; at most [`KNOWN_EXCHANGES`].
+#[derive(Default)]
+struct Known {
+    order: VecDeque<String>,
+    set: HashSet<String>,
+}
+
+/// Exchanges a publisher remembers as existing.
+pub const KNOWN_EXCHANGES: usize = 256;
+
+impl Known {
+    fn touch(&mut self, name: &str) -> bool {
+        if !self.set.contains(name) {
+            return false;
+        }
+        if let Some(i) = self.order.iter().position(|x| x == name) {
+            let n = self.order.remove(i).unwrap_or_default();
+            self.order.push_back(n);
+        }
+        true
+    }
+
+    fn insert(&mut self, name: &str) {
+        if self.touch(name) {
+            return;
+        }
+        self.set.insert(name.to_string());
+        self.order.push_back(name.to_string());
+        while self.order.len() > KNOWN_EXCHANGES {
+            if let Some(old) = self.order.pop_front() {
+                self.set.remove(&old);
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.order.clear();
+        self.set.clear();
+    }
+
+    fn len(&self) -> usize {
+        self.order.len()
+    }
 }
 
 fn properties(m: &AmqpMessage) -> anyhow::Result<BasicProperties> {
@@ -350,7 +398,10 @@ fn properties(m: &AmqpMessage) -> anyhow::Result<BasicProperties> {
     }
     if let Some(v) = &m.expiration {
         if v.is_empty() || !v.chars().all(|c| c.is_ascii_digit()) {
-            bail!("expiration must be a number of milliseconds, got `{v}`");
+            return Err(crate::public(format!(
+                "expiration must be a number of milliseconds, got `{}`",
+                crate::cut(v, 32)
+            )));
         }
         p = p.with_expiration(short(v)?);
     }
@@ -372,7 +423,7 @@ fn properties(m: &AmqpMessage) -> anyhow::Result<BasicProperties> {
 struct PublisherState {
     conn: Option<Arc<Connection>>,
     channel: Option<Channel>,
-    declared: HashSet<String>,
+    known: Known,
     retry_at: Option<Instant>,
     backoff: Backoff,
     last_error: Option<String>,
@@ -394,7 +445,7 @@ impl AmqpPublisher {
             state: tokio::sync::Mutex::new(PublisherState {
                 conn: None,
                 channel: None,
-                declared: HashSet::new(),
+                known: Known::default(),
                 retry_at: None,
                 backoff: Backoff::default(),
                 last_error: None,
@@ -454,7 +505,7 @@ impl AmqpPublisher {
                 st.backoff.reset();
                 st.retry_at = None;
                 st.last_error = None;
-                st.declared.clear();
+                st.known.clear();
                 st.conn = Some(conn.clone());
                 st.channel = Some(ch.clone());
                 self.set_status(|s| {
@@ -481,16 +532,21 @@ impl AmqpPublisher {
         }
     }
 
-    async fn declare(
+    /// Makes sure `exchange` exists before the shared channel publishes to it: checks it on a channel of
+    /// its own and, with `decl`, declares it when it is missing.
+    async fn ensure_exchange(
         &self,
         conn: &Connection,
         exchange: &str,
-        decl: &ExchangeDeclaration,
+        decl: Option<&ExchangeDeclaration>,
     ) -> anyhow::Result<()> {
-        if self.state.lock().await.declared.contains(exchange) {
+        if exchange.is_empty() || self.state.lock().await.known.touch(exchange) {
             return Ok(());
         }
-        let kind = exchange_kind(&decl.kind)?;
+        let kind = match decl {
+            Some(d) => exchange_kind(&d.kind)?,
+            None => ExchangeKind::Topic,
+        };
         let probe = conn.create_channel().await?;
         let exists = probe
             .exchange_declare(
@@ -506,6 +562,11 @@ impl AmqpPublisher {
             .is_ok();
         let _ = probe.close(200, "done".into()).await;
         if !exists {
+            let Some(decl) = decl else {
+                return Err(crate::public(format!(
+                    "exchange {exchange} does not exist (create it, or set FASTMOCK_AMQP_DECLARE_EXCHANGES=true for exchange names that are not templates)"
+                )));
+            };
             let ch = conn.create_channel().await?;
             let r = ch
                 .exchange_declare(
@@ -522,15 +583,17 @@ impl AmqpPublisher {
             r.with_context(|| format!("declaring AMQP exchange {exchange}"))?;
             tracing::info!(exchange, kind = %decl.kind, durable = decl.durable, "declared AMQP exchange");
         }
-        self.state
-            .lock()
-            .await
-            .declared
-            .insert(exchange.to_string());
+        self.state.lock().await.known.insert(exchange);
         Ok(())
     }
 
-    /// Publishes and waits for the broker's confirm. With `declare`, a missing exchange is declared first.
+    /// Exchanges remembered as existing (bounded by [`KNOWN_EXCHANGES`]).
+    pub async fn known_exchanges(&self) -> usize {
+        self.state.lock().await.known.len()
+    }
+
+    /// Publishes and waits for the broker's confirm. A missing exchange fails the publication, or is declared
+    /// first with `declare`.
     pub async fn publish(
         &self,
         m: &AmqpMessage,
@@ -540,11 +603,7 @@ impl AmqpPublisher {
         let props = properties(m)?;
         let routing_key = short(&m.routing_key)?;
         let (ch, conn) = self.channel().await?;
-        if let Some(d) = declare
-            && !exchange.is_empty()
-        {
-            self.declare(&conn, &exchange, d).await?;
-        }
+        self.ensure_exchange(&conn, &exchange, declare).await?;
         let result = async {
             let confirm = ch
                 .basic_publish(
@@ -687,13 +746,15 @@ pub fn received(d: &lapin::message::Delivery) -> Received {
         headers,
         content_type: p.content_type().as_ref().map(|s| s.to_string()),
         properties: props,
+        size: d.data.len(),
+        truncated: false,
     }
 }
 
 async fn session(
     settings: &AmqpSettings,
     sub: &AmqpCapture,
-    sink: &mpsc::Sender<Received>,
+    sink: &CaptureSink,
     status: &Mutex<LinkStatus>,
     stop: &mut watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
@@ -716,7 +777,7 @@ async fn session(
             FieldTable::default(),
         )
         .await
-        .with_context(|| format!("exchange {exchange} does not exist"))?;
+        .context(crate::PublicError(format!("exchange {exchange} does not exist")))?;
         let mut args = FieldTable::default();
         args.insert(
             "x-max-length".into(),
@@ -776,16 +837,15 @@ async fn session(
                 n = consumer.next() => n,
             };
             match next {
-                Some(Ok(d)) => match sink.try_send(received(&d)) {
-                    Ok(()) => dropped_warned = false,
-                    Err(mpsc::error::TrySendError::Full(_)) => {
-                        metrics::counter!("fastmock_capture_messages_total", "protocol" => "amqp", "result" => "dropped").increment(1);
+                Some(Ok(d)) => match sink.offer(received(&d)) {
+                    Offer::Queued => dropped_warned = false,
+                    Offer::Dropped => {
                         if !dropped_warned {
                             tracing::warn!(source = %sub.label, "AMQP capture cannot keep up; messages dropped");
                             dropped_warned = true;
                         }
                     }
-                    Err(mpsc::error::TrySendError::Closed(_)) => return Ok(()),
+                    Offer::Closed => return Ok(()),
                 },
                 Some(Err(e)) => return Err(e.into()),
                 None => bail!("the broker cancelled the capture consumer"),
@@ -801,7 +861,7 @@ async fn session(
 pub async fn consume(
     settings: AmqpSettings,
     sub: AmqpCapture,
-    sink: mpsc::Sender<Received>,
+    sink: CaptureSink,
     status: Arc<Mutex<LinkStatus>>,
     mut stop: watch::Receiver<bool>,
 ) {
@@ -816,7 +876,7 @@ pub async fn consume(
             let was = s.connected;
             s.connected = false;
             if let Err(e) = &r {
-                s.last_error = Some(format!("{e:#}"));
+                s.last_error = Some(crate::public_message(e));
             }
             was
         };
@@ -915,6 +975,35 @@ mod tests {
             ..m
         };
         assert!(properties(&long).is_err());
+    }
+
+    #[test]
+    fn long_values_with_multibyte_characters_are_refused_without_a_panic() {
+        let v = "\u{20ac}".repeat(100);
+        let e = short(&v).unwrap_err().to_string();
+        assert!(e.contains("255 bytes"), "{e}");
+        let m = AmqpMessage {
+            exchange: "orders".into(),
+            routing_key: "k".into(),
+            correlation_id: Some(format!("a{v}")),
+            ..Default::default()
+        };
+        assert!(properties(&m).is_err());
+    }
+
+    #[test]
+    fn known_exchanges_are_bounded() {
+        let mut k = Known::default();
+        for i in 0..1000 {
+            k.insert(&format!("ex{i}"));
+        }
+        assert_eq!(k.len(), KNOWN_EXCHANGES);
+        assert!(!k.touch("ex0"));
+        assert!(k.touch("ex999"));
+        k.insert("ex744");
+        k.insert("new");
+        assert!(k.touch("ex744"), "a recently used name stays");
+        assert!(!k.touch("ex745"), "the least recently used one goes");
     }
 
     #[test]

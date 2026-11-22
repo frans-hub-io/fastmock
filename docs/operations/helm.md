@@ -261,8 +261,9 @@ helm uninstall fastmock -n mocks
 | `messaging.amqp.allowedExchanges`, `.declareExchanges` | `[]`, `false` | `FASTMOCK_AMQP_ALLOWED_EXCHANGES`, `FASTMOCK_AMQP_DECLARE_EXCHANGES`. |
 | `messaging.capture.enabled` | `false` | `FASTMOCK_CAPTURE_ENABLED`: [message capture](../guide/message-capture.md). |
 | `messaging.capture.sources` | `[]` | Sources from the configuration (`name`, `protocol`, `space`, `topics`, `exchange`, `bindingKeys`, `qos`, `startFrom`, `maxMessages`, `enabled`, `description`), rendered into the ConfigMap `<fullname>-capture` and read through `FASTMOCK_CAPTURE_SOURCES_FILE`; pods restart when they change. |
-| `messaging.capture.limits.maxSources`, `.maxMessages`, `.maxMessageBytes`, `.maxAge` | `50`, `1000`, `1048576`, `24h` | `FASTMOCK_CAPTURE_MAX_*`. |
-| `messaging.capture.allowedKafkaTopics`, `.allowedMqttTopics`, `.allowedAmqpExchanges` | `[]` (any) | `FASTMOCK_CAPTURE_KAFKA_TOPICS`, `_MQTT_TOPICS`, `_AMQP_EXCHANGES`: what capture sources may read. |
+| `messaging.capture.limits.maxSources`, `.maxMessages`, `.maxMessageBytes`, `.maxBytes`, `.maxAge` | `50`, `1000`, `1048576`, `268435456`, `24h` | `FASTMOCK_CAPTURE_MAX_*`. |
+| `messaging.capture.limits.maxSpaceBytes` | unset (a quarter of `maxBytes`) | `FASTMOCK_CAPTURE_MAX_SPACE_BYTES`: stored bytes per space. |
+| `messaging.capture.allowedKafkaTopics`, `.allowedMqttTopics`, `.allowedAmqpExchanges` | `[]` | `FASTMOCK_CAPTURE_KAFKA_TOPICS`, `_MQTT_TOPICS`, `_AMQP_EXCHANGES`: what capture sources may read (names, `prefix*` or `*`). Empty: only the sources in `messaging.capture.sources`; sources created through the API need the list of their protocol. |
 | `kafka.enabled` | `false` | Install the CloudPirates `kafka` chart (one broker, KRaft) and connect FastMock to it with SASL/PLAIN. |
 | `kafka.auth.existingSecret` | `""` (the Kafka chart generates `<release>-kafka`) | Secret with `client-password`, `inter-broker-password` and `controller-password`. Without it the Kafka chart generates random passwords once, keeps them across upgrades and FastMock reads `client-password` from that Secret. |
 | `kafka.auth.clientUser` | `fastmock` | SASL user FastMock connects as. |
@@ -569,7 +570,9 @@ messaging:
 The install fails with a clear message for settings the server would refuse: TLS settings with a plain URL, a
 user without its password Secret, `EXTERNAL` without `amqps://` and a client certificate, sources while capture is
 off, duplicate source names in a space, or more sources than `limits.maxSources`. With a NetworkPolicy egress
-allow-list, allow the broker ports (1883/8883, 5672/5671).
+allow-list, allow the broker ports (1883/8883, 5672/5671). The MQTT TLS bridge uses an abstract Unix socket, so
+`mqtts://` needs no writable `/tmp` on the read-only root filesystem. Captured messages are kept in memory with
+`storage.mode: memory`: size the memory limit for `limits.maxBytes` plus the rest of the server.
 
 ## Mail
 

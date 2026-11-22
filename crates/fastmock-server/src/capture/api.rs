@@ -2,7 +2,7 @@
 //! 404 while `FASTMOCK_CAPTURE_ENABLED` is off. Permissions: `messages:read` (sources, messages, find,
 //! wait, verify), `messages:write` (sources), `messages:delete` (messages), all grantable per space.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,7 +23,10 @@ use serde_json::{Map, Value, json};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
-use super::{CaptureService, DecodedBody, NAMESPACE, SourceStatus, decode, load_sources, statuses};
+use super::{
+    CaptureService, DecodedBody, NAMESPACE, SourceStatus, decode, decode_with, load_sources,
+    resolve_schema, statuses,
+};
 use crate::access::Permission;
 use crate::admin::{ApiError, ApiResult, ErrorBody, audit_event_in, bad, not_found};
 use crate::auth::Principal;
@@ -35,12 +38,18 @@ pub const DEFAULT_WAIT_MS: u64 = 10_000;
 pub const MAX_WAIT_COUNT: usize = 500;
 /// Stored messages one find, wait or verify looks at, at most.
 pub const MAX_SCAN: usize = 10_000;
+/// Body bytes one find, wait or verify loads and matches, at most; only the bodies of messages that meet
+/// the other conditions count.
+pub const MAX_SCAN_BODY_BYTES: u64 = 64 * 1024 * 1024;
+/// Body bytes loaded at once.
+const BODY_BATCH_BYTES: u64 = 8 * 1024 * 1024;
+/// Schema registry requests one find, wait or verify makes; cached answers are free.
+const MAX_SCHEMA_LOOKUPS: usize = 16;
 const PAGE: usize = 200;
 const DEFAULT_PAGE: usize = 50;
 const MAX_NEAR_MISSES: usize = 5;
 /// How far back a wait reads again on each scan (late commits, clock differences between replicas).
 const RESCAN_OVERLAP_SECS: i64 = 10;
-static SCANS: Semaphore = Semaphore::const_new(4);
 const SCAN_QUEUE_WAIT: Duration = Duration::from_secs(5);
 
 pub fn routes() -> Router<AppState> {
@@ -72,16 +81,6 @@ pub fn service(app: &AppState) -> ApiResult<Arc<CaptureService>> {
             "message capture is not enabled; set FASTMOCK_CAPTURE_ENABLED=true".into(),
         )
     })
-}
-
-async fn scan_permit() -> ApiResult<tokio::sync::SemaphorePermit<'static>> {
-    match tokio::time::timeout(SCAN_QUEUE_WAIT, SCANS.acquire()).await {
-        Ok(Ok(p)) => Ok(p),
-        _ => Err(ApiError(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "too many message searches are reading stored messages; retry in a moment".into(),
-        )),
-    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -306,12 +305,12 @@ pub struct DeleteSourceQuery {
 #[utoipa::path(
     delete, path = "/__admin/capture/sources/{id}", tag = "capture", operation_id = "deleteCaptureSource",
     summary = "Delete a capture source",
-    description = "Stops its consumer within a few seconds. Stored messages stay until retention removes them, unless `purge=true`. Audited as `capture.source.delete`.",
+    description = "Stops its consumer within a few seconds. Stored messages stay until retention removes them (age, or the storage budgets, oldest first), unless `purge=true`, which also needs `messages:delete` and is checked before anything is deleted. Audited as `capture.source.delete`.",
     params(("id" = Uuid, Path, description = "Source id"), DeleteSourceQuery),
     responses(
         (status = 204, description = "Deleted"),
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
-        (status = 403, description = "The caller lacks messages:write", body = ErrorBody),
+        (status = 403, description = "The caller lacks messages:write, or messages:delete with purge=true", body = ErrorBody),
         (status = 404, description = "Not found, or capture is not enabled", body = ErrorBody),
         (status = 409, description = "The source comes from the configuration", body = ErrorBody),
     ),
@@ -331,6 +330,10 @@ pub async fn delete_source(
             "this source is defined in the server configuration and cannot be deleted".into(),
         ));
     }
+    let purge = q.purge == Some(true);
+    if purge {
+        crate::admin::require(&p, Permission::MessagesDelete, s.space.as_deref())?;
+    }
     app.stores.data.delete(NAMESPACE, &id.to_string()).await?;
     let _ = app
         .stores
@@ -338,8 +341,7 @@ pub async fn delete_source(
         .delete(&format!("{}{id}", super::STATUS_PREFIX))
         .await;
     let mut purged = 0;
-    if q.purge == Some(true) {
-        crate::admin::require(&p, Permission::MessagesDelete, s.space.as_deref())?;
+    if purge {
         purged = svc
             .store
             .delete_matching(&SpaceFilter::area(s.space.as_deref()), Some(id))
@@ -776,46 +778,143 @@ pub async fn delete_messages(
 struct Matcher {
     compiled: CompiledMessageMatch,
     body: bool,
+    /// A body matcher reads JSON: parse it, and decode Avro for it.
+    json: bool,
 }
 
 impl Matcher {
-    fn new(m: &MessageMatch) -> ApiResult<Self> {
-        Ok(Self {
+    fn new(m: &MessageMatch) -> ApiResult<Arc<Self>> {
+        Ok(Arc::new(Self {
             compiled: CompiledMessageMatch::compile(m)
                 .map_err(|e| bad(format!("invalid match: {e}")))?,
             body: m.needs_body(),
-        })
+            json: m.needs_json(),
+        }))
     }
 
-    async fn failures(&self, app: &AppState, m: &CapturedMessage) -> Vec<String> {
-        if !self.body {
-            return self.compiled.failures(m, None);
-        }
-        let decoded = decode(app, m).await;
+    /// The failed body conditions of a message with its body (CPU work: called off the async workers).
+    fn body_failures(
+        &self,
+        m: &CapturedMessage,
+        schema: Option<Result<Arc<apache_avro::Schema>, String>>,
+    ) -> Vec<String> {
+        let decoded = self.json.then(|| decode_with(m, schema));
         let text = m.text();
-        let json = decoded.json();
-        self.compiled.failures(
-            m,
-            Some(&BodyView {
-                text: &text,
-                raw: &m.body,
-                json,
-            }),
-        )
+        self.compiled.body_failures(&BodyView {
+            text: &text,
+            raw: &m.body,
+            json: decoded.as_ref().and_then(|d| d.json()),
+        })
     }
 }
 
-/// Stored messages of `spaces` after `after` (or received at or after `since`), oldest first; at most
-/// [`MAX_SCAN`].
-async fn stored(
+/// Global limit of concurrent finds, waits and verifications, and the share one space (or, across
+/// spaces, one caller) may take.
+const SCANS_TOTAL: usize = 8;
+const SCANS_PER_KEY: usize = 2;
+
+struct ScanLimiter {
+    total: Arc<Semaphore>,
+    per_key_limit: usize,
+    per_key: std::sync::Mutex<HashMap<String, Arc<Semaphore>>>,
+}
+
+static LIMITER: std::sync::LazyLock<ScanLimiter> =
+    std::sync::LazyLock::new(|| ScanLimiter::new(SCANS_TOTAL, SCANS_PER_KEY));
+
+/// Held while a scan reads and matches stored messages.
+pub struct ScanPermit {
+    _key: tokio::sync::OwnedSemaphorePermit,
+    _total: tokio::sync::OwnedSemaphorePermit,
+}
+
+/// Who a scan counts against: the one space it reads, otherwise the caller.
+fn scan_key(p: &Principal, spaces: &SpaceFilter) -> String {
+    match spaces {
+        SpaceFilter::In(l) if l.len() == 1 => format!("space:{}", l[0]),
+        SpaceFilter::Global => "global".into(),
+        _ => format!("principal:{}", p.name),
+    }
+}
+
+impl ScanLimiter {
+    fn new(total: usize, per_key: usize) -> Self {
+        Self {
+            total: Arc::new(Semaphore::new(total)),
+            per_key_limit: per_key,
+            per_key: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// A permit of `key`'s share and of the total, waiting at most `wait` for both.
+    async fn acquire(&self, key: String, wait: Duration) -> ApiResult<ScanPermit> {
+        let busy = || {
+            ApiError(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "too many message searches are reading stored messages; retry in a moment".into(),
+            )
+        };
+        let sem = {
+            let mut m = self.per_key.lock().unwrap_or_else(|e| e.into_inner());
+            if m.len() >= 1024 {
+                m.retain(|_, s| Arc::strong_count(s) > 1);
+            }
+            m.entry(key)
+                .or_insert_with(|| Arc::new(Semaphore::new(self.per_key_limit)))
+                .clone()
+        };
+        let deadline = tokio::time::Instant::now() + wait;
+        let key = match tokio::time::timeout_at(deadline, sem.acquire_owned()).await {
+            Ok(Ok(p)) => p,
+            _ => return Err(busy()),
+        };
+        let total =
+            match tokio::time::timeout_at(deadline, self.total.clone().acquire_owned()).await {
+                Ok(Ok(p)) => p,
+                _ => return Err(busy()),
+            };
+        Ok(ScanPermit {
+            _key: key,
+            _total: total,
+        })
+    }
+}
+
+async fn scan_permit(key: String) -> ApiResult<ScanPermit> {
+    LIMITER.acquire(key, SCAN_QUEUE_WAIT).await
+}
+
+/// A message a scan looked at: without its body, with the failed conditions (empty: it matches).
+struct Seen {
+    message: CapturedMessage,
+    failures: Vec<String>,
+    /// The body conditions were checked (otherwise other conditions failed first, or there are none).
+    body_checked: bool,
+}
+
+fn too_much(what: String) -> ApiError {
+    ApiError(StatusCode::UNPROCESSABLE_ENTITY, what)
+}
+
+/// Reads the stored messages of `spaces` received at or after `since`, oldest first, a page at a time and
+/// without keeping them: checks the conditions other than the body, then loads the bodies of the messages
+/// that meet them in batches of at most [`BODY_BATCH_BYTES`] and checks the body conditions off the async
+/// workers. Messages for which `skip` holds are passed over. `visit` gets each message looked at and
+/// returns `false` to stop. Fails with 422 beyond [`MAX_SCAN`] messages or [`MAX_SCAN_BODY_BYTES`] of
+/// bodies.
+async fn scan(
+    app: &AppState,
     svc: &CaptureService,
     spaces: &SpaceFilter,
     since: Option<DateTime<Utc>>,
-    after: Option<Uuid>,
-    body: bool,
-) -> ApiResult<Vec<CapturedMessage>> {
-    let mut out = Vec::new();
-    let mut cursor = after;
+    matcher: &Arc<Matcher>,
+    skip: &(dyn Fn(&Uuid) -> bool + Sync),
+    visit: &mut (dyn FnMut(Seen) -> bool + Send),
+) -> ApiResult<()> {
+    let mut cursor = None;
+    let mut looked = 0usize;
+    let mut body_bytes = 0u64;
+    let mut lookups = MAX_SCHEMA_LOOKUPS;
     loop {
         let page = svc
             .store
@@ -825,22 +924,108 @@ async fn stored(
                 limit: PAGE,
                 cursor,
                 oldest_first: true,
-                with_body: body,
+                with_body: false,
                 ..Default::default()
             })
             .await?;
-        out.extend(page.items);
-        if out.len() > MAX_SCAN {
-            return Err(ApiError(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                format!(
-                    "more than {MAX_SCAN} stored messages to check; narrow it with space or since"
-                ),
-            ));
+        looked += page.items.len();
+        if looked > MAX_SCAN {
+            return Err(too_much(format!(
+                "more than {MAX_SCAN} stored messages to check; narrow it with space or since"
+            )));
+        }
+        let items: Vec<CapturedMessage> = page.items.into_iter().filter(|m| !skip(&m.id)).collect();
+        let m2 = matcher.clone();
+        let checked: Vec<(CapturedMessage, Vec<String>)> = tokio::task::spawn_blocking(move || {
+            items
+                .into_iter()
+                .map(|m| {
+                    let f = m2.compiled.meta_failures(&m);
+                    (m, f)
+                })
+                .collect()
+        })
+        .await
+        .map_err(anyhow::Error::from)?;
+        let mut pending: Vec<CapturedMessage> = Vec::new();
+        for (m, failures) in checked {
+            if failures.is_empty() && matcher.body {
+                pending.push(m);
+                continue;
+            }
+            let body_checked = !matcher.body;
+            if !visit(Seen {
+                message: m,
+                failures,
+                body_checked,
+            }) {
+                return Ok(());
+            }
+        }
+        let mut rest = pending.into_iter().peekable();
+        while rest.peek().is_some() {
+            let mut batch = Vec::new();
+            let mut batch_bytes = 0u64;
+            while let Some(m) = rest.peek() {
+                let n = if m.truncated {
+                    m.size.min(svc.config.max_message_bytes as u64)
+                } else {
+                    m.size
+                };
+                if !batch.is_empty() && batch_bytes + n > BODY_BATCH_BYTES {
+                    break;
+                }
+                batch_bytes += n;
+                batch.push(rest.next().unwrap_or_else(|| unreachable!()));
+            }
+            body_bytes += batch_bytes;
+            if body_bytes > MAX_SCAN_BODY_BYTES {
+                return Err(too_much(format!(
+                    "the messages to check hold more than {} MiB of bodies; narrow it with space, since or conditions on source, topic or headers",
+                    MAX_SCAN_BODY_BYTES / (1024 * 1024)
+                )));
+            }
+            let ids: Vec<Uuid> = batch.iter().map(|m| m.id).collect();
+            let mut bodies = svc.store.bodies(&ids).await?;
+            let mut items = Vec::with_capacity(batch.len());
+            for mut m in batch {
+                let Some(b) = bodies.remove(&m.id) else {
+                    continue;
+                };
+                m.body = b;
+                let schema = if matcher.json {
+                    resolve_schema(app, &m, &mut lookups).await
+                } else {
+                    None
+                };
+                items.push((m, schema));
+            }
+            let m2 = matcher.clone();
+            let results: Vec<(CapturedMessage, Vec<String>)> =
+                tokio::task::spawn_blocking(move || {
+                    items
+                        .into_iter()
+                        .map(|(m, schema)| {
+                            let f = m2.body_failures(&m, schema);
+                            (m.without_body(), f)
+                        })
+                        .collect()
+                })
+                .await
+                .map_err(anyhow::Error::from)?;
+            for (message, failures) in results {
+                if !visit(Seen {
+                    message,
+                    failures,
+                    body_checked: true,
+                }) {
+                    return Ok(());
+                }
+            }
         }
         match page.next {
             Some(c) => cursor = Some(c),
-            None => return Ok(out),
+            None => return Ok(()),
         }
     }
 }
@@ -870,7 +1055,7 @@ pub struct FindResult {
 #[utoipa::path(
     post, path = "/__admin/capture/messages/find", tag = "capture", operation_id = "findCapturedMessages",
     summary = "Find captured messages",
-    description = "The stored messages of `space` (or of the areas the caller may read) matching `match`: source, protocol, topic, exchange, key, headers, properties, content type (string matchers) and `body` (the body matchers of stubs; JSON matchers see Avro bodies decoded). Looks at up to 10000 stored messages.",
+    description = "The stored messages of `space` (or of the areas the caller may read) matching `match`: source, protocol, topic, exchange, key, headers, properties, content type (string matchers) and `body` (the body matchers of stubs; JSON matchers see Avro bodies decoded). Looks at up to 10000 stored messages and loads at most 64 MiB of bodies: only those of messages that meet the other conditions.",
     params(SpaceQuery),
     request_body(content = FindBody, example = json!({"match": {"topic": {"equalTo": "orders.events"}, "headers": {"event-type": {"equalTo": "OrderShipped"}}, "body": [{"jsonPath": "$.orderId", "value": {"equalTo": "A-1"}}]}, "limit": 10})),
     responses(
@@ -878,7 +1063,7 @@ pub struct FindResult {
         (status = 400, description = "Invalid match or limit", body = ErrorBody),
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
         (status = 404, description = "Capture is not enabled, or an unknown space", body = ErrorBody),
-        (status = 422, description = "More than 10000 stored messages to check", body = ErrorBody),
+        (status = 422, description = "More than 10000 stored messages or 64 MiB of bodies to check", body = ErrorBody),
         (status = 503, description = "Too many searches are reading stored messages", body = ErrorBody),
     ),
     security(("bearer" = []))
@@ -896,22 +1081,32 @@ pub async fn find_messages(
         return Err(bad(format!("limit must be between 1 and {MAX_PAGE}")));
     }
     let matcher = Matcher::new(&b.matcher)?;
-    let mut found = Vec::new();
+    let mut newest: VecDeque<MessageSummary> = VecDeque::new();
+    let mut count = 0usize;
     {
-        let _permit = scan_permit().await?;
-        for m in stored(&svc, &spaces, b.since, None, matcher.body).await? {
-            if matcher.failures(&app, &m).await.is_empty() {
-                found.push(MessageSummary::from(&m));
-            }
-        }
+        let _permit = scan_permit(scan_key(&p, &spaces)).await?;
+        scan(
+            &app,
+            &svc,
+            &spaces,
+            b.since,
+            &matcher,
+            &|_| false,
+            &mut |seen| {
+                if seen.failures.is_empty() {
+                    count += 1;
+                    newest.push_back(MessageSummary::from(&seen.message));
+                    if newest.len() > limit {
+                        newest.pop_front();
+                    }
+                }
+                true
+            },
+        )
+        .await?;
     }
-    found.reverse();
-    let count = found.len();
-    found.truncate(limit);
-    Ok(Json(FindResult {
-        messages: found,
-        count,
-    }))
+    let messages: Vec<MessageSummary> = newest.into_iter().rev().collect();
+    Ok(Json(FindResult { messages, count }))
 }
 
 fn default_count() -> usize {
@@ -969,7 +1164,7 @@ pub struct WaitTimeout {
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
         (status = 404, description = "Capture is not enabled, or an unknown space", body = ErrorBody),
         (status = 408, description = "Timed out", body = WaitTimeout),
-        (status = 422, description = "More than 10000 stored messages to check", body = ErrorBody),
+        (status = 422, description = "More than 10000 stored messages or 64 MiB of bodies to check", body = ErrorBody),
         (status = 503, description = "Too many waits are reading stored messages, or the server is shutting down", body = ErrorBody),
     ),
     security(("bearer" = []))
@@ -1022,21 +1217,29 @@ pub async fn wait(
     loop {
         changes.borrow_and_update();
         let scanned_at = Utc::now();
-        let batch = {
-            let _permit = scan_permit().await?;
-            stored(&svc, &spaces, scan_from, None, matcher.body).await?
-        };
+        {
+            let _permit = scan_permit(scan_key(&p, &spaces)).await?;
+            let already = checked.clone();
+            scan(
+                &app,
+                &svc,
+                &spaces,
+                scan_from,
+                &matcher,
+                &|id| already.contains(id),
+                &mut |seen| {
+                    checked.insert(seen.message.id);
+                    if seen.failures.is_empty() {
+                        found.push(MessageSummary::from(&seen.message));
+                    }
+                    found.len() < b.count
+                },
+            )
+            .await?;
+        }
         // Later scans read the last seconds again: a batch may commit after messages received later.
         let overlap = scanned_at - chrono::Duration::seconds(RESCAN_OVERLAP_SECS);
         scan_from = Some(since.map_or(overlap, |s| s.max(overlap)));
-        for m in batch {
-            if !checked.insert(m.id) {
-                continue;
-            }
-            if matcher.failures(&app, &m).await.is_empty() {
-                found.push(MessageSummary::from(&m));
-            }
-        }
         if found.len() >= b.count {
             found.truncate(b.count);
             metrics::counter!("fastmock_capture_waits_total", "result" => "found").increment(1);
@@ -1152,7 +1355,7 @@ pub struct VerifyResult {
 #[utoipa::path(
     post, path = "/__admin/capture/verify", tag = "capture", operation_id = "verifyCapturedMessages",
     summary = "Verify how many messages were captured",
-    description = "Counts the stored messages of `space` (or of the areas the caller may read) matching `match`. Give `count` for an exact number, or `atLeast` and/or `atMost` (default: at least 1). 200 when it holds; 422 with the count and the closest non-matching messages and their failed conditions when it does not.",
+    description = "Counts the stored messages of `space` (or of the areas the caller may read) matching `match`. Give `count` for an exact number, or `atLeast` and/or `atMost` (default: at least 1). 200 when it holds; 422 with the count and the closest non-matching messages and their failed conditions when it does not. Body conditions are checked only on messages that meet the other conditions; a near miss that fails those lists only them.",
     params(SpaceQuery),
     request_body(content = VerifyBody, example = json!({"match": {"topic": {"equalTo": "orders.events"}}, "count": 1})),
     responses(
@@ -1160,7 +1363,7 @@ pub struct VerifyResult {
         (status = 400, description = "Invalid match or expectation", body = ErrorBody),
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
         (status = 404, description = "Capture is not enabled, or an unknown space", body = ErrorBody),
-        (status = 422, description = "Expectation not met (`VerifyResult`), or more than 10000 stored messages to check (`ErrorBody`)", body = VerifyResult),
+        (status = 422, description = "Expectation not met (`VerifyResult`), or more than 10000 stored messages or 64 MiB of bodies to check (`ErrorBody`)", body = VerifyResult),
         (status = 503, description = "Too many verifications are reading stored messages", body = ErrorBody),
     ),
     security(("bearer" = []))
@@ -1176,27 +1379,47 @@ pub async fn verify(
     let spaces = spaces::select(&app, &p, Permission::MessagesRead, q.space.as_deref())?;
     let matcher = Matcher::new(&b.matcher)?;
     let total = b.matcher.count().max(1) as f64;
+    let body_conditions = b.matcher.body.len();
     let mut count = 0u64;
     let mut misses: Vec<MessageNearMiss> = Vec::new();
     {
-        let _permit = scan_permit().await?;
-        for m in stored(&svc, &spaces, b.since, None, matcher.body).await? {
-            let failures = matcher.failures(&app, &m).await;
-            if failures.is_empty() {
-                count += 1;
-                continue;
-            }
-            misses.push(MessageNearMiss {
-                id: m.id,
-                space: m.space.clone(),
-                source: m.source.clone(),
-                topic: m.topic.clone(),
-                received_at: m.received_at,
-                preview: m.preview.clone(),
-                score: (total - failures.len() as f64).max(0.0) / total,
-                mismatches: failures,
-            });
-        }
+        let _permit = scan_permit(scan_key(&p, &spaces)).await?;
+        scan(
+            &app,
+            &svc,
+            &spaces,
+            b.since,
+            &matcher,
+            &|_| false,
+            &mut |seen| {
+                if seen.failures.is_empty() {
+                    count += 1;
+                    return true;
+                }
+                let m = &seen.message;
+                let unchecked = if seen.body_checked {
+                    0
+                } else {
+                    body_conditions
+                };
+                misses.push(MessageNearMiss {
+                    id: m.id,
+                    space: m.space.clone(),
+                    source: m.source.clone(),
+                    topic: m.topic.clone(),
+                    received_at: m.received_at,
+                    preview: m.preview.clone(),
+                    score: (total - (seen.failures.len() + unchecked) as f64).max(0.0) / total,
+                    mismatches: seen.failures,
+                });
+                if misses.len() > 4 * MAX_NEAR_MISSES {
+                    sort_misses(&mut misses);
+                    misses.truncate(MAX_NEAR_MISSES);
+                }
+                true
+            },
+        )
+        .await?;
     }
     let verified = (lo..=hi).contains(&count);
     metrics::counter!("fastmock_admin_verifications_total", "kind" => "capture", "result" => if verified { "pass" } else { "fail" }).increment(1);
@@ -1211,12 +1434,7 @@ pub async fn verify(
         })
         .into_response());
     }
-    misses.sort_by(|a, b| {
-        b.score
-            .total_cmp(&a.score)
-            .then(b.received_at.cmp(&a.received_at))
-            .then(b.id.cmp(&a.id))
-    });
+    sort_misses(&mut misses);
     misses.truncate(MAX_NEAR_MISSES);
     let details = misses
         .iter()
@@ -1244,6 +1462,15 @@ pub async fn verify(
         }),
     )
         .into_response())
+}
+
+fn sort_misses(misses: &mut [MessageNearMiss]) {
+    misses.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then(b.received_at.cmp(&a.received_at))
+            .then(b.id.cmp(&a.id))
+    });
 }
 
 #[derive(utoipa::OpenApi)]
@@ -1298,6 +1525,24 @@ mod tests {
         assert!(expectation(&body(json!({"count": 1, "atMost": 2}))).is_err());
         assert!(expectation(&body(json!({"atLeast": 3, "atMost": 2}))).is_err());
         assert!(serde_json::from_value::<VerifyBody>(json!({"exactly": 1})).is_err());
+    }
+
+    #[tokio::test]
+    async fn one_space_gets_a_share_of_the_search_slots() {
+        let l = ScanLimiter::new(4, 2);
+        let wait = Duration::from_millis(50);
+        let a1 = l.acquire("space:a".into(), wait).await.unwrap();
+        let _a2 = l.acquire("space:a".into(), wait).await.unwrap();
+        let e = l.acquire("space:a".into(), wait).await.err().unwrap();
+        assert_eq!(e.0, StatusCode::SERVICE_UNAVAILABLE);
+        let _b1 = l.acquire("space:b".into(), wait).await.unwrap();
+        let _c1 = l.acquire("space:c".into(), wait).await.unwrap();
+        assert!(
+            l.acquire("space:d".into(), wait).await.is_err(),
+            "the total is a bound too"
+        );
+        drop(a1);
+        assert!(l.acquire("space:d".into(), wait).await.is_ok());
     }
 
     #[test]

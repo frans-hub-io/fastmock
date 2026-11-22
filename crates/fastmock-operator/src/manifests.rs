@@ -379,16 +379,6 @@ pub fn deployment(
         mounts.push(json!({"name": "tls-mail", "mountPath": MAIL_TLS_DIR, "readOnly": true}));
         volumes.push(json!({"name": "tls-mail", "secret": {"secretName": r.name, "items": [{"key": r.cert_key, "path": "tls.crt"}, {"key": r.key_key, "path": "tls.key"}], "defaultMode": 0o440}}));
     }
-    let mqtt_tls = spec.env.get("FASTMOCK_MQTT_URL").is_some_and(|u| {
-        let u = u.trim().to_ascii_lowercase();
-        ["mqtts://", "ssl://", "tls://"]
-            .iter()
-            .any(|p| u.starts_with(p))
-    });
-    if mqtt_tls {
-        mounts.push(json!({"name": "tmp", "mountPath": "/tmp"}));
-        volumes.push(json!({"name": "tmp", "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}}));
-    }
     let resources = spec.resources.clone().unwrap_or_else(|| json!({"requests": {"cpu": "100m", "memory": "64Mi"}, "limits": {"cpu": "2", "memory": "512Mi"}}));
     let pull: Vec<Value> = spec
         .image_pull_secrets
@@ -503,29 +493,27 @@ mod tests {
     }
 
     #[test]
-    fn mqtt_over_tls_gets_a_writable_tmp() {
+    fn mqtt_over_tls_needs_no_writable_tmp() {
         let spec = FastMockSpec {
             env: BTreeMap::from([(
                 "FASTMOCK_MQTT_URL".into(),
-                "mqtts://mqtt.example.com:8883".into(),
+                " MQTTS://mqtt.example.com:8883".into(),
             )]),
             ..Default::default()
         };
         let d = deployment("m", "ns", &owner(), &spec, "img:1", "abc");
         let pod = &d["spec"]["template"]["spec"];
+        assert_eq!(
+            pod["containers"][0]["securityContext"]["readOnlyRootFilesystem"],
+            true
+        );
         assert!(
             pod["volumes"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|v| v["name"] == "tmp" && v["emptyDir"]["medium"] == "Memory")
-        );
-        assert!(
-            pod["containers"][0]["volumeMounts"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|m| m["name"] == "tmp" && m["mountPath"] == "/tmp")
+                .all(|v| v["name"] != "tmp"),
+            "the TLS bridge of the server uses no file"
         );
     }
 

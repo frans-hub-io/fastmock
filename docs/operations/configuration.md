@@ -286,8 +286,8 @@ Publishing to AMQP 0-9-1 brokers (RabbitMQ, LavinMQ, ...) and AMQP capture sourc
 | `FASTMOCK_AMQP_SASL_MECHANISM` | enum | `PLAIN` | `PLAIN` or `EXTERNAL` (needs `amqps://` and a client certificate, and no password). |
 | `FASTMOCK_AMQP_TLS_CA_FILE` | path | none | PEM bundle trusted in addition to the public roots; `amqps://` only. |
 | `FASTMOCK_AMQP_TLS_CERT_FILE`, `FASTMOCK_AMQP_TLS_KEY_FILE` | path | none | Client certificate and key (PEM) for mTLS and `EXTERNAL`; set both. |
-| `FASTMOCK_AMQP_ALLOWED_EXCHANGES` | list | none (any) | Exchanges stubs and async mocks may publish to: names or `prefix*`; the default exchange is `amq.default`. |
-| `FASTMOCK_AMQP_DECLARE_EXCHANGES` | boolean | `false` | Declare missing exchanges before publishing (type from the message, default `topic`). |
+| `FASTMOCK_AMQP_ALLOWED_EXCHANGES` | list | none (any) | Exchanges stubs and async mocks may publish to: names or `prefix*`. The default exchange only through `amq.default/<queue>` entries (exact or `prefix*`), since its routing key names the queue. |
+| `FASTMOCK_AMQP_DECLARE_EXCHANGES` | boolean | `false` | Declare missing exchanges before publishing (type from the message, default `topic`); exchange names produced by a template are never declared. |
 
 ## Message capture
 
@@ -301,10 +301,12 @@ See [Message capture](../guide/message-capture.md).
 | `FASTMOCK_CAPTURE_MAX_SOURCES` | integer | `50` | Sources in total, 1..1000. |
 | `FASTMOCK_CAPTURE_MAX_MESSAGES` | integer | `1000` | Messages kept per source, 1..100000. |
 | `FASTMOCK_CAPTURE_MAX_MESSAGE_BYTES` | integer | `1048576` | Body bytes kept per message, at most 16 MiB; longer bodies are cut. |
+| `FASTMOCK_CAPTURE_MAX_BYTES` | integer | `268435456` | Bytes of all stored messages, 1 MiB to 1 TiB; the oldest are removed beyond it. |
+| `FASTMOCK_CAPTURE_MAX_SPACE_BYTES` | integer | a quarter of `FASTMOCK_CAPTURE_MAX_BYTES` | Bytes of the stored messages of one space (and of the global area), at least 64 KiB and at most `FASTMOCK_CAPTURE_MAX_BYTES`; the oldest of that space are removed beyond it. |
 | `FASTMOCK_CAPTURE_MAX_AGE` | duration | `24h` | Retention by age. |
-| `FASTMOCK_CAPTURE_KAFKA_TOPICS` | list | none (any) | Topics capture sources may read: names or `prefix*`. |
-| `FASTMOCK_CAPTURE_MQTT_TOPICS` | list | none (any) | MQTT topic filters capture sources may use: names or `prefix*`. |
-| `FASTMOCK_CAPTURE_AMQP_EXCHANGES` | list | none (any) | Exchanges capture sources may bind to: names or `prefix*`. |
+| `FASTMOCK_CAPTURE_KAFKA_TOPICS` | list | none | Topics capture sources may read: names, `prefix*` or `*`. Without it, only sources from the configuration read Kafka; sources created through the API are refused. Internal topics (`__*`) are always refused. |
+| `FASTMOCK_CAPTURE_MQTT_TOPICS` | list | none | MQTT topic filters capture sources may use: names, `prefix*` or `*`; required for sources created through the API. Filters starting with `$` (`$SYS`, `$share`) are always refused. |
+| `FASTMOCK_CAPTURE_AMQP_EXCHANGES` | list | none | Exchanges capture sources may bind to: names, `prefix*` or `*`; required for sources created through the API. `amq.rabbitmq.*` is always refused. |
 
 ## Mail
 

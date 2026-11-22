@@ -293,10 +293,6 @@ spec:
               mountPath: /etc/fastmock/tls/mqtt-client
               readOnly: true
             {{- end }}
-            {{- if and $mqtt.url (regexMatch "^(mqtts|ssl|tls)://" $mqtt.url) }}
-            - name: tmp
-              mountPath: /tmp
-            {{- end }}
             {{- if and $amqp.url $amqp.tls.caSecret }}
             - name: tls-amqp-ca
               mountPath: /etc/fastmock/tls/amqp-ca
@@ -437,12 +433,6 @@ spec:
               - key: tls.key
                 path: tls.key
             defaultMode: 0440
-        {{- end }}
-        {{- if and $mqtt.url (regexMatch "^(mqtts|ssl|tls)://" $mqtt.url) }}
-        - name: tmp
-          emptyDir:
-            medium: Memory
-            sizeLimit: 1Mi
         {{- end }}
         {{- if and $amqp.url $amqp.tls.caSecret }}
         - name: tls-amqp-ca

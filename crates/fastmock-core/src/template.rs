@@ -24,6 +24,8 @@ const TEMPLATE_CACHE_ENTRIES: usize = 4096;
 const DEADLINE_CHECK_EVERY: usize = 256;
 
 thread_local! {
+    /// While a [`LimitScope`] is alive: the output bytes left and the scope's total.
+    static SCOPE: std::cell::Cell<Option<(usize, usize)>> = const { std::cell::Cell::new(None) };
     static BUDGET: std::cell::Cell<usize> = const { std::cell::Cell::new(MAX_INTERMEDIATE_BYTES) };
     static STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(MAX_RENDER_STEPS) };
     static DEADLINE: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
@@ -256,6 +258,23 @@ pub enum TemplateError {
     OutputTooLarge,
     #[error("template error: {0}")]
     Render(String),
+    #[error("the rendered value exceeds {0} bytes")]
+    ValueTooLong(usize),
+    #[error("the rendered values exceed the {0} byte budget they share")]
+    ScopeExhausted(usize),
+}
+
+/// While alive, every render on this thread shares one set of limits (intermediate memory, steps, time)
+/// and one output budget, instead of each render getting fresh ones. It is not `Send`, so it cannot be
+/// held across an `.await` in a task that may move between threads.
+pub struct LimitScope {
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+impl Drop for LimitScope {
+    fn drop(&mut self) {
+        SCOPE.with(|s| s.set(None));
+    }
 }
 
 pub struct Templates {
@@ -1567,11 +1586,14 @@ pub fn hmac_bytes(algo: &str, key: &[u8], data: &[u8]) -> anyhow::Result<Vec<u8>
 
 struct LimitedOutput {
     buf: String,
+    cap: usize,
+    exceeded: bool,
 }
 
 impl Output for LimitedOutput {
     fn write(&mut self, seg: &str) -> std::io::Result<()> {
-        if self.buf.len() + seg.len() > MAX_OUTPUT_BYTES {
+        if self.buf.len() + seg.len() > self.cap {
+            self.exceeded = true;
             return Err(std::io::Error::other("output limit"));
         }
         tick(1).map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -1680,29 +1702,74 @@ impl Templates {
         Ok(t)
     }
 
+    /// Starts a [`LimitScope`] in which all renders together produce at most `output_bytes`.
+    pub fn limit_scope(&self, output_bytes: usize) -> LimitScope {
+        reset_limits();
+        SCOPE.with(|s| s.set(Some((output_bytes, output_bytes))));
+        LimitScope {
+            _not_send: std::marker::PhantomData,
+        }
+    }
+
     pub fn render_in(&self, tpl: &str, context: &TemplateContext) -> Result<String, TemplateError> {
+        self.render_in_capped(tpl, context, MAX_OUTPUT_BYTES)
+    }
+
+    /// Renders with the output cut off at `cap` bytes (and at what a [`LimitScope`] has left): a value
+    /// that a protocol limits, such as a 255-byte AMQP short string, fails as soon as it is too long
+    /// instead of being rendered in full first.
+    pub fn render_in_capped(
+        &self,
+        tpl: &str,
+        context: &TemplateContext,
+        cap: usize,
+    ) -> Result<String, TemplateError> {
         if tpl.len() > MAX_TEMPLATE_BYTES {
             return Err(TemplateError::TooLarge(tpl.len()));
         }
-        if !tpl.contains("{{") {
-            return Ok(tpl.to_string());
+        let scope = SCOPE.with(|s| s.get());
+        let field_cap = cap.min(MAX_OUTPUT_BYTES);
+        let cap = field_cap.min(scope.map_or(usize::MAX, |(left, _)| left));
+        let too_long = || match scope {
+            Some((left, total)) if left < field_cap => TemplateError::ScopeExhausted(total),
+            _ if field_cap < MAX_OUTPUT_BYTES => TemplateError::ValueTooLong(field_cap),
+            _ => TemplateError::OutputTooLarge,
+        };
+        let out = if !tpl.contains("{{") {
+            if tpl.len() > cap {
+                return Err(too_long());
+            }
+            tpl.to_string()
+        } else {
+            reject_partials(tpl)?;
+            let template = self.compiled(tpl)?;
+            if scope.is_none() {
+                reset_limits();
+            }
+            let mut rc = RenderContext::new(None);
+            let mut out = LimitedOutput {
+                buf: String::new(),
+                cap,
+                exceeded: false,
+            };
+            use handlebars::Renderable;
+            template
+                .render(&self.hb, context, &mut rc, &mut out)
+                .map_err(|e| {
+                    if out.exceeded {
+                        too_long()
+                    } else if out.buf.len() >= MAX_OUTPUT_BYTES / 2 {
+                        TemplateError::OutputTooLarge
+                    } else {
+                        TemplateError::Render(e.to_string())
+                    }
+                })?;
+            out.buf
+        };
+        if let Some((left, total)) = scope {
+            SCOPE.with(|s| s.set(Some((left - out.len(), total))));
         }
-        reject_partials(tpl)?;
-        let template = self.compiled(tpl)?;
-        reset_limits();
-        let mut rc = RenderContext::new(None);
-        let mut out = LimitedOutput { buf: String::new() };
-        use handlebars::Renderable;
-        template
-            .render(&self.hb, context, &mut rc, &mut out)
-            .map_err(|e| {
-                if out.buf.len() >= MAX_OUTPUT_BYTES / 2 {
-                    TemplateError::OutputTooLarge
-                } else {
-                    TemplateError::Render(e.to_string())
-                }
-            })?;
-        Ok(out.buf)
+        Ok(out)
     }
 
     pub fn render_json_in(&self, v: &Value, ctx: &TemplateContext) -> Result<Value, TemplateError> {
@@ -1841,6 +1908,39 @@ mod tests {
                 .unwrap(),
             "a > b"
         );
+    }
+
+    #[test]
+    fn a_limit_scope_shares_one_budget_across_renders() {
+        let t = Templates::new();
+        let ctx = context(json!({"x": "a".repeat(1000)}));
+        for _ in 0..5 {
+            t.render_in("{{x}}", &ctx).unwrap();
+        }
+        {
+            let _scope = t.limit_scope(2500);
+            t.render_in("{{x}}", &ctx).unwrap();
+            t.render_in("{{x}}", &ctx).unwrap();
+            let e = t.render_in("{{x}}", &ctx).unwrap_err();
+            assert!(matches!(e, TemplateError::ScopeExhausted(2500)), "{e}");
+            assert!(
+                t.render_in(&"b".repeat(600), &ctx).is_err(),
+                "plain text counts too"
+            );
+        }
+        t.render_in("{{x}}", &ctx).unwrap();
+        let e = t.render_in_capped("{{x}}", &ctx, 255).unwrap_err();
+        assert!(matches!(e, TemplateError::ValueTooLong(255)), "{e}");
+        assert_eq!(t.render_in_capped("{{x}}", &ctx, 1000).unwrap().len(), 1000);
+        let items: Vec<u32> = (0..300_000).collect();
+        let ctx = context(json!({ "items": items }));
+        let tpl = "{{#each items}}{{this}}{{/each}}";
+        t.render_in(tpl, &ctx).unwrap();
+        t.render_in(tpl, &ctx).unwrap();
+        let _scope = t.limit_scope(64 * 1024 * 1024);
+        t.render_in(tpl, &ctx).unwrap();
+        let e = t.render_in(tpl, &ctx).unwrap_err().to_string();
+        assert!(e.contains("limit"), "the steps are shared: {e}");
     }
 
     #[test]

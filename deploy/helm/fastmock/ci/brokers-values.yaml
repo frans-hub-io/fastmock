@@ -69,6 +69,8 @@ messaging:
       maxSources: 10
       maxMessages: 500
       maxMessageBytes: 262144
+      maxBytes: 67108864
+      maxSpaceBytes: 16777216
       maxAge: 12h
     allowedKafkaTopics:
       - "orders.*"

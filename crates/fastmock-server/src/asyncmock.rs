@@ -93,6 +93,7 @@ pub fn render(app: &AppState, m: &AsyncMock, seq: u64) -> anyhow::Result<Rendere
         "sequence": seq,
         "example": ex.name,
     }));
+    let _scope = t.limit_scope(fastmock_core::engine::MAX_MESSAGES_RENDER_BYTES);
     let mut headers = std::collections::BTreeMap::new();
     for (k, v) in &ex.headers {
         let v = if m.templated {
@@ -184,7 +185,7 @@ pub fn publish_problem(app: &AppState, m: &AsyncMock) -> Option<String> {
         return Some(format!("{setting} is not configured"));
     }
     let dest = destination(m);
-    if !app.brokers.allowed(p, &dest) {
+    if !app.brokers.allowed(p, &dest, &m.channel) {
         return Some(format!(
             "{} {} is not in {}",
             if p == MessageProtocol::Amqp {
@@ -630,7 +631,7 @@ pub async fn import_document(
             AsyncProtocol::Kafka | AsyncProtocol::Mqtt | AsyncProtocol::Amqp => {
                 let p = message_protocol(m.protocol);
                 let dest = destination(&m);
-                if !app.brokers.allowed(p, &dest) {
+                if !app.brokers.allowed(p, &dest, &m.channel) {
                     warnings.push(format!(
                         "{}: {} {} is not in {}; publishing will fail",
                         m.name,
@@ -902,13 +903,13 @@ pub async fn trigger(
         Err(e) => Err(ApiError(
             StatusCode::BAD_GATEWAY,
             format!(
-                "publishing to {} failed: {}",
+                "publishing to {} failed: {} (details in the server log)",
                 match m.protocol {
                     AsyncProtocol::Mqtt => "MQTT",
                     AsyncProtocol::Amqp => "AMQP",
                     _ => "Kafka",
                 },
-                crate::redact::truncate(format!("{e:#}"), 512)
+                crate::redact::truncate(fastmock_brokers::public_message(&e), 512)
             ),
         )),
     }

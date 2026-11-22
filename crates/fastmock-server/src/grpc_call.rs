@@ -826,7 +826,8 @@ async fn call(
     };
     drop(held);
     if !r.messages.is_empty() {
-        app.brokers.publish_in_background(r.messages.clone());
+        app.brokers
+            .publish_in_background(r.messages.clone(), Some(r.stub_id));
     }
     if r.callbacks > 0 {
         metrics::counter!("fastmock_callbacks_scheduled_total", "source" => "stubs")

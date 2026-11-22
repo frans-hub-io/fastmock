@@ -325,12 +325,19 @@ pub fn encode(schema: &Schema, value: AvroValue) -> anyhow::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// How long a failed schema lookup is answered from memory before the registry is asked again.
+pub const SCHEMA_FAILURE_TTL: Duration = Duration::from_secs(30);
+const SCHEMA_CACHE_ENTRIES: usize = 1024;
+
 pub struct SchemaRegistry {
     base: String,
     http: reqwest::Client,
     auth: Option<BasicAuth>,
     cache: Mutex<HashMap<(String, String), i32>>,
     by_id: Mutex<HashMap<i32, Arc<Schema>>>,
+    /// Schema ids whose lookup failed, with the time and the error, answered without a request until
+    /// [`SCHEMA_FAILURE_TTL`] passes.
+    failed: Mutex<HashMap<i32, (std::time::Instant, String)>>,
 }
 
 impl SchemaRegistry {
@@ -355,14 +362,44 @@ impl SchemaRegistry {
             auth: opts.auth.clone(),
             cache: Mutex::new(HashMap::new()),
             by_id: Mutex::new(HashMap::new()),
+            failed: Mutex::new(HashMap::new()),
         })
     }
 
-    /// The Avro schema with this id (`GET /schemas/ids/{id}`), cached.
-    pub async fn schema(&self, id: i32) -> anyhow::Result<Arc<Schema>> {
+    /// The schema with this id, or the error of a recent failed lookup, without asking the registry;
+    /// `None` when only the registry can answer.
+    pub async fn cached(&self, id: i32) -> Option<Result<Arc<Schema>, String>> {
         if let Some(s) = self.by_id.lock().await.get(&id) {
-            return Ok(s.clone());
+            return Some(Ok(s.clone()));
         }
+        let failed = self.failed.lock().await;
+        match failed.get(&id) {
+            Some((at, e)) if at.elapsed() < SCHEMA_FAILURE_TTL => Some(Err(e.clone())),
+            _ => None,
+        }
+    }
+
+    /// The Avro schema with this id (`GET /schemas/ids/{id}`), cached; a failure is cached for
+    /// [`SCHEMA_FAILURE_TTL`]. Errors never contain the registry's response body.
+    pub async fn schema(&self, id: i32) -> anyhow::Result<Arc<Schema>> {
+        if let Some(r) = self.cached(id).await {
+            return r.map_err(|e| anyhow::anyhow!("{e}"));
+        }
+        let r = self.fetch_schema(id).await;
+        if let Err(e) = &r {
+            let mut failed = self.failed.lock().await;
+            if failed.len() >= SCHEMA_CACHE_ENTRIES {
+                failed.retain(|_, (at, _)| at.elapsed() < SCHEMA_FAILURE_TTL);
+                if failed.len() >= SCHEMA_CACHE_ENTRIES {
+                    failed.clear();
+                }
+            }
+            failed.insert(id, (std::time::Instant::now(), e.to_string()));
+        }
+        r
+    }
+
+    async fn fetch_schema(&self, id: i32) -> anyhow::Result<Arc<Schema>> {
         let mut req = self.http.get(format!("{}/schemas/ids/{id}", self.base));
         if let Some(a) = &self.auth {
             req = req.basic_auth(&a.username, Some(&a.password));
@@ -371,7 +408,8 @@ impl SchemaRegistry {
         let status = resp.status();
         let body: Value = resp.json().await.unwrap_or(Value::Null);
         if !status.is_success() {
-            anyhow::bail!("schema registry returned {status} for schema id {id}: {body}");
+            tracing::debug!(%status, schema_id = id, body = %body, "schema registry refused a schema lookup");
+            anyhow::bail!("schema registry returned {status} for schema id {id}");
         }
         if let Some(t) = body.get("schemaType").and_then(Value::as_str)
             && !t.eq_ignore_ascii_case("AVRO")
@@ -385,7 +423,7 @@ impl SchemaRegistry {
         let schema =
             Arc::new(Schema::parse_str(text).context("the registered schema is not valid Avro")?);
         let mut cache = self.by_id.lock().await;
-        if cache.len() >= 1024 {
+        if cache.len() >= SCHEMA_CACHE_ENTRIES {
             cache.clear();
         }
         cache.insert(id, schema.clone());
@@ -410,7 +448,8 @@ impl SchemaRegistry {
         let status = resp.status();
         let body: Value = resp.json().await.unwrap_or(Value::Null);
         if !status.is_success() {
-            anyhow::bail!("schema registry returned {status} for subject {subject}: {body}");
+            tracing::debug!(%status, subject, body = %body, "schema registry refused a registration");
+            anyhow::bail!("schema registry returned {status} for subject {subject}");
         }
         let id = body
             .get("id")
@@ -696,6 +735,48 @@ impl KafkaPublisher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn failed_schema_lookups_are_cached_and_do_not_echo_the_body() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let h = hits.clone();
+        tokio::spawn(async move {
+            while let Ok((mut c, _)) = l.accept().await {
+                h.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let _ = c.read(&mut buf).await;
+                    let body = r#"{"error_code":40403,"message":"internal registry detail"}"#;
+                    let _ = c
+                        .write_all(
+                            format!(
+                                "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                                body.len()
+                            )
+                            .as_bytes(),
+                        )
+                        .await;
+                });
+            }
+        });
+        let r = SchemaRegistry::new(&format!("http://{addr}")).unwrap();
+        let e1 = r.schema(7).await.unwrap_err().to_string();
+        let e2 = r.schema(7).await.unwrap_err().to_string();
+        assert!(e1.contains("404"), "{e1}");
+        assert!(!e1.contains("internal registry detail"), "{e1}");
+        assert_eq!(e1, e2);
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "the failure is answered from memory"
+        );
+        assert!(r.cached(7).await.unwrap().is_err());
+        assert!(r.cached(8).await.is_none());
+    }
 
     #[test]
     fn logical_types_and_named_references() {

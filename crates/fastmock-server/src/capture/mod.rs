@@ -102,13 +102,19 @@ pub fn missing_setting(cfg: &crate::config::Config, p: MessageProtocol) -> Optio
     }
 }
 
-/// Checks a source against the capture allow-lists.
+/// Checks a source against the capture allow-lists. Sources from the configuration are checked only when
+/// the protocol has an allow-list; sources created through the API need one (`*` allows every name).
 pub fn allowed(c: &CaptureConfig, s: &CaptureSource) -> Result<(), String> {
     let (list, name) = match s.protocol {
         MessageProtocol::Kafka => (&c.kafka_topics, "FASTMOCK_CAPTURE_KAFKA_TOPICS"),
         MessageProtocol::Mqtt => (&c.mqtt_topics, "FASTMOCK_CAPTURE_MQTT_TOPICS"),
         MessageProtocol::Amqp => (&c.amqp_exchanges, "FASTMOCK_CAPTURE_AMQP_EXCHANGES"),
     };
+    if list.is_none() && !s.from_config {
+        return Err(format!(
+            "capture sources created through the API need {name}: set it to the names or prefix* this server may read ({name}=* allows every one)"
+        ));
+    }
     for d in s.destinations() {
         if !fastmock_brokers::name_allowed(list.as_deref(), &d) {
             return Err(format!("{d} is not in {name}"));
@@ -220,8 +226,46 @@ impl DecodedBody {
     }
 }
 
-/// Decodes a body: Confluent Avro through the schema registry, then JSON, text, or base64.
-pub async fn decode(app: &AppState, m: &CapturedMessage) -> DecodedBody {
+/// The schema a Confluent-framed body needs: `None` for other bodies, otherwise the schema or why there is
+/// none. Answers the registry has given (also failures, for a while) cost nothing; other lookups take one of
+/// `lookups`, and when none is left the body stays undecoded. Errors name no registry address or response.
+pub async fn resolve_schema(
+    app: &AppState,
+    m: &CapturedMessage,
+    lookups: &mut usize,
+) -> Option<Result<Arc<apache_avro::Schema>, String>> {
+    let id = fastmock_kafka::confluent_schema_id(&m.body)?;
+    let Some(reg) = app.kafka.registry() else {
+        return Some(Err(
+            "Confluent-framed Avro; set FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL to decode it".into(),
+        ));
+    };
+    if m.truncated {
+        return Some(Err(
+            "the stored body is truncated; Avro cannot be decoded".into()
+        ));
+    }
+    if let Some(r) = reg.cached(id).await {
+        return Some(r);
+    }
+    if *lookups == 0 {
+        return Some(Err(
+            "not decoded: this search looked up its limit of schema ids; narrow it".into(),
+        ));
+    }
+    *lookups -= 1;
+    Some(reg.schema(id).await.map_err(|e| {
+        tracing::warn!(schema_id = id, error = %format!("{e:#}"), "schema lookup for a captured message failed");
+        e.to_string()
+    }))
+}
+
+/// Decodes a body: Confluent Avro with `schema` (from [`resolve_schema`]), then JSON, text, or base64.
+/// Pure CPU work, so large bodies are decoded off the async workers.
+pub fn decode_with(
+    m: &CapturedMessage,
+    schema: Option<Result<Arc<apache_avro::Schema>, String>>,
+) -> DecodedBody {
     let b64 = |error: Option<String>, schema_id: Option<i32>| DecodedBody {
         encoding: "base64".into(),
         value: Value::String(base64::engine::general_purpose::STANDARD.encode(&m.body)),
@@ -237,32 +281,18 @@ pub async fn decode(app: &AppState, m: &CapturedMessage) -> DecodedBody {
         };
     }
     if let Some(id) = fastmock_kafka::confluent_schema_id(&m.body) {
-        let Some(reg) = app.kafka.registry() else {
-            return b64(
-                Some(
-                    "Confluent-framed Avro; set FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL to decode it"
-                        .into(),
-                ),
-                Some(id),
-            );
-        };
-        if m.truncated {
-            return b64(
-                Some("the stored body is truncated; Avro cannot be decoded".into()),
-                Some(id),
-            );
-        }
-        return match reg.schema(id).await {
-            Ok(schema) => match fastmock_kafka::decode_avro(&schema, &m.body) {
+        return match schema {
+            Some(Ok(schema)) => match fastmock_kafka::decode_avro(&schema, &m.body) {
                 Ok(v) => DecodedBody {
                     encoding: "avro".into(),
                     value: v,
                     schema_id: Some(id),
                     error: None,
                 },
-                Err(e) => b64(Some(format!("{e:#}")), Some(id)),
+                Err(e) => b64(Some(e.to_string()), Some(id)),
             },
-            Err(e) => b64(Some(format!("{e:#}")), Some(id)),
+            Some(Err(e)) => b64(Some(e), Some(id)),
+            None => b64(None, Some(id)),
         };
     }
     match std::str::from_utf8(&m.body) {
@@ -282,6 +312,20 @@ pub async fn decode(app: &AppState, m: &CapturedMessage) -> DecodedBody {
         },
         Err(_) => b64(None, None),
     }
+}
+
+/// Decodes one body for the API: [`resolve_schema`] with one lookup, then [`decode_with`].
+pub async fn decode(app: &AppState, m: &CapturedMessage) -> DecodedBody {
+    let schema = resolve_schema(app, m, &mut 1).await;
+    let m = m.clone();
+    tokio::task::spawn_blocking(move || decode_with(&m, schema))
+        .await
+        .unwrap_or_else(|_| DecodedBody {
+            encoding: "empty".into(),
+            value: Value::String(String::new()),
+            schema_id: None,
+            error: Some("decoding failed".into()),
+        })
 }
 
 /// Spaces a principal may read messages in, for the source lists of other modules.
@@ -341,7 +385,8 @@ mod tests {
                 &c,
                 &src(serde_json::json!({"name": "a", "protocol": "kafka", "topics": ["x"]}))
             )
-            .is_ok()
+            .is_err(),
+            "no Kafka allow-list: API sources are refused"
         );
         c.kafka_topics = Some(vec![]);
         assert!(
@@ -351,5 +396,27 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn api_sources_need_an_allow_list() {
+        let c = CaptureConfig::default();
+        let mut s: CaptureSource = serde_json::from_value(
+            serde_json::json!({"name": "a", "protocol": "kafka", "topics": ["orders"]}),
+        )
+        .unwrap();
+        let e = allowed(&c, &s).unwrap_err();
+        assert!(e.contains("FASTMOCK_CAPTURE_KAFKA_TOPICS"), "{e}");
+        s.from_config = true;
+        assert!(
+            allowed(&c, &s).is_ok(),
+            "configured sources need no allow-list"
+        );
+        s.from_config = false;
+        let c = CaptureConfig {
+            kafka_topics: Some(vec!["*".into()]),
+            ..Default::default()
+        };
+        assert!(allowed(&c, &s).is_ok());
     }
 }

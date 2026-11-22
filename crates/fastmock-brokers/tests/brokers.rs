@@ -10,14 +10,26 @@ use fastmock_brokers::amqp::{
     AmqpCapture, AmqpMessage, AmqpPublisher, AmqpSettings, ExchangeDeclaration,
 };
 use fastmock_brokers::mqtt::{MqttConnection, MqttPublish, MqttSettings, MqttVersion};
-use fastmock_brokers::{Credentials, LinkStatus, Received};
-use tokio::sync::{mpsc, watch};
+use fastmock_brokers::{
+    CaptureLimits, CaptureQueue, CaptureSink, Credentials, LinkStatus, Received, capture_channel,
+};
+use tokio::sync::watch;
 
 fn init() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
-async fn next(rx: &mut mpsc::Receiver<Received>) -> Received {
+fn queue(n: usize) -> (CaptureSink, CaptureQueue) {
+    capture_channel(
+        "test",
+        CaptureLimits {
+            max_messages: n,
+            ..Default::default()
+        },
+    )
+}
+
+async fn next(rx: &mut CaptureQueue) -> Received {
     tokio::time::timeout(Duration::from_secs(10), rx.recv())
         .await
         .expect("no message within 10 s")
@@ -39,7 +51,7 @@ async fn mqtt_round_trip(url: &str, version: MqttVersion, credentials: Option<Cr
     s.version = version;
     s.credentials = credentials;
     let base = format!("fm-test/{}", rand_suffix());
-    let (tx, mut rx) = mpsc::channel(16);
+    let (tx, mut rx) = queue(16);
     let sub = MqttConnection::start(
         &s,
         s.client_id("cap"),
@@ -176,7 +188,7 @@ async fn amqp_publish_and_capture() {
     );
     publisher.publish(&msg, Some(&decl)).await.unwrap();
 
-    let (tx, mut rx) = mpsc::channel(16);
+    let (tx, mut rx) = queue(16);
     let status = Arc::new(Mutex::new(LinkStatus::default()));
     let (stop, stopped) = watch::channel(false);
     let task = tokio::spawn(fastmock_brokers::amqp::consume(
@@ -274,7 +286,7 @@ async fn mqtt_over_mutual_tls() {
     };
     s.validate().unwrap();
     let topic = format!("fm-tls/{}", rand_suffix());
-    let (tx, mut rx) = mpsc::channel(4);
+    let (tx, mut rx) = queue(4);
     let sub =
         MqttConnection::start(&s, s.client_id("cap"), vec![(topic.clone(), 1)], Some(tx)).unwrap();
     wait_connected(|| sub.status()).await;
@@ -395,4 +407,41 @@ async fn amqp_over_tls_with_a_custom_ca() {
             || format!("{e:#}").contains("UnknownIssuer"),
         "{e:#}"
     );
+}
+
+#[tokio::test]
+async fn a_missing_exchange_does_not_fail_other_publications() {
+    init();
+    let Ok(url) = std::env::var("FASTMOCK_TEST_AMQP") else {
+        eprintln!("FASTMOCK_TEST_AMQP not set: skipped");
+        return;
+    };
+    let publisher = Arc::new(AmqpPublisher::new(amqp_settings(&url), "isolation test"));
+    let good = AmqpMessage {
+        exchange: "amq.topic".into(),
+        routing_key: "fm.isolation".into(),
+        payload: b"x".to_vec(),
+        ..Default::default()
+    };
+    publisher.publish(&good, None).await.unwrap();
+    let mut tasks = Vec::new();
+    for i in 0..20 {
+        let p = publisher.clone();
+        let g = good.clone();
+        tasks.push(tokio::spawn(async move { p.publish(&g, None).await }));
+        let p = publisher.clone();
+        let missing = AmqpMessage {
+            exchange: format!("fm-missing-{}-{i}", rand_suffix()),
+            ..good.clone()
+        };
+        tasks.push(tokio::spawn(async move {
+            let e = p.publish(&missing, None).await.unwrap_err();
+            assert!(e.to_string().contains("does not exist"), "{e}");
+            Ok(())
+        }));
+    }
+    for t in tasks {
+        t.await.unwrap().unwrap();
+    }
+    assert!(publisher.status().connected);
 }

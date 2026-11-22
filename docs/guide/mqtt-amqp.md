@@ -34,8 +34,8 @@ credentials in the URL.
 | `FASTMOCK_AMQP_USERNAME`, `FASTMOCK_AMQP_PASSWORD` | none (`guest`) | Credentials for SASL `PLAIN`. Set both or neither. |
 | `FASTMOCK_AMQP_SASL_MECHANISM` | `PLAIN` | `PLAIN` or `EXTERNAL` (the broker takes the identity from the client certificate; needs `amqps://` and a client certificate, no password). |
 | `FASTMOCK_AMQP_TLS_CA_FILE`, `_TLS_CERT_FILE`, `_TLS_KEY_FILE` | none | Only with `amqps://`. |
-| `FASTMOCK_AMQP_ALLOWED_EXCHANGES` | none (any) | Exchanges stubs and async mocks may publish to: names or `prefix*`; the default exchange is `amq.default`. |
-| `FASTMOCK_AMQP_DECLARE_EXCHANGES` | `false` | Declare a missing exchange before the first message to it, with the message's `exchangeType` (default `topic`), durable. Existing exchanges are never redeclared. The user needs the `configure` permission. |
+| `FASTMOCK_AMQP_ALLOWED_EXCHANGES` | none (any) | Exchanges stubs and async mocks may publish to: names or `prefix*`. The default exchange routes to the queue named by the routing key, so it is allowed through `amq.default/<queue>` entries (`amq.default/orders.*`); `amq.default` alone allows no queue. |
+| `FASTMOCK_AMQP_DECLARE_EXCHANGES` | `false` | Declare a missing exchange before the first message to it, with the message's `exchangeType` (default `topic`), durable. Only exchange names written in the stub are declared, never names produced by a template. Existing exchanges are never redeclared. The user needs the `configure` permission. |
 
 Settings are checked at start-up: a URL with credentials, a query or an unknown scheme, a password without a user
 name (AMQP), a certificate without its key, TLS files with a plain `mqtt://` or `amqp://` URL, `EXTERNAL` without
@@ -99,13 +99,24 @@ Fields for every protocol:
 | `protocol` | `kafka`, `mqtt`, `amqp` | The broker; `kafka` when absent. |
 | `jsonValue` | JSON with templates | JSON body. A string that is exactly `"{{json expr}}"` keeps the JSON type of the value. |
 | `value` | template | Text body, used when `jsonValue` is not set. Without both, the body is empty. |
-| `headers` | map of templates | Kafka headers, MQTT 5 user properties, AMQP headers (long strings). |
+| `headers` | map of templates | Kafka headers, MQTT 5 user properties, AMQP headers (long strings). At most 100 per message. |
 | `contentType` | template | MQTT 5 content type property, AMQP `content_type`; for Kafka the `content-type` header unless `headers` sets it. |
 | `delayMs` | integer | Publish this long after the match, at most `FASTMOCK_MAX_DELAY` and one hour. Messages of a stub are sent in order of their delay; each delay counts from the match. |
 
+A stub has at most 100 messages. All templated fields of all messages of one response render together within one
+budget: 16 MiB of output and the time, step and memory limits of one template. A field a protocol limits stops
+rendering as soon as it is too long and fails the message: AMQP exchange, routing key, `messageId`,
+`correlationId`, `replyTo`, `expiration`, `messageType`, `appId` and `contentType` at 255 bytes, a Kafka topic at
+249 bytes, MQTT topics, properties and user properties at 65535 bytes (`messages[0].routingKey: the rendered value
+exceeds 255 bytes`). The response itself is not affected.
+
 The HTTP response is not delayed by publishing and does not fail when publishing fails: publishing runs in the
 background, the outcome is logged and counted. Messages are published at most once, never retried; a message whose
-broker is unreachable is lost and counted as `failed`. Messages that do not fit the protocol (an MQTT `key`, an AMQP
+broker is unreachable is lost and counted as `failed`. Each replica publishes at most 256 messages at a time;
+messages due now beyond that are dropped and counted as `dropped`. Delayed messages wait in a separate queue and
+take a publication slot only when they are due: at most 4096 messages and 64 MiB wait per replica, at most 1024 of
+them from one stub; messages beyond that are dropped and counted as `dropped`, and a due message that finds no free
+slot within 10 seconds too. Messages that do not fit the protocol (an MQTT `key`, an AMQP
 `topic`, `qos` for Kafka, `avroSchema` outside Kafka) are rejected when the stub is saved:
 `messages[0]: key not used with protocol mqtt`.
 
@@ -113,14 +124,17 @@ broker is unreachable is lost and counted as `failed`. Messages that do not fit 
 
 | Field | Type | Meaning |
 |---|---|---|
-| `topic` | template, required | Topic name; no `+` or `#`. |
+| `topic` | template, required | Topic name; no `+` or `#`, no control characters. |
 | `qos` | `0`, `1`, `2` | Quality of service, default `0`. |
 | `retain` | boolean | The broker keeps the message as the topic's retained message. |
 | `correlationData` | template | MQTT 5 correlation data (UTF-8 bytes). |
-| `responseTopic` | template | MQTT 5 response topic. |
+| `responseTopic` | template | MQTT 5 response topic: a topic name like `topic` (no `+` or `#`). |
 | `messageExpirySeconds` | integer | MQTT 5 message expiry interval. |
 
-A publication counts as sent when the broker acknowledged it: on the write for QoS 0, on `PUBACK` for QoS 1, on
+Before a message is handed to the connection, its topic, response topic, content type and user properties are
+checked against what brokers accept (no NUL or other control characters, no non-characters, at most 65535 bytes;
+correlation data at most 65535 bytes): a bad value fails that message only instead of making the broker close the
+connection that every publication shares. A publication counts as sent when the broker acknowledged it: on the write for QoS 0, on `PUBACK` for QoS 1, on
 `PUBCOMP` for QoS 2. An MQTT 5 acknowledgement with an error reason (`NotAuthorized`, `TopicNameInvalid`, ...) fails
 the message; `NoMatchingSubscribers` counts as sent. A publication waits at most 10 seconds for its acknowledgement.
 
@@ -150,8 +164,11 @@ orders/A-1/status {"at":"2026-11-22T02:09:16.401Z","orderId":"A-1","status":"SHI
 
 Every message also carries `timestamp` (seconds). FastMock publishes on one channel in confirm mode: a message
 counts as sent when the broker confirms it, and fails on a negative confirm, when the exchange does not exist
-(`NOT_FOUND - no exchange 'orders' in vhost '/'`) or when no confirm arrives within 10 seconds. A message routed to no
-queue is confirmed and dropped by the broker, as for any AMQP producer.
+(`exchange orders does not exist (create it, or set FASTMOCK_AMQP_DECLARE_EXCHANGES=true ...)`) or when no confirm
+arrives within 10 seconds. Before the first message to an exchange FastMock checks on a separate channel that it
+exists, so a missing exchange fails only the messages to it, never the confirms of other messages on the shared
+channel. It remembers up to 256 exchanges as existing. A message routed to no queue is confirmed and dropped by the
+broker, as for any AMQP producer.
 
 ## Connections, reconnects and readiness
 
@@ -159,8 +176,9 @@ Each replica opens one MQTT connection and one AMQP connection for publishing, o
 them. An unset or unreachable broker never affects readiness (`/readyz`): stubs answer, their messages fail.
 
 - **MQTT**: the connection reconnects by itself after an error, with a pause that doubles from 200 ms to 30 s and
-  resets after a successful connection. It uses a clean session; publications in flight when the connection breaks
-  fail and are not resent.
+  resets only after a connection that lasted at least 10 seconds, so a broker that accepts and then closes every
+  connection is not retried at the shortest pause. It uses a clean session; publications in flight when the
+  connection breaks fail and are not resent.
 - **AMQP**: after a failure the connection is rebuilt by the next message, at most once per pause (200 ms doubling
   to 30 s); messages in between fail at once with
   `the AMQP broker is unavailable (...); the next connection attempt is in 1.6s`. A closed channel (for example
@@ -174,7 +192,9 @@ publishing connections stay open.
 `FASTMOCK_MQTT_ALLOWED_TOPICS` and `FASTMOCK_AMQP_ALLOWED_EXCHANGES` work like `FASTMOCK_KAFKA_ALLOWED_TOPICS`:
 unset allows everything; otherwise a message outside the list is not published and fails with
 `topic is not in FASTMOCK_MQTT_ALLOWED_TOPICS` or `exchange audit is not in FASTMOCK_AMQP_ALLOWED_EXCHANGES`. The
-stub still answers. The AsyncAPI import warns about async mocks outside the lists, and
+stub still answers. For the AMQP default exchange (`amq.default` or an empty exchange) the routing key is the
+destination queue, so the list needs `amq.default/<queue>` entries: `amq.default/replies.*` allows routing keys
+starting with `replies.`; a plain `amq.default` entry allows none. The AsyncAPI import warns about async mocks outside the lists, and
 `POST /__admin/async-mocks/{id}/trigger` answers `400`. Use them in shared brokers.
 
 ## TLS and authentication
@@ -183,10 +203,11 @@ TLS uses rustls (TLS 1.2 and 1.3) with the ring provider. The broker certificate
 Mozilla roots compiled into the binary plus the certificates of the `*_TLS_CA_FILE` bundle; verification cannot be
 switched off. The certificate must name the host of the URL. `*_TLS_CERT_FILE` (leaf first, then intermediates)
 and `*_TLS_KEY_FILE` (unencrypted PEM) present a client certificate for mTLS; set both or neither. For `mqtts://`
-the MQTT client talks to a Unix socket in a private temporary directory of the process (mode `0700`, removed with
-the connection) and FastMock wraps that connection in TLS towards the broker, so the temporary directory
-(`TMPDIR`, else `/tmp`) must be writable. With a read-only root filesystem, the Helm chart and the operator mount a
-small in-memory `/tmp` when the MQTT URL uses TLS.
+the MQTT client talks to a Unix socket of the process and FastMock wraps that connection in TLS towards the broker.
+On Linux the socket has a random name in the abstract namespace, so no file is written and a read-only root
+filesystem needs no writable `/tmp`; the bridge accepts connections from the FastMock process only. On other Unix
+systems the socket is a file in a private temporary directory (mode `0700`, removed with the connection), so
+`TMPDIR` (else `/tmp`) must be writable there.
 
 | Broker setup | Settings |
 |---|---|
@@ -209,6 +230,12 @@ The same settings are used by [message capture](message-capture.md).
 | log `message publishing failed` | `protocol`, `topic`, `error`. |
 | logs `MQTT connected`, `MQTT connection lost; reconnecting`, `AMQP connected`, `AMQP connection failed` | Connection state, with the broker URL (never credentials). |
 
+Errors returned through the admin API (`POST /__admin/async-mocks/{id}/trigger`, the `lastError` of capture sources)
+name no broker address, virtual host, certificate detail or broker response: they say what failed, for example
+`publishing to AMQP failed: broker connection refused (details in the server log)`, `TLS handshake failed` or
+`schema registry returned 404`. Errors FastMock raises itself (allow-lists, invalid values, missing settings or
+exchanges) keep their text. The server log has the full error.
+
 ## Troubleshooting
 
 | Symptom | Cause |
@@ -218,6 +245,8 @@ The same settings are used by [message capture](message-capture.md).
 | `invalid peer certificate: UnknownIssuer` | The broker's CA is missing from `*_TLS_CA_FILE`. |
 | `the MQTT broker did not acknowledge the message within 10s` | The broker is overloaded or dropped the connection; QoS 0 avoids waiting for acknowledgements. |
 | `the broker refused the message: NotAuthorized` | The broker's ACL denies the topic to FastMock's user. |
-| `NOT_FOUND - no exchange 'orders' in vhost '/'` | Create the exchange, or set `FASTMOCK_AMQP_DECLARE_EXCHANGES=true`. |
+| `exchange orders does not exist` | Create the exchange, or set `FASTMOCK_AMQP_DECLARE_EXCHANGES=true` (not for exchange names produced by a template). |
+| `the default exchange with this routing key is not in FASTMOCK_AMQP_ALLOWED_EXCHANGES` | Add `amq.default/<queue>` (or a `prefix*`) for the queues stubs may publish to. |
+| `responseTopic ... is not a valid MQTT topic name` | The rendered response topic contains `+`, `#` or a control character. |
 | `ACCESS_REFUSED` (AMQP) | The user lacks `write` on the exchange (or `configure` for declarations), or the virtual host is wrong (`/%2f` is `/`). |
 | MQTT 5 properties are missing at the consumer | `FASTMOCK_MQTT_VERSION=3.1.1`, or the consumer uses MQTT 3.1.1. |

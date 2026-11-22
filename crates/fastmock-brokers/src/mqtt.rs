@@ -7,9 +7,11 @@
 //! every publication in flight fails and nothing is resent, so a message is published at most once by
 //! FastMock (counted as failed when its fate is unknown).
 //!
-//! TLS (`mqtts://`) runs in FastMock, not in rumqttc: the client connects to a Unix socket in a private
-//! directory (mode 0700) of this process, and a bridge task wraps each such connection in rustls towards the
-//! broker. rumqttc is used without its TLS features.
+//! TLS (`mqtts://`) runs in FastMock, not in rumqttc: the client connects to a Unix socket of this process,
+//! and a bridge task wraps each such connection in rustls towards the broker. On Linux the socket is in the
+//! abstract namespace (no file, so a read-only root file system is fine) and the bridge accepts connections
+//! from this process only; elsewhere it is a file in a private directory (mode 0700). rumqttc is used
+//! without its TLS features.
 
 use std::collections::{HashMap, VecDeque};
 use std::str::FromStr;
@@ -19,14 +21,24 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use bytes::Bytes;
 use serde_json::{Value, json};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{oneshot, watch};
 
-use crate::{Backoff, Credentials, LinkStatus, Received, TlsFiles};
+use crate::{Backoff, CaptureSink, Credentials, LinkStatus, Offer, Received, TlsFiles};
 
 /// Requests a connection may queue before publications are refused.
 pub const REQUEST_CAPACITY: usize = 256;
 /// Largest MQTT topic in bytes.
 pub const MAX_TOPIC_BYTES: usize = 65_535;
+/// Largest MQTT UTF-8 string or binary property in bytes.
+pub const MAX_STRING_BYTES: usize = 65_535;
+
+/// The largest packet a capture connection accepts: the stored payload plus 1 MiB for the topic,
+/// properties and payload that is cut, at most 16 MiB. MQTT 5 brokers do not send FastMock larger messages.
+pub fn capture_packet_limit(max_payload: usize) -> usize {
+    max_payload
+        .saturating_add(1024 * 1024)
+        .min(16 * 1024 * 1024)
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MqttVersion {
@@ -158,9 +170,22 @@ pub fn parse_url(url: &str) -> anyhow::Result<(String, u16, bool)> {
     Ok((host, port, tls))
 }
 
-/// Whether `t` is a valid topic name to publish to: not empty, no wildcards, no NUL, at most 64 KiB.
+/// Whether `s` is a UTF-8 string brokers accept in a packet: at most 65535 bytes, without NUL, control
+/// characters (U+0001..U+001F, U+007F..U+009F) or non-characters.
+pub fn valid_string(s: &str) -> bool {
+    s.len() <= MAX_STRING_BYTES
+        && s.chars().all(|c| {
+            let n = c as u32;
+            !(n <= 0x1f
+                || (0x7f..=0x9f).contains(&n)
+                || (0xfdd0..=0xfdef).contains(&n)
+                || n & 0xfffe == 0xfffe)
+        })
+}
+
+/// Whether `t` is a valid topic name to publish to: not empty, no wildcards, a [`valid_string`].
 pub fn valid_topic(t: &str) -> bool {
-    !t.is_empty() && t.len() <= MAX_TOPIC_BYTES && !t.contains(['+', '#', '\0'])
+    !t.is_empty() && t.len() <= MAX_TOPIC_BYTES && !t.contains(['+', '#']) && valid_string(t)
 }
 
 /// Whether `f` is a valid topic filter: `+` only as a whole level, `#` only as the whole last level.
@@ -210,6 +235,52 @@ pub struct MqttPublish {
 }
 
 impl MqttPublish {
+    /// Checks the topic and every property against what brokers accept, so that a bad value fails this
+    /// publication instead of making the broker drop the shared connection.
+    pub fn check(&self) -> Result<(), String> {
+        let shown = |s: &str| crate::cut(s, 64).escape_debug().to_string();
+        if !valid_topic(&self.topic) {
+            return Err(format!(
+                "`{}` is not a valid MQTT topic to publish to",
+                shown(&self.topic)
+            ));
+        }
+        if self.qos > 2 {
+            return Err("qos must be 0, 1 or 2".into());
+        }
+        if let Some(t) = &self.response_topic
+            && !valid_topic(t)
+        {
+            return Err(format!(
+                "responseTopic `{}` is not a valid MQTT topic name (no + or #, no control characters)",
+                shown(t)
+            ));
+        }
+        if let Some(ct) = &self.content_type
+            && !valid_string(ct)
+        {
+            return Err("contentType is not a valid MQTT string (at most 65535 bytes, no control characters)".into());
+        }
+        if self
+            .correlation_data
+            .as_ref()
+            .is_some_and(|c| c.len() > MAX_STRING_BYTES)
+        {
+            return Err("correlationData is at most 65535 bytes".into());
+        }
+        if let Some((k, _)) = self
+            .user_properties
+            .iter()
+            .find(|(k, v)| !valid_string(k) || !valid_string(v))
+        {
+            return Err(format!(
+                "user property `{}` is not a valid MQTT string pair (at most 65535 bytes each, no control characters)",
+                shown(k)
+            ));
+        }
+        Ok(())
+    }
+
     /// Whether the publication uses MQTT 5 properties.
     pub fn has_v5_properties(&self) -> bool {
         !self.user_properties.is_empty()
@@ -404,7 +475,13 @@ fn map_v5(ev: rumqttc::v5::Event) -> Ev {
                     content_type = Some(ct);
                 }
                 if let Some(cd) = pp.correlation_data {
-                    properties.insert("correlationData".into(), json!(crate::text_or_hex(&cd)));
+                    properties.insert(
+                        "correlationData".into(),
+                        json!(crate::text_or_hex_capped(
+                            &cd,
+                            crate::MAX_CAPTURE_VALUE_BYTES
+                        )),
+                    );
                 }
                 if let Some(rt) = pp.response_topic {
                     properties.insert("responseTopic".into(), json!(rt));
@@ -469,18 +546,67 @@ pub struct MqttConnection {
 
 /// Wraps the connections of rumqttc to a private Unix socket in TLS towards the broker.
 struct TlsBridge {
-    dir: std::path::PathBuf,
+    /// The private directory of a file socket; `None` for an abstract socket.
+    dir: Option<std::path::PathBuf>,
     task: tokio::task::JoinHandle<()>,
 }
 
 impl Drop for TlsBridge {
     fn drop(&mut self) {
         self.task.abort();
-        let _ = std::fs::remove_dir_all(&self.dir);
+        if let Some(d) = &self.dir {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 }
 
+/// A listener in the abstract socket namespace with a random name, and the name as rumqttc connects to it
+/// (a leading NUL byte).
+#[cfg(target_os = "linux")]
+fn bind_private() -> anyhow::Result<(tokio::net::UnixListener, String, Option<std::path::PathBuf>)>
+{
+    use std::os::linux::net::SocketAddrExt;
+    let name = format!(
+        "fastmock-mqtt-{:016x}{:016x}",
+        rand::random::<u64>(),
+        rand::random::<u64>()
+    );
+    let addr = std::os::unix::net::SocketAddr::from_abstract_name(name.as_bytes())?;
+    let l = std::os::unix::net::UnixListener::bind_addr(&addr)
+        .context("binding the MQTT TLS bridge socket")?;
+    l.set_nonblocking(true)?;
+    Ok((
+        tokio::net::UnixListener::from_std(l)?,
+        format!("\0{name}"),
+        None,
+    ))
+}
+
+/// A listener on a socket file in a new private directory, the socket path and the directory.
+#[cfg(all(unix, not(target_os = "linux")))]
+fn bind_private() -> anyhow::Result<(tokio::net::UnixListener, String, Option<std::path::PathBuf>)>
+{
+    let dir = private_dir()?;
+    let path = dir.join("s");
+    let l = tokio::net::UnixListener::bind(&path)
+        .with_context(|| format!("binding {}", path.display()))?;
+    Ok((l, path.to_string_lossy().into_owned(), Some(dir)))
+}
+
+/// Whether a connection to the bridge comes from this process. An abstract socket can be reached by any
+/// process in the network namespace (other containers of a pod), so the peer's process id must be ours.
 #[cfg(unix)]
+fn own_process(peer: &tokio::net::UnixStream) -> bool {
+    if cfg!(not(target_os = "linux")) {
+        return true;
+    }
+    peer.peer_cred()
+        .ok()
+        .and_then(|c| c.pid())
+        .is_some_and(|pid| i64::from(pid) == i64::from(std::process::id()))
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
 fn private_dir() -> anyhow::Result<std::path::PathBuf> {
     use std::os::unix::fs::DirBuilderExt;
     let name = format!("fastmock-mqtt-{:016x}", rand::random::<u64>());
@@ -503,14 +629,17 @@ impl TlsBridge {
         let name = rustls::pki_types::ServerName::try_from(settings.host.clone()).map_err(|e| {
             anyhow::anyhow!("`{}` is not a valid TLS server name: {e}", settings.host)
         })?;
-        let dir = private_dir()?;
-        let path = dir.join("s");
-        let listener = tokio::net::UnixListener::bind(&path)
-            .with_context(|| format!("binding {}", path.display()))?;
+        let (listener, socket, dir) = bind_private()?;
         let addr = (settings.host.clone(), settings.port);
         let connector = tokio_rustls::TlsConnector::from(config);
         let task = tokio::spawn(async move {
             while let Ok((mut local, _)) = listener.accept().await {
+                if !own_process(&local) {
+                    tracing::warn!(
+                        "refused a connection to the MQTT TLS bridge from another process"
+                    );
+                    continue;
+                }
                 let connector = connector.clone();
                 let name = name.clone();
                 let addr = addr.clone();
@@ -540,7 +669,6 @@ impl TlsBridge {
                 });
             }
         });
-        let socket = path.to_string_lossy().into_owned();
         Ok((Self { dir, task }, socket))
     }
 
@@ -563,7 +691,7 @@ impl MqttConnection {
         settings: &MqttSettings,
         client_id: String,
         subscriptions: Vec<(String, u8)>,
-        sink: Option<mpsc::Sender<Received>>,
+        sink: Option<CaptureSink>,
     ) -> anyhow::Result<Arc<Self>> {
         let shared = Arc::new(Shared::default());
         let (bridge, host, port) = if settings.tls {
@@ -643,12 +771,7 @@ impl MqttConnection {
 
     /// Publishes and waits for the acknowledgement that its QoS calls for.
     pub async fn publish(&self, m: &MqttPublish) -> anyhow::Result<()> {
-        if !valid_topic(&m.topic) {
-            bail!("`{}` is not a valid MQTT topic to publish to", m.topic);
-        }
-        if m.qos > 2 {
-            bail!("qos must be 0, 1 or 2");
-        }
+        m.check().map_err(crate::public)?;
         let (tx, rx) = oneshot::channel();
         {
             let _order = self.shared.order.lock().await;
@@ -686,7 +809,9 @@ impl MqttConnection {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .pop_back();
-                bail!("the MQTT client cannot take the message ({e}); too many messages in flight");
+                return Err(crate::public(format!(
+                    "the MQTT client cannot take the message ({e}); too many messages in flight"
+                )));
             }
         }
         match tokio::time::timeout(self.ack_timeout, rx).await {
@@ -704,7 +829,7 @@ impl MqttConnection {
 struct EventTask {
     shared: Arc<Shared>,
     subscriptions: Vec<(String, u8)>,
-    sink: Option<mpsc::Sender<Received>>,
+    sink: Option<CaptureSink>,
     endpoint: String,
     subscriber: Client,
 }
@@ -729,6 +854,7 @@ impl EventTask {
     async fn run(self, mut lp: Loop, mut stopped: watch::Receiver<bool>) {
         let mut backoff = Backoff::default();
         let mut dropped_warned = false;
+        let mut connected_at: Option<tokio::time::Instant> = None;
         loop {
             let ev = tokio::select! {
                 _ = stopped.changed() => break,
@@ -736,7 +862,7 @@ impl EventTask {
             };
             match ev {
                 Ok(Ev::Connected) => {
-                    backoff.reset();
+                    connected_at = Some(tokio::time::Instant::now());
                     self.shared.set_status(|s| {
                         s.connected = true;
                         s.last_error = None;
@@ -766,16 +892,15 @@ impl EventTask {
                 }
                 Ok(Ev::Message(m)) => {
                     if let Some(sink) = &self.sink {
-                        match sink.try_send(*m) {
-                            Ok(()) => dropped_warned = false,
-                            Err(mpsc::error::TrySendError::Full(_)) => {
-                                metrics::counter!("fastmock_capture_messages_total", "protocol" => "mqtt", "result" => "dropped").increment(1);
+                        match sink.offer(*m) {
+                            Offer::Queued => dropped_warned = false,
+                            Offer::Dropped => {
                                 if !dropped_warned {
                                     tracing::warn!(endpoint = %self.endpoint, "MQTT capture cannot keep up; messages dropped");
                                     dropped_warned = true;
                                 }
                             }
-                            Err(mpsc::error::TrySendError::Closed(_)) => break,
+                            Offer::Closed => break,
                         }
                     }
                 }
@@ -802,8 +927,9 @@ impl EventTask {
                         .unwrap_or(false);
                     self.shared.set_status(|s| {
                         s.connected = false;
-                        s.last_error = Some(e.clone());
+                        s.last_error = Some(crate::error_category(&e));
                     });
+                    backoff.after_disconnect(connected_at.take().map(|t| t.elapsed()));
                     let delay = backoff.next_delay();
                     if was {
                         tracing::warn!(endpoint = %self.endpoint, error = %e, "MQTT connection lost; reconnecting");
@@ -897,6 +1023,96 @@ mod tests {
         assert!(s.validate().is_err());
         assert!(s.client_id("pub").starts_with("fastmock-pub-"));
         assert_eq!(s.endpoint(), "mqtts://broker.example.com:1883");
+    }
+
+    #[test]
+    fn properties_are_checked_before_publishing() {
+        let ok = MqttPublish {
+            topic: "devices/d1/state".into(),
+            response_topic: Some("replies/d1".into()),
+            user_properties: vec![("k".into(), "v".into())],
+            content_type: Some("application/json".into()),
+            ..Default::default()
+        };
+        ok.check().unwrap();
+        let bad = |m: MqttPublish| m.check().unwrap_err();
+        assert!(
+            bad(MqttPublish {
+                response_topic: Some("replies/#".into()),
+                ..ok.clone()
+            })
+            .contains("responseTopic")
+        );
+        assert!(
+            bad(MqttPublish {
+                response_topic: Some("replies/+/x".into()),
+                ..ok.clone()
+            })
+            .contains("responseTopic")
+        );
+        assert!(
+            bad(MqttPublish {
+                user_properties: vec![("k".into(), "a\0b".into())],
+                ..ok.clone()
+            })
+            .contains("user property")
+        );
+        assert!(
+            bad(MqttPublish {
+                content_type: Some("text/plain\u{1}".into()),
+                ..ok.clone()
+            })
+            .contains("contentType")
+        );
+        assert!(
+            bad(MqttPublish {
+                correlation_data: Some(vec![0; 70_000]),
+                ..ok.clone()
+            })
+            .contains("correlationData")
+        );
+        assert!(!valid_topic("a/\u{7f}"));
+        assert!(!valid_topic("a/\u{ffff}"));
+        assert!(valid_string("caf\u{e9} \u{20ac}"));
+        assert_eq!(capture_packet_limit(1024), 1024 + 1024 * 1024);
+        assert_eq!(capture_packet_limit(16 * 1024 * 1024), 16 * 1024 * 1024);
+    }
+
+    #[test]
+    fn binary_correlation_data_is_capped_when_captured() {
+        use rumqttc::v5::mqttbytes::v5::{Packet, Publish, PublishProperties};
+        let p = Publish::new(
+            "a/b",
+            rumqttc::v5::mqttbytes::QoS::AtMostOnce,
+            "x",
+            Some(PublishProperties {
+                correlation_data: Some(Bytes::from(vec![0xff; 65_535])),
+                ..Default::default()
+            }),
+        );
+        let Ev::Message(m) = map_v5(rumqttc::v5::Event::Incoming(Packet::Publish(p))) else {
+            panic!("not a message");
+        };
+        let cd = m.properties["correlationData"].as_str().unwrap();
+        assert_eq!(cd.len(), crate::MAX_CAPTURE_VALUE_BYTES);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn the_tls_bridge_needs_no_file() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        let s = MqttSettings::new(&format!("mqtts://127.0.0.1:{port}")).unwrap();
+        let (bridge, socket) = TlsBridge::start(&s, Arc::new(Shared::default())).unwrap();
+        assert!(socket.starts_with('\0'), "{socket:?}");
+        assert!(bridge.dir.is_none());
+        let _local = tokio::net::UnixStream::connect(&socket).await.unwrap();
+        let accepted = tokio::time::timeout(Duration::from_secs(5), upstream.accept()).await;
+        assert!(
+            accepted.is_ok(),
+            "the bridge connects upstream for this process"
+        );
     }
 
     #[tokio::test]

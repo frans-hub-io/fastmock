@@ -797,6 +797,18 @@
                   "minimum": 1,
                   "maximum": 16777216
                 },
+                "maxBytes": {
+                  "type": "integer",
+                  "description": "Bytes of stored messages in all; the oldest are dropped beyond it.",
+                  "minimum": 1048576,
+                  "maximum": 1099511627776
+                },
+                "maxSpaceBytes": {
+                  "type": "integer",
+                  "description": "Bytes of stored messages per space and of the global area; a quarter of maxBytes when unset.",
+                  "minimum": 65536,
+                  "maximum": 1099511627776
+                },
                 "maxAge": {
                   "type": "string",
                   "description": "How long captured messages are kept.",
@@ -807,7 +819,7 @@
             },
             "allowedKafkaTopics": {
               "type": "array",
-              "description": "Kafka topics sources may read (name or prefix*); empty allows all.",
+              "description": "Kafka topics sources may read (name, prefix* or *); empty: only the sources listed here, none created through the API.",
               "items": {
                 "type": "string",
                 "minLength": 1
@@ -815,7 +827,7 @@
             },
             "allowedMqttTopics": {
               "type": "array",
-              "description": "MQTT topic filters sources may read (name or prefix*); empty allows all.",
+              "description": "MQTT topic filters sources may read (name, prefix* or *); empty: only the sources listed here, none created through the API.",
               "items": {
                 "type": "string",
                 "minLength": 1
@@ -823,7 +835,7 @@
             },
             "allowedAmqpExchanges": {
               "type": "array",
-              "description": "AMQP exchanges sources may bind to (name or prefix*); empty allows all.",
+              "description": "AMQP exchanges sources may bind to (name, prefix* or *); empty: only the sources listed here, none created through the API.",
               "items": {
                 "type": "string",
                 "minLength": 1

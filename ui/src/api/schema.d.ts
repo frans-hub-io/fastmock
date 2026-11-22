@@ -236,7 +236,7 @@ export interface paths {
         put?: never;
         /**
          * Find captured messages
-         * @description The stored messages of `space` (or of the areas the caller may read) matching `match`: source, protocol, topic, exchange, key, headers, properties, content type (string matchers) and `body` (the body matchers of stubs; JSON matchers see Avro bodies decoded). Looks at up to 10000 stored messages.
+         * @description The stored messages of `space` (or of the areas the caller may read) matching `match`: source, protocol, topic, exchange, key, headers, properties, content type (string matchers) and `body` (the body matchers of stubs; JSON matchers see Avro bodies decoded). Looks at up to 10000 stored messages and loads at most 64 MiB of bodies: only those of messages that meet the other conditions.
          */
         post: operations["findCapturedMessages"];
         delete?: never;
@@ -340,7 +340,7 @@ export interface paths {
         post?: never;
         /**
          * Delete a capture source
-         * @description Stops its consumer within a few seconds. Stored messages stay until retention removes them, unless `purge=true`. Audited as `capture.source.delete`.
+         * @description Stops its consumer within a few seconds. Stored messages stay until retention removes them (age, or the storage budgets, oldest first), unless `purge=true`, which also needs `messages:delete` and is checked before anything is deleted. Audited as `capture.source.delete`.
          */
         delete: operations["deleteCaptureSource"];
         options?: never;
@@ -359,7 +359,7 @@ export interface paths {
         put?: never;
         /**
          * Verify how many messages were captured
-         * @description Counts the stored messages of `space` (or of the areas the caller may read) matching `match`. Give `count` for an exact number, or `atLeast` and/or `atMost` (default: at least 1). 200 when it holds; 422 with the count and the closest non-matching messages and their failed conditions when it does not.
+         * @description Counts the stored messages of `space` (or of the areas the caller may read) matching `match`. Give `count` for an exact number, or `atLeast` and/or `atMost` (default: at least 1). 200 when it holds; 422 with the count and the closest non-matching messages and their failed conditions when it does not. Body conditions are checked only on messages that meet the other conditions; a near miss that fails those lists only them.
          */
         post: operations["verifyCapturedMessages"];
         delete?: never;
@@ -2162,9 +2162,12 @@ export interface components {
             /** @description The space of the source and of its messages; set from `?space=` by the API. */
             space?: string | null;
             protocol: components["schemas"]["MessageProtocol"];
-            /** @description Kafka topics, or MQTT topic filters (`+` and `#` wildcards). */
+            /**
+             * @description Kafka topics, or MQTT topic filters (`+` and `#` wildcards). Kafka internal topics (`__*`) and MQTT
+             *     filters starting with `$` (`$SYS/...`, shared subscriptions `$share/...`) are refused.
+             */
             topics?: string[];
-            /** @description AMQP: the exchange to bind FastMock's own queue to (not the default exchange). */
+            /** @description AMQP: the exchange to bind FastMock's own queue to (not the default exchange, not `amq.rabbitmq.*`). */
             exchange?: string | null;
             /** @description AMQP: binding keys of FastMock's queue (default `#`, every message of a topic exchange). */
             bindingKeys?: string[];
@@ -5230,7 +5233,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description More than 10000 stored messages to check */
+            /** @description More than 10000 stored messages or 64 MiB of bodies to check */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -5342,7 +5345,7 @@ export interface operations {
                     "application/json": components["schemas"]["WaitTimeout"];
                 };
             };
-            /** @description More than 10000 stored messages to check */
+            /** @description More than 10000 stored messages or 64 MiB of bodies to check */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -5750,7 +5753,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description The caller lacks messages:write */
+            /** @description The caller lacks messages:write, or messages:delete with purge=true */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -5853,7 +5856,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Expectation not met (`VerifyResult`), or more than 10000 stored messages to check (`ErrorBody`) */
+            /** @description Expectation not met (`VerifyResult`), or more than 10000 stored messages or 64 MiB of bodies to check (`ErrorBody`) */
             422: {
                 headers: {
                     [name: string]: unknown;

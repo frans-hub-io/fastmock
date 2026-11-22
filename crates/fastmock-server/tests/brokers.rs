@@ -15,16 +15,16 @@ use bytes::Bytes;
 use chrono::Utc;
 use fastmock_brokers::amqp::{AmqpCapture, AmqpMessage, AmqpPublisher, AmqpSettings};
 use fastmock_brokers::mqtt::{MqttConnection, MqttPublish, MqttSettings};
-use fastmock_brokers::{Credentials, LinkStatus, Received};
+use fastmock_brokers::{CaptureLimits, Credentials, LinkStatus, capture_channel};
 use fastmock_core::MessageProtocol;
-use fastmock_core::capture::CapturedMessage;
+use fastmock_core::capture::{CapturedMessage, InsertLimits};
 use fastmock_server::auth::hash_token;
 use fastmock_server::config::{Config, StorageKind};
 use fastmock_server::state::AppState;
 use reqwest::Method;
 use serde_json::{Value, json};
 use sqlx::Connection;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use uuid::Uuid;
 
 const ADMIN: &str = "fm_admin_token_for_broker_tests_0123456789";
@@ -32,12 +32,19 @@ const EDITOR: &str = "fm_editor_token_for_broker_tests_0123456789";
 const VIEWER: &str = "fm_viewer_token_for_broker_tests_0123456789";
 const BEDIT: &str = "fm_bedit_token_for_broker_tests_0123456789";
 const BVIEW: &str = "fm_bview_token_for_broker_tests_0123456789";
+const BCAP: &str = "fm_bcap_token_for_broker_tests_0123456789";
 
 const ACCESS: &str = r#"
+roles:
+  - name: capture-writer
+    permissions: [messages:read, messages:write]
 spaces:
   - name: billing
   - name: crm
 bindings:
+  - subject: token:bcap
+    role: capture-writer
+    spaces: [billing]
   - subject: token:bedit
     role: editor
     spaces: [billing]
@@ -60,6 +67,7 @@ fn tokens() -> Vec<String> {
         format!("dash:viewer:{}", hash_token(VIEWER)),
         format!("bedit::{}", hash_token(BEDIT)),
         format!("bview::{}", hash_token(BVIEW)),
+        format!("bcap::{}", hash_token(BCAP)),
     ]
 }
 
@@ -214,6 +222,9 @@ impl H {
 fn capture_cfg(storage: StorageKind) -> Config {
     let mut cfg = Config::for_tests(storage, tokens());
     cfg.capture.enabled = true;
+    cfg.capture.kafka_topics = Some(vec!["*".into()]);
+    cfg.capture.mqtt_topics = Some(vec!["*".into()]);
+    cfg.capture.amqp_exchanges = Some(vec!["*".into()]);
     cfg
 }
 
@@ -246,7 +257,10 @@ fn stored(
 
 async fn insert(h: &H, msgs: &[CapturedMessage]) {
     let svc = h.app.capture.clone().unwrap();
-    svc.store.insert(msgs, 1000).await.unwrap();
+    svc.store
+        .insert(msgs, &InsertLimits::keep(1000))
+        .await
+        .unwrap();
     svc.notify();
 }
 
@@ -603,7 +617,7 @@ async fn capture_api_finds_waits_verifies_and_scopes_messages() {
             );
             let svc = h2.capture.clone().unwrap();
             svc.store
-                .insert(std::slice::from_ref(&m), 1000)
+                .insert(std::slice::from_ref(&m), &InsertLimits::keep(1000))
                 .await
                 .unwrap();
             svc.notify();
@@ -708,7 +722,10 @@ async fn per_source_limits_keep_the_newest_messages() {
     let msgs: Vec<CapturedMessage> = (0..5)
         .map(|i| stored(id, "o", None, "t", format!("{i}").as_bytes()))
         .collect();
-    svc.store.insert(&msgs, 2).await.unwrap();
+    svc.store
+        .insert(&msgs, &InsertLimits::keep(2))
+        .await
+        .unwrap();
     let v = h.ok(Method::GET, "/capture/sources", VIEWER, None).await;
     assert_eq!(v["sources"][0]["status"]["stored"], 2);
     assert_eq!(v["maxMessages"], 3);
@@ -790,7 +807,13 @@ async fn mqtt_stubs_async_mocks_and_capture() {
 
     // An independent subscriber checks what reaches the broker.
     let direct = MqttSettings::new(&url).unwrap();
-    let (tx, mut rx) = mpsc::channel(32);
+    let (tx, mut rx) = capture_channel(
+        "mqtt",
+        CaptureLimits {
+            max_messages: 32,
+            ..Default::default()
+        },
+    );
     let sub = MqttConnection::start(
         &direct,
         direct.client_id("test"),
@@ -1003,7 +1026,13 @@ async fn amqp_stubs_async_mocks_and_capture() {
         .unwrap();
 
     // The application's own consumer, on its own queue.
-    let (app_tx, mut app_rx) = mpsc::channel::<Received>(16);
+    let (app_tx, mut app_rx) = capture_channel(
+        "amqp",
+        CaptureLimits {
+            max_messages: 16,
+            ..Default::default()
+        },
+    );
     let app_status = Arc::new(Mutex::new(LinkStatus::default()));
     let (app_stop, app_stopped) = watch::channel(false);
     tokio::spawn(fastmock_brokers::amqp::consume(
@@ -1324,5 +1353,242 @@ async fn asyncapi_import_creates_mqtt_and_amqp_mocks() {
     assert!(
         v["error"].as_str().unwrap().contains("FASTMOCK_MQTT_URL"),
         "{v}"
+    );
+}
+
+#[tokio::test]
+async fn capture_sources_are_limited_to_allowed_application_destinations() {
+    let mut cfg = Config::for_tests(StorageKind::Memory, tokens());
+    cfg.capture.enabled = true;
+    cfg.kafka_bootstrap = Some(vec!["127.0.0.1:1".into()]);
+    cfg.mqtt = Some(MqttSettings::new("mqtt://127.0.0.1:1").unwrap());
+    let h = H::start(cfg, false).await;
+    let put = |body: Value| {
+        let h = &h;
+        async move {
+            h.call(
+                Method::PUT,
+                &format!("/capture/sources/{}", Uuid::now_v7()),
+                EDITOR,
+                Some(body),
+            )
+            .await
+        }
+    };
+    let (st, v) = put(json!({"name": "o", "protocol": "kafka", "topics": ["orders"]})).await;
+    assert_eq!(st, 400, "no allow-list: API sources are refused: {v}");
+    assert!(
+        v["error"]
+            .as_str()
+            .unwrap()
+            .contains("FASTMOCK_CAPTURE_KAFKA_TOPICS"),
+        "{v}"
+    );
+
+    let mut cfg = capture_cfg(StorageKind::Memory);
+    cfg.kafka_bootstrap = Some(vec!["127.0.0.1:1".into()]);
+    cfg.mqtt = Some(MqttSettings::new("mqtt://127.0.0.1:1").unwrap());
+    let h = H::start(cfg, false).await;
+    for (body, want) in [
+        (
+            json!({"name": "s", "protocol": "mqtt", "topics": ["$share/app/orders/#"]}),
+            "starts with $",
+        ),
+        (
+            json!({"name": "s", "protocol": "mqtt", "topics": ["$SYS/#"]}),
+            "starts with $",
+        ),
+        (
+            json!({"name": "k", "protocol": "kafka", "topics": ["__consumer_offsets"], "startFrom": "earliest"}),
+            "internal topic",
+        ),
+    ] {
+        let (st, v) = h
+            .call(
+                Method::PUT,
+                &format!("/capture/sources/{}", Uuid::now_v7()),
+                EDITOR,
+                Some(body.clone()),
+            )
+            .await;
+        assert_eq!(st, 400, "{body}: {v}");
+        assert!(v["error"].as_str().unwrap().contains(want), "{body}: {v}");
+    }
+
+    // Purging needs messages:delete, checked before the source is deleted.
+    let (st, src) = h
+        .call(
+            Method::PUT,
+            &format!("/capture/sources/{}?space=billing", Uuid::now_v7()),
+            BCAP,
+            Some(json!({"name": "o", "protocol": "kafka", "topics": ["orders"]})),
+        )
+        .await;
+    assert_eq!(st, 200, "{src}");
+    let id = src["id"].as_str().unwrap();
+    let (st, _) = h
+        .call(
+            Method::DELETE,
+            &format!("/capture/sources/{id}?purge=true"),
+            BCAP,
+            None,
+        )
+        .await;
+    assert_eq!(st, 403);
+    let (st, v) = h
+        .call(Method::GET, &format!("/capture/sources/{id}"), BCAP, None)
+        .await;
+    assert_eq!(st, 200, "a refused purge leaves the source: {v}");
+    let (st, _) = h
+        .call(
+            Method::DELETE,
+            &format!("/capture/sources/{id}"),
+            BCAP,
+            None,
+        )
+        .await;
+    assert_eq!(st, 204);
+}
+
+#[tokio::test]
+async fn searches_are_bounded_by_body_bytes_and_skip_bodies_they_do_not_need() {
+    let mut cfg = capture_cfg(StorageKind::Memory);
+    cfg.kafka_bootstrap = Some(vec!["127.0.0.1:1".into()]);
+    cfg.capture.max_message_bytes = 4 * 1024 * 1024;
+    let h = H::start(cfg, false).await;
+    let src = h
+        .put_source(
+            "",
+            json!({"name": "big", "protocol": "kafka", "topics": ["big"]}),
+        )
+        .await;
+    let id: Uuid = src["id"].as_str().unwrap().parse().unwrap();
+    let body = format!("{{\"n\":\"{}\"}}", "x".repeat(3 * 1024 * 1024));
+    let msgs: Vec<CapturedMessage> = (0..30)
+        .map(|_| stored(id, "big", None, "big", body.as_bytes()))
+        .collect();
+    let mut other = stored(id, "big", None, "small", br#"{"n":"y"}"#);
+    other.headers.insert("kind".into(), "small".into());
+    insert(&h, &msgs).await;
+    insert(&h, std::slice::from_ref(&other)).await;
+    let (st, v) = h
+        .call(
+            Method::POST,
+            "/capture/messages/find",
+            VIEWER,
+            Some(json!({"match": {"body": [{"jsonPath": "$.n", "value": {"equalTo": "y"}}]}})),
+        )
+        .await;
+    assert_eq!(st, 422, "90 MiB of bodies to match: {v}");
+    assert!(v["error"].as_str().unwrap().contains("64 MiB"), "{v}");
+    let v = h
+        .ok(
+            Method::POST,
+            "/capture/messages/find",
+            VIEWER,
+            Some(json!({"match": {"topic": {"equalTo": "small"}, "body": [{"jsonPath": "$.n", "value": {"equalTo": "y"}}]}})),
+        )
+        .await;
+    assert_eq!(
+        v["count"], 1,
+        "only bodies of messages meeting the other conditions are read: {v}"
+    );
+    let v = h
+        .ok(
+            Method::POST,
+            "/capture/messages/find",
+            VIEWER,
+            Some(json!({"match": {"topic": {"equalTo": "big"}}, "limit": 2})),
+        )
+        .await;
+    assert_eq!(v["count"], 30);
+    assert_eq!(v["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        v["messages"][0]["id"],
+        msgs[29].id.to_string(),
+        "newest first"
+    );
+    let (st, v) = h
+        .call(
+            Method::POST,
+            "/capture/verify",
+            VIEWER,
+            Some(json!({"match": {"topic": {"equalTo": "small"}, "body": [{"contains": "z"}]}, "count": 1})),
+        )
+        .await;
+    assert_eq!(st, 422);
+    assert_eq!(v["nearMisses"][0]["id"], other.id.to_string(), "{v}");
+    assert_eq!(v["nearMisses"][0]["mismatches"], json!(["body[0]"]));
+}
+
+#[tokio::test]
+async fn one_space_cannot_take_every_search_slot() {
+    let mut cfg = capture_cfg(StorageKind::Memory);
+    cfg.kafka_bootstrap = Some(vec!["127.0.0.1:1".into()]);
+    let h = Arc::new(H::start(cfg, false).await);
+    let waits: Vec<_> = (0..6)
+        .map(|_| {
+            let h = h.clone();
+            tokio::spawn(async move {
+                h.call(
+                    Method::POST,
+                    "/capture/messages/wait?space=billing",
+                    VIEWER,
+                    Some(json!({"match": {"topic": {"equalTo": "never"}}, "timeoutMs": 3000})),
+                )
+                .await
+                .0
+            })
+        })
+        .collect();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let started = std::time::Instant::now();
+    let (st, v) = h
+        .call(
+            Method::POST,
+            "/capture/messages/find?space=crm",
+            VIEWER,
+            Some(json!({"match": {}})),
+        )
+        .await;
+    assert_eq!(st, 200, "another space still gets a slot: {v}");
+    assert!(started.elapsed() < Duration::from_secs(2));
+    for w in waits {
+        assert!(matches!(w.await.unwrap(), 408 | 503));
+    }
+}
+
+#[tokio::test]
+async fn trigger_errors_name_no_broker_address() {
+    let mut cfg = Config::for_tests(StorageKind::Memory, tokens());
+    cfg.amqp = Some(AmqpSettings::new("amqp://127.0.0.1:1/private-vhost").unwrap());
+    let h = H::start(cfg, false).await;
+    let (st, v) = h
+        .call(
+            Method::PUT,
+            &format!("/async-mocks/{}", Uuid::now_v7()),
+            EDITOR,
+            Some(
+                json!({"name": "o", "protocol": "amqp", "channel": "order.created",
+                "amqp": {"exchange": "orders"}, "messages": [{"name": "e", "payload": "x"}]}),
+            ),
+        )
+        .await;
+    assert!((200..300).contains(&st), "{v}");
+    let id = v["id"].as_str().unwrap();
+    let (st, v) = h
+        .call(
+            Method::POST,
+            &format!("/async-mocks/{id}/trigger"),
+            EDITOR,
+            None,
+        )
+        .await;
+    assert_eq!(st, 502, "{v}");
+    let e = v["error"].as_str().unwrap();
+    assert!(e.contains("broker connection refused"), "{e}");
+    assert!(
+        !e.contains("127.0.0.1") && !e.contains("private-vhost"),
+        "{e}"
     );
 }
