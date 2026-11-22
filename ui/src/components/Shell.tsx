@@ -27,8 +27,6 @@ import {
 } from '@tabler/icons-react';
 import { useState, type ReactNode } from 'react';
 import { Link, NavLink as RouterNavLink, useLocation } from 'react-router';
-import lockupDark from '../assets/brand/FransHub_FastMock_dark.svg';
-import lockupLight from '../assets/brand/FransHub_FastMock_light.svg';
 import monogramDark from '../assets/brand/FransHub_monogram_dark.svg';
 import monogramLight from '../assets/brand/FransHub_monogram_light.svg';
 import { useTokensApi, useVersion } from '../api/features';
@@ -265,8 +263,9 @@ export function Shell({ children }: { children: ReactNode }) {
           <Burger opened={opened} onClick={toggle} hiddenFrom="md" size="sm" aria-label="Toggle navigation" />
           <Link to="/" className={`${classes.brand} ${spaces.enabled ? classes.brandCompact : ''}`} aria-label="FastMock">
             <span className={`${classes.lockup} ${spaces.enabled ? classes.lockupCompact : ''}`}>
-              <img src={lockupLight} alt="" width={193} height={26} className="fm-on-light" />
-              <img src={lockupDark} alt="" width={193} height={26} className="fm-on-dark" />
+              <img src={monogramLight} alt="" width={42} height={24} className="fm-on-light" />
+              <img src={monogramDark} alt="" width={42} height={24} className="fm-on-dark" />
+              <span className="fm-wordmark">FastMock</span>
             </span>
             <span className={`${classes.mark} ${spaces.enabled ? classes.markCompact : ''}`}>
               <img src={monogramLight} alt="" width={42} height={24} className="fm-on-light" />
@@ -306,8 +305,9 @@ export function Shell({ children }: { children: ReactNode }) {
         </div>
         <Drawer opened={opened} onClose={close} size={288} title={
             <span className={classes.drawerTitle}>
-              <img src={lockupLight} alt="FastMock" width={163} height={22} className="fm-on-light" />
-              <img src={lockupDark} alt="FastMock" width={163} height={22} className="fm-on-dark" />
+              <img src={monogramLight} alt="" width={37} height={21} className="fm-on-light" />
+              <img src={monogramDark} alt="" width={37} height={21} className="fm-on-dark" />
+              <span className="fm-wordmark">FastMock</span>
             </span>
           } hiddenFrom="md" classNames={{ body: classes.drawerBody }}>
           <Nav onNavigate={close} />

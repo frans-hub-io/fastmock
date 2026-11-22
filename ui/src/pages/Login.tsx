@@ -4,8 +4,8 @@ import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Navigate, useLocation } from 'react-router';
 import { errorMessage } from '../api/http';
-import signatureDark from '../assets/brand/FastMock_by_FransHub_dark.svg';
-import signatureLight from '../assets/brand/FastMock_by_FransHub_light.svg';
+import monogramDark from '../assets/brand/FransHub_monogram_dark.svg';
+import monogramLight from '../assets/brand/FransHub_monogram_light.svg';
 import { fetchAuthConfig, loginErrorMessage, takeLoginError } from '../auth/sso';
 import { useAuth } from '../auth/useAuth';
 import classes from './Login.module.css';
@@ -58,8 +58,9 @@ export function LoginPage() {
             <Stack gap="lg">
               <Stack gap={6} align="center">
                 <Title order={1} lh={1} className={classes.logo}>
-                  <img src={signatureLight} alt="FastMock" width={260} height={62} className="fm-signature fm-on-light" />
-                  <img src={signatureDark} alt="FastMock" width={260} height={62} className="fm-signature fm-on-dark" />
+                  <img src={monogramLight} alt="" width={63} height={36} className="fm-signature fm-on-light" />
+                  <img src={monogramDark} alt="" width={63} height={36} className="fm-signature fm-on-dark" />
+                  <span className="fm-wordmark fm-wordmark-lg">FastMock</span>
                 </Title>
                 <Text fw={800} size="xl" mt="xs" className="fm-login-title">
                   Sign in to the <span className="fm-grad">admin console</span>

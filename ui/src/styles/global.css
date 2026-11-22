@@ -94,6 +94,38 @@ body {
   height: auto;
 }
 
+.fm-wordmark {
+  font-family: var(--mantine-font-family);
+  font-style: italic;
+  font-weight: 800;
+  font-size: 22px;
+  line-height: 1;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  background: linear-gradient(110deg, #6320ae 0%, #b965f8 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  padding: 0.06em 0.1em 0.06em 0;
+}
+
+:root[data-mantine-color-scheme='dark'] .fm-wordmark {
+  background-image: linear-gradient(110deg, #ab68f4 0%, #e0a9ff 100%);
+}
+
+.fm-wordmark-lg {
+  font-size: 40px;
+}
+
+@media (forced-colors: active) {
+  .fm-wordmark {
+    color: CanvasText;
+    -webkit-text-fill-color: CanvasText;
+    background: none;
+  }
+}
+
 a:focus-visible,
 button:focus-visible,
 [tabindex]:focus-visible,

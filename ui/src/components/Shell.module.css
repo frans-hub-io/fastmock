@@ -36,8 +36,12 @@
   align-items: center;
 }
 
+.lockup {
+  gap: 8px;
+}
+
 .lockup img {
-  height: 26px;
+  height: 24px;
   width: auto;
 }
 
@@ -260,11 +264,16 @@
 .drawerTitle {
   display: flex;
   align-items: center;
+  gap: 8px;
 }
 
 .drawerTitle img {
-  height: 22px;
+  height: 21px;
   width: auto;
+}
+
+.drawerTitle :global(.fm-wordmark) {
+  font-size: 19px;
 }
 
 .main {
