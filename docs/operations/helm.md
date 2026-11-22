@@ -264,7 +264,7 @@ helm uninstall fastmock -n mocks
 | `messaging.capture.limits.maxSources`, `.maxMessages`, `.maxMessageBytes`, `.maxAge` | `50`, `1000`, `1048576`, `24h` | `FASTMOCK_CAPTURE_MAX_*`. |
 | `messaging.capture.allowedKafkaTopics`, `.allowedMqttTopics`, `.allowedAmqpExchanges` | `[]` (any) | `FASTMOCK_CAPTURE_KAFKA_TOPICS`, `_MQTT_TOPICS`, `_AMQP_EXCHANGES`: what capture sources may read. |
 | `kafka.enabled` | `false` | Install the CloudPirates `kafka` chart (one broker, KRaft) and connect FastMock to it with SASL/PLAIN. |
-| `kafka.auth.existingSecret` | `""` (required when enabled) | Secret with `client-password`, `inter-broker-password` and `controller-password`. |
+| `kafka.auth.existingSecret` | `""` (the Kafka chart generates `<release>-kafka`) | Secret with `client-password`, `inter-broker-password` and `controller-password`. Without it the Kafka chart generates random passwords once, keeps them across upgrades and FastMock reads `client-password` from that Secret. |
 | `kafka.auth.clientUser` | `fastmock` | SASL user FastMock connects as. |
 | `kafka.image.registry`, `.repository`, `.tag` | chart default: `docker.io`, `apache/kafka`, `4.4.0` pinned by digest | Official `apache/kafka` image; override all three for a mirror. |
 | `kafka.serviceAccount.create`, `.name`, `.annotations` | `true`, `""` (`<release>-kafka`), `{}` | Dedicated ServiceAccount for the broker; set `create: false` and `name` to use an existing one. |

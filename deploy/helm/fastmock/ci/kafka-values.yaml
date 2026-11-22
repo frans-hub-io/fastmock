@@ -9,8 +9,6 @@ replicaCount: 1
 
 kafka:
   enabled: true
-  auth:
-    existingSecret: fastmock-kafka
 
 messaging:
   kafka:

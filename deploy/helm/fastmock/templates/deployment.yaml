@@ -16,9 +16,6 @@
 {{- if and .Values.kafka.enabled .Values.messaging.kafka.bootstrap }}
 {{- fail "set either kafka.enabled or messaging.kafka.bootstrap, not both" }}
 {{- end }}
-{{- if and .Values.kafka.enabled (not .Values.kafka.auth.existingSecret) }}
-{{- fail "kafka.auth.existingSecret is required when kafka.enabled (keys client-password, inter-broker-password, controller-password)" }}
-{{- end }}
 {{- if and .Values.messaging.kafka.sasl.mechanism (not .Values.messaging.kafka.sasl.existingSecret) }}
 {{- fail "messaging.kafka.sasl.existingSecret is required when messaging.kafka.sasl.mechanism is set" }}
 {{- end }}
@@ -159,7 +156,7 @@ spec:
             - name: FASTMOCK_KAFKA_SASL_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.kafka.auth.existingSecret }}
+                  name: {{ default (include "fastmock.dependencyFullname" (dict "root" . "name" "kafka")) .Values.kafka.auth.existingSecret }}
                   key: client-password
             {{- else if .Values.messaging.kafka.sasl.existingSecret }}
             - name: FASTMOCK_KAFKA_SASL_PASSWORD

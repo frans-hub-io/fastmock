@@ -3,6 +3,7 @@ templates:
   - charts/kafka/templates/statefulset.yaml
   - charts/kafka/templates/serviceaccount.yaml
   - templates/configmap.yaml
+  - templates/deployment.yaml
 release:
   name: fm
   namespace: qa
@@ -56,3 +57,29 @@ tests:
       - equal:
           path: data.FASTMOCK_KAFKA_SASL_MECHANISM
           value: PLAIN
+
+  - it: reads the client password from the Secret the Kafka chart generates
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: FASTMOCK_KAFKA_SASL_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: fm-kafka
+                key: client-password
+
+  - it: reads the client password from an existing Secret when one is set
+    template: templates/deployment.yaml
+    set:
+      kafka.auth.existingSecret: kafka-credentials
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: FASTMOCK_KAFKA_SASL_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: kafka-credentials
+                key: client-password
