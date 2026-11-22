@@ -20,6 +20,8 @@ pub mod mail_setup;
 pub mod mail_webhook_secrets;
 pub mod mail_webhooks;
 pub mod mail_webhooks_api;
+pub mod mcp;
+pub mod mcp_mock;
 pub mod oidc;
 pub mod openapi_doc;
 pub mod outbox;

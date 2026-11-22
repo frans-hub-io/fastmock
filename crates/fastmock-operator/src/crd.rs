@@ -355,6 +355,15 @@ pub struct MailSpec {
     pub service: Option<MailServiceSpec>,
 }
 
+/// The MCP endpoint for coding agents (`FASTMOCK_MCP_ENABLED`): same tokens and permissions as the admin
+/// API.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpSpec {
+    #[serde(default = "yes")]
+    pub enabled: bool,
+}
+
 #[derive(CustomResource, Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[kube(
     group = "fastmock.franshub.io",
@@ -403,6 +412,9 @@ pub struct FastMockSpec {
     /// Mail capture: SMTP, IMAP and POP3 listeners with their Service.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail: Option<MailSpec>,
+    /// The MCP endpoint `/mcp` on the admin port (on unless disabled here).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<McpSpec>,
 }
 
 fn one() -> i32 {

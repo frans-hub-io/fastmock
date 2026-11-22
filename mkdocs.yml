@@ -100,6 +100,7 @@ nav:
       - guide/soap.md
       - guide/kafka.md
       - guide/asyncapi.md
+      - guide/mock-mcp-servers.md
   - Importing:
       - guide/importing.md
       - guide/import-wiremock-mockserver.md
@@ -115,6 +116,7 @@ nav:
       - guide/java-client.md
       - guide/contract-testing.md
       - guide/admin-api.md
+      - guide/mcp.md
       - Admin API reference: /api/swagger/
   - Operations:
       - operations/configuration.md

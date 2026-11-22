@@ -98,6 +98,10 @@ section for what you do.
 
     Mocks that keep publishing messages from AsyncAPI documents.
 
+-   :material-robot-outline:{ .fm-card__icon } **[Mock MCP servers](guide/mock-mcp-servers.md)**
+
+    Fake MCP tools and resources for testing AI agents, with argument matching, errors, delays and verification.
+
 </div>
 
 ## Importing and migrating
@@ -161,6 +165,11 @@ section for what you do.
 -   :material-api:{ .fm-card__icon } **[Admin API](guide/admin-api.md)**
 
     Authentication, roles per endpoint, errors, pagination, every endpoint group.
+
+-   :material-robot-outline:{ .fm-card__icon } **[MCP for coding agents](guide/mcp.md)**
+
+    The `/mcp` endpoint: GitHub Copilot, Claude Code and Cursor create stubs, search the journal and verify calls
+    with your token's permissions.
 
 -   :material-application-brackets-outline:{ .fm-card__icon } **[Admin API reference](api/swagger/index.html)**
 

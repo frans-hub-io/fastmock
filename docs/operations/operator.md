@@ -241,6 +241,7 @@ Secret of `secretsSecret`.
 | `resources` | requests `100m`/`64Mi`, limits `2`/`512Mi` | Container resources. |
 | `route` | none | `{hostnames, parentRefs}`: creates an HTTPRoute `<name>` for the **data** port. Removing the field deletes the route. |
 | `mail` | off | [Mail capture](#mail): listeners, certificate, SMTP users, limits and the mail Service. |
+| `mcp.enabled` | `true` | `FASTMOCK_MCP_ENABLED`: the [MCP endpoint](../guide/mcp.md) `/mcp` on the admin port. Without the `mcp` field the server default (on) applies. |
 
 ### What the operator creates
 

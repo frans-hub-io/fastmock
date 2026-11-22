@@ -13616,6 +13616,138 @@
           }
         }
       },
+      "McpDef": {
+        "type": "object",
+        "description": "How a stub appears in a mocked MCP server.",
+        "properties": {
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Display title of the tool or resource."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Description shown to the agent in `tools/list` or `resources/list`."
+          },
+          "inputSchema": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "JSON Schema of the tool arguments (default `{\"type\": \"object\"}`)."
+          },
+          "outputSchema": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "JSON Schema of the tool's `structuredContent`."
+          },
+          "annotations": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Tool annotations, e.g. `{\"readOnlyHint\": true}`."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Resource name in `resources/list` (default: the stub name, else the URI)."
+          },
+          "mimeType": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "MIME type of a resource (default `text/plain`)."
+          },
+          "error": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/McpErrorDef",
+                "description": "Answer with this JSON-RPC error instead of a result."
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "McpErrorDef": {
+        "type": "object",
+        "description": "A JSON-RPC error answer.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int64",
+            "description": "JSON-RPC error code, e.g. -32602 (invalid params) or -32000 (server error).",
+            "example": -32000
+          },
+          "message": {
+            "type": "string",
+            "example": "quota exceeded"
+          },
+          "data": {
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "McpMatcher": {
+        "type": "object",
+        "description": "Matches an MCP call (a JSON-RPC request) in the request body.",
+        "properties": {
+          "method": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "JSON-RPC method, e.g. `prompts/get`. Defaults to `tools/call` with `tool` and to `resources/read`\nwith `resource`.",
+            "example": "tools/call"
+          },
+          "tool": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Tool name (`params.name` of `tools/call`); the stub is listed by `tools/list`.",
+            "example": "get_forecast"
+          },
+          "resource": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Resource URI (`params.uri` of `resources/read`); the stub is listed by `resources/list`.",
+            "example": "file:///docs/readme.md"
+          },
+          "arguments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BodyMatcher"
+            },
+            "description": "Body matchers on `params.arguments`: a `jsonPath` starts at the arguments object (`$.city`), any\nother matcher (`equalToJson`, `jsonSchema`, ...) applies to the whole arguments object."
+          }
+        },
+        "additionalProperties": false
+      },
       "MessageDef": {
         "type": "object",
         "required": [
@@ -14625,6 +14757,17 @@
               },
               {
                 "$ref": "#/components/schemas/MultipartMatchingType"
+              }
+            ]
+          },
+          "mcp": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/McpMatcher",
+                "description": "Matches an MCP call (JSON-RPC `tools/call`, `resources/read` or another method) posted to this\npath; the path then serves a mocked MCP server built from such stubs."
               }
             ]
           }
@@ -15690,6 +15833,17 @@
             }
           },
           "metadata": {},
+          "mcp": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/McpDef",
+                "description": "How the stub appears in a mocked MCP server (`tools/list`, `resources/list`) and an optional\nJSON-RPC error answer; needs `request.mcp`."
+              }
+            ]
+          },
           "enabled": {
             "type": "boolean"
           },

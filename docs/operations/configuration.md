@@ -95,6 +95,7 @@ shows host, port, database, SSL mode, Valkey address and ACL user only.
 | Variable | Type | Default | Effect |
 |---|---|---|---|
 | `FASTMOCK_UI_ENABLED` | boolean | `true` | `false`, `0`, `no` or `off` switches the web UI off: `/ui` and everything below it answer 404. The admin API, `/openapi.json` and `/metrics` are not affected. See [Web UI](../guide/ui.md). |
+| `FASTMOCK_MCP_ENABLED` | boolean | `true` | Serves the [MCP endpoint](../guide/mcp.md) `/mcp` on the admin port for coding agents. It uses the admin API's authentication, origin check, permissions and audit log, so it grants nothing a token could not do through the admin API; `false` removes it (`/mcp` answers 404). [Mock MCP servers](../guide/mock-mcp-servers.md) on the data port are stubs and need no setting. |
 | `FASTMOCK_UI_DATA_PLANE_URL` | list | none | Exact origins (`scheme://host[:port]`, no path, no wildcard) of the data plane as browsers reach it, for example `https://mock.example.com`. The UI's `Content-Security-Policy` allows `connect-src` to `'self'` and these origins only, and the first one is the default target of the test-request panel. Without it, `connect-src` allows `'self'` and the data port on the host name the browser used for the UI (`http(s)://<ui host>:<FASTMOCK_LISTEN port>`). An invalid entry is a start-up error. |
 
 The server does not start without at least one token unless OIDC sign-in is configured or

@@ -56,7 +56,7 @@ everywhere.
 | `contracts:details` | request and response excerpts and error texts of contract test results | space |
 | `contracts:write` | `POST /contract-tests`, `DELETE /contract-tests/{id}` | space |
 | `contracts:secrets` | `secretHeaders` in `POST /contract-tests` | global (the secrets of `FASTMOCK_CONTRACT_SECRETS` are server-wide); a custom role that lists it by name cannot be bound in spaces, see [Bindings](#bindings) |
-| `info:read` | `GET /info`, `/version`, `/plugins`, `/spaces` | global, implied by any binding |
+| `info:read` | `GET /info`, `/version`, `/plugins`, `/spaces`; the [MCP endpoint](../guide/mcp.md) `/mcp` itself, whose tools then need the permissions of the endpoints they call | global, implied by any binding |
 | `audit:read` | `GET /audit` | global |
 | `access:read` | `GET /access` (the [access configuration](#viewing-the-access-configuration): spaces, roles and bindings) | global |
 | `system:reset` | `POST /reset` | global |

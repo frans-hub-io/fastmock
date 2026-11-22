@@ -7,6 +7,7 @@ pub mod har;
 pub mod jsonpath;
 pub mod mail;
 pub mod matcher;
+pub mod mcp;
 pub mod memory;
 pub mod microcks;
 pub mod mockserver;

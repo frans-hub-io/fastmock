@@ -220,6 +220,8 @@ pub struct Config {
     pub oidc: Option<crate::oidc::OidcSettings>,
     /// The mail module (`FASTMOCK_MAIL_*`); `None` unless `FASTMOCK_MAIL_ENABLED=true`.
     pub mail: Option<fastmock_mail::MailConfig>,
+    /// The MCP endpoint `/mcp` on the admin listener (`FASTMOCK_MCP_ENABLED`, default true).
+    pub mcp_enabled: bool,
 }
 
 pub const DEFAULT_TOKEN_DAYS: u32 = 90;
@@ -623,6 +625,7 @@ impl Config {
             token_cache_ttl: TOKEN_CACHE_TTL,
             oidc: None,
             mail: None,
+            mcp_enabled: true,
         }
     }
 
@@ -753,6 +756,7 @@ impl Config {
             token_cache_ttl: TOKEN_CACHE_TTL,
             oidc: crate::oidc::settings::from_env(&oidc_env)?,
             mail: None,
+            mcp_enabled: bool_env("MCP_ENABLED", true)?,
         };
         if cfg.max_inflight_body_bytes < cfg.max_body_bytes {
             bail!("FASTMOCK_MAX_INFLIGHT_BODY_BYTES must be at least FASTMOCK_MAX_BODY_BYTES");
