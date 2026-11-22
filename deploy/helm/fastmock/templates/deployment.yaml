@@ -48,6 +48,9 @@
 {{- end }}
 {{- end }}
 {{- include "fastmock.mailValidate" . }}
+{{- include "fastmock.brokersValidate" . }}
+{{- $mqtt := .Values.messaging.mqtt }}
+{{- $amqp := .Values.messaging.amqp }}
 {{- $mail := .Values.mail | default dict }}
 {{- $mailTls := and $mail.enabled (dig "tls" "existingSecret" "" $mail) }}
 apiVersion: apps/v1
@@ -81,6 +84,9 @@ spec:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         {{- if include "fastmock.accessEnabled" . }}
         checksum/access: {{ include (print $.Template.BasePath "/access.yaml") . | sha256sum }}
+        {{- end }}
+        {{- if include "fastmock.captureSourcesEnabled" . }}
+        checksum/capture: {{ include (print $.Template.BasePath "/capture.yaml") . | sha256sum }}
         {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -168,6 +174,20 @@ spec:
                 secretKeyRef:
                   name: {{ . }}
                   key: {{ $.Values.messaging.kafka.schemaRegistry.passwordKey }}
+            {{- end }}
+            {{- if and $mqtt.url $mqtt.existingSecret }}
+            - name: FASTMOCK_MQTT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $mqtt.existingSecret }}
+                  key: {{ $mqtt.passwordKey }}
+            {{- end }}
+            {{- if and $amqp.url $amqp.sasl.existingSecret }}
+            - name: FASTMOCK_AMQP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $amqp.sasl.existingSecret }}
+                  key: {{ $amqp.sasl.passwordKey }}
             {{- end }}
             {{- if and $mail.enabled (dig "smtpUsers" "existingSecret" "" $mail) }}
             - name: FASTMOCK_MAIL_SMTP_USERS
@@ -264,6 +284,35 @@ spec:
             {{- if (and (not .Values.kafka.enabled) .Values.messaging.kafka.tls.clientCertSecret) }}
             - name: tls-kafka-client
               mountPath: /etc/fastmock/tls/kafka-client
+              readOnly: true
+            {{- end }}
+            {{- if and $mqtt.url $mqtt.tls.caSecret }}
+            - name: tls-mqtt-ca
+              mountPath: /etc/fastmock/tls/mqtt-ca
+              readOnly: true
+            {{- end }}
+            {{- if and $mqtt.url $mqtt.tls.clientCertSecret }}
+            - name: tls-mqtt-client
+              mountPath: /etc/fastmock/tls/mqtt-client
+              readOnly: true
+            {{- end }}
+            {{- if and $mqtt.url (regexMatch "^(mqtts|ssl|tls)://" $mqtt.url) }}
+            - name: tmp
+              mountPath: /tmp
+            {{- end }}
+            {{- if and $amqp.url $amqp.tls.caSecret }}
+            - name: tls-amqp-ca
+              mountPath: /etc/fastmock/tls/amqp-ca
+              readOnly: true
+            {{- end }}
+            {{- if and $amqp.url $amqp.tls.clientCertSecret }}
+            - name: tls-amqp-client
+              mountPath: /etc/fastmock/tls/amqp-client
+              readOnly: true
+            {{- end }}
+            {{- if include "fastmock.captureSourcesEnabled" . }}
+            - name: capture-sources
+              mountPath: /etc/fastmock/capture
               readOnly: true
             {{- end }}
             {{- if $mailTls }}
@@ -371,6 +420,60 @@ spec:
               - key: tls.key
                 path: tls.key
             defaultMode: 0440
+        {{- end }}
+        {{- if and $mqtt.url $mqtt.tls.caSecret }}
+        - name: tls-mqtt-ca
+          secret:
+            secretName: {{ $mqtt.tls.caSecret }}
+            items:
+              - key: {{ $mqtt.tls.caKey }}
+                path: ca.crt
+            defaultMode: 0440
+        {{- end }}
+        {{- if and $mqtt.url $mqtt.tls.clientCertSecret }}
+        - name: tls-mqtt-client
+          secret:
+            secretName: {{ $mqtt.tls.clientCertSecret }}
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+            defaultMode: 0440
+        {{- end }}
+        {{- if and $mqtt.url (regexMatch "^(mqtts|ssl|tls)://" $mqtt.url) }}
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        {{- end }}
+        {{- if and $amqp.url $amqp.tls.caSecret }}
+        - name: tls-amqp-ca
+          secret:
+            secretName: {{ $amqp.tls.caSecret }}
+            items:
+              - key: {{ $amqp.tls.caKey }}
+                path: ca.crt
+            defaultMode: 0440
+        {{- end }}
+        {{- if and $amqp.url $amqp.tls.clientCertSecret }}
+        - name: tls-amqp-client
+          secret:
+            secretName: {{ $amqp.tls.clientCertSecret }}
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+            defaultMode: 0440
+        {{- end }}
+        {{- if include "fastmock.captureSourcesEnabled" . }}
+        - name: capture-sources
+          configMap:
+            name: {{ include "fastmock.fullname" . }}-capture
+            items:
+              - key: sources.json
+                path: sources.json
         {{- end }}
         {{- if $mailTls }}
         - name: tls-mail

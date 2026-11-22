@@ -38,6 +38,9 @@ pub enum Permission {
     MailRead,
     MailWrite,
     MailDelete,
+    MessagesRead,
+    MessagesWrite,
+    MessagesDelete,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,7 +51,7 @@ pub enum ScopeKind {
 
 use Permission::*;
 
-pub const ALL_PERMISSIONS: [Permission; 31] = [
+pub const ALL_PERMISSIONS: [Permission; 34] = [
     StubsRead,
     StubsWrite,
     StubsPurge,
@@ -80,6 +83,9 @@ pub const ALL_PERMISSIONS: [Permission; 31] = [
     MailRead,
     MailWrite,
     MailDelete,
+    MessagesRead,
+    MessagesWrite,
+    MessagesDelete,
 ];
 
 impl Permission {
@@ -116,6 +122,9 @@ impl Permission {
             MailRead => "mail:read",
             MailWrite => "mail:write",
             MailDelete => "mail:delete",
+            MessagesRead => "messages:read",
+            MessagesWrite => "messages:write",
+            MessagesDelete => "messages:delete",
         }
     }
 
@@ -221,6 +230,7 @@ pub fn viewer_permissions() -> PermSet {
         ContractsRead,
         InfoRead,
         MailRead,
+        MessagesRead,
     ])
 }
 
@@ -239,6 +249,8 @@ pub fn editor_permissions() -> PermSet {
         ContractsWrite,
         MailWrite,
         MailDelete,
+        MessagesWrite,
+        MessagesDelete,
     ]))
 }
 
@@ -1007,6 +1019,13 @@ pub fn route_rule(method: &Method, full_path: &str) -> Option<(Permission, Scope
         ("PUT" | "DELETE", ["mail", "chaos" | "webhooks"]) => natural(MailWrite),
         ("PUT" | "DELETE", ["mail", "mailboxes", _, "password"]) => natural(MailWrite),
         ("POST", ["mail", "inbound"]) => natural(MailWrite),
+        ("GET", ["capture", "sources"] | ["capture", "sources", _]) => natural(MessagesRead),
+        ("PUT" | "DELETE", ["capture", "sources", _]) => natural(MessagesWrite),
+        ("GET", ["capture", "messages"] | ["capture", "messages", _, ..]) => natural(MessagesRead),
+        ("POST", ["capture", "messages", "find" | "wait"] | ["capture", "verify"]) => {
+            natural(MessagesRead)
+        }
+        ("DELETE", ["capture", "messages"] | ["capture", "messages", _]) => natural(MessagesDelete),
         ("GET" | "POST" | "DELETE", ["mcp"]) if path == full_path => global(InfoRead),
         ("GET", ["plugins", _, ..]) => global(StubsRead),
         (_, ["plugins", _, ..]) => global(StubsWrite),

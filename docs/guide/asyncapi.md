@@ -3,8 +3,9 @@
 FastMock imports AsyncAPI 2.x (2.0 to 2.6) and 3.0 documents, in JSON or YAML, and turns every operation that the
 described application **publishes** into a mock that keeps publishing example messages:
 
-- Kafka operations become **async mocks**: stored definitions that a background publisher sends to a Kafka topic
-  at a fixed frequency, round robin over their examples, as JSON or Confluent Avro.
+- Kafka, MQTT and AMQP operations become **async mocks**: stored definitions that a background publisher sends to
+  a Kafka topic, an MQTT topic or an AMQP exchange at a fixed frequency, round robin over their examples (Kafka
+  values as JSON or Confluent Avro).
 - WebSocket operations become **WebSocket stubs** (ordinary stubs with `response.websocket`) that stream the examples
   to every client that connects. See [WebSocket mocks](websocket.md).
 
@@ -18,14 +19,15 @@ of Microcks. To check that a real producer respects the same contract, see [Cont
 - [The async mock document](#the-async-mock-document)
 - [Managing async mocks](#managing-async-mocks)
 - [Publishing and leader election](#publishing-and-leader-election)
-- [Kafka topic allowlist](#kafka-topic-allowlist)
+- [Allow-lists](#allow-lists)
 - [Metrics, traces and logs](#metrics-traces-and-logs)
 - [Limits](#limits)
 - [Errors](#errors)
 
 The examples use `FASTMOCK_TOKEN` for an editor or admin token and the admin API on `localhost:9090`. Kafka
 publishing needs `FASTMOCK_KAFKA_BOOTSTRAP` (and `FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL` for Avro), see
-[Kafka messages](kafka.md); TLS and SASL are described in [Secure connections](kafka.md#secure-connections).
+[Kafka messages](kafka.md); TLS and SASL are described in [Secure connections](kafka.md#secure-connections). MQTT
+and AMQP publishing need `FASTMOCK_MQTT_URL` and `FASTMOCK_AMQP_URL`, see [MQTT and AMQP messages](mqtt-amqp.md).
 
 ## Importing a document
 
@@ -42,7 +44,7 @@ curl -X POST localhost:9090/__admin/import/asyncapi \
 | `dryRun` | boolean | `false` | Parse and convert, return what would be created, store nothing. |
 | `frequencyMs` | integer | `10000` | Publishing interval for every created mock, 1000..86400000. |
 | `pathPrefix` | string | none | Prefix for the paths of WebSocket stubs, for example `/ws`. Must start with `/`. |
-| `topicNaming` | string | `channel` | Kafka topic names: `channel` (below) or `microcks` (`<service>-<version>-<channel>`, as Microcks publishes; see [Microcks topic names](#microcks-topic-names)). |
+| `topicNaming` | string | `channel` | Destination names: `channel` (below) or `microcks` (`<service>-<version>-<channel>`, the Kafka topic, MQTT topic or AMQP exchange Microcks uses; see [Microcks topic names](#microcks-topic-names)). |
 
 The response is `201 Created` (or `200 OK` for a dry run):
 
@@ -94,11 +96,14 @@ FastMock mocks the side of the document that **sends** messages, because that is
 
 `publish` (2.x) and `receive` (3.0) operations are reported as warnings and skipped.
 
-**Protocol.** An operation is mocked for Kafka when its operation, channel or message has a `kafka` binding, and for
-WebSocket when it has a `ws` binding. Without bindings, the protocols of the servers decide: the servers listed by
-the channel (`servers` in 2.2+ or 3.0), otherwise all servers of the document. `kafka` and `kafka-secure` mean Kafka,
-`ws` and `wss` mean WebSocket. Operations with neither (for example MQTT or AMQP only) are skipped with a warning. An
-operation that matches both protocols produces one mock for each.
+**Protocol.** An operation is mocked for Kafka when its operation, channel or message has a `kafka` binding, for
+MQTT with an `mqtt` (or `mqtt5`) binding, for AMQP with an `amqp` binding and for WebSocket with a `ws` binding.
+Without bindings, the protocols of the servers decide: the servers listed by the channel (`servers` in 2.2+ or 3.0),
+otherwise all servers of the document. `kafka` and `kafka-secure` mean Kafka, `mqtt`, `mqtts`, `secure-mqtt` and
+`mqtt5` mean MQTT, `amqp` and `amqps` mean AMQP 0-9-1, `ws` and `wss` mean WebSocket. Operations with none of them
+(for example JMS, NATS, AMQP 1.0 or SQS only) are skipped with a warning
+(`<operation>: no Kafka, MQTT, AMQP or WebSocket binding or server; skipped`). An operation that matches several
+protocols produces one mock for each.
 
 **Messages.** Each message of an operation becomes its own mock, so a 2.x `message.oneOf` with three messages, or a
 3.0 operation with three `messages`, gives three mocks named `<operation> <message name>`. An operation with a single
@@ -116,7 +121,11 @@ characters, so `user/signedup` becomes `user-signedup`. Each such change is repo
 Microcks publishes to `<service name without spaces and dashes>-<version without spaces>-<operation part>`, where the
 operation part is the channel address with its parameters replaced and `/` turned into `-` (AsyncAPI 2.x and
 parameterized 3.0 channels), or the operation key (other 3.0 operations); `bindings.kafka.topic` is not used.
-Consumers configured for Microcks keep working when the import sets `"topicNaming": "microcks"`:
+For MQTT the same name is the topic, keeping the `/` of the channel (`StreetlightsAPI-1.0.0-lights/l7/measured`).
+For AMQP it is the exchange, which Microcks declares non-durable with the binding's `exchange.type` (default `topic`):
+the async mock gets `amqp.exchange` set to that name, `durable: false` and the type, and FastMock declares the
+exchange when `FASTMOCK_AMQP_DECLARE_EXCHANGES=true` (the import warns when it is not set). The routing key stays the
+channel address. Consumers configured for Microcks keep working when the import sets `"topicNaming": "microcks"`:
 
 ```sh
 curl -X POST localhost:9090/__admin/import/asyncapi \
@@ -129,13 +138,27 @@ For the document above the topic becomes
 described under **Kafka topic** (Microcks takes it from each example message, so use one example value per
 parameter). Characters Kafka does not allow become `-`, with a warning.
 
+**MQTT topic.** The channel name (2.x) or `address` (3.0) with its parameters replaced as for Kafka topics; other
+characters are kept, so `lights/{lightId}/measured` becomes `lights/l7/measured`. The operation binding gives the
+options: `bindings.mqtt.qos` (default 0), `retain` and `messageExpiryInterval` (MQTT 5 expiry in seconds).
+
+**AMQP exchange and routing key.** For a channel binding `bindings.amqp` with `is: routingKey` (the default), the
+mock publishes to `exchange.name` with the channel address (parameters replaced) as routing key; `exchange.type` and
+`exchange.durable` are used when FastMock declares a missing exchange (`FASTMOCK_AMQP_DECLARE_EXCHANGES=true`).
+Without an exchange name the default exchange is used, with a warning. With `is: queue` the mock publishes through
+the default exchange with `queue.name` (or the address) as routing key, so the message lands in that queue. The
+operation binding gives `deliveryMode` (2 is persistent), `expiration` and `priority`; the message binding gives
+`messageType` (the AMQP `type` property). Example headers become AMQP headers, and the content type the
+`content_type` property.
+
 **WebSocket path.** `pathPrefix` + the channel address. Parameters stay as path template parameters, so
 `/live/{city}` matches `/live/kyiv` and `{{request.pathParams.city}}` is available in the examples.
 
-**Key, headers and content type.** The Kafka key is an example of `bindings.kafka.key` of the message. Headers come
-from each example's `headers`, or from an example generated from the message `headers` schema. The content type is
-the message `contentType` or the document `defaultContentType`; when set it is sent as the Kafka header
-`content-type` unless the example sets that header itself.
+**Key, headers and content type.** The Kafka key is an example of `bindings.kafka.key` of the message (MQTT and AMQP
+messages have no key). Headers come from each example's `headers`, or from an example generated from the message
+`headers` schema; they are Kafka headers, MQTT 5 user properties or AMQP headers. The content type is the message
+`contentType` or the document `defaultContentType`; when set it is sent as the Kafka header `content-type` unless the
+example sets that header itself, as the MQTT 5 content type, or as the AMQP `content_type` property.
 
 **`$ref`** pointers inside the document (`#/components/...`, `#/channels/...`, `#/servers/...`) are resolved with
 the same budgets as the OpenAPI import: recursion is cut, at most 200,000 nodes are expanded per operation, and the
@@ -190,14 +213,16 @@ values and 1 MiB.
 |---|---|---|---|
 | `id` | UUID | generated | Taken from the URL on `PUT`. |
 | `name` | string | required | 1..256 characters. Used in logs and traces. |
-| `protocol` | `kafka` | `kafka` | Stored async mocks are Kafka mocks; WebSocket mocks are stubs. |
-| `channel` | string | required | Kafka topic: `a-z A-Z 0-9 . _ -`, at most 249 characters. |
+| `protocol` | `kafka`, `mqtt`, `amqp` | `kafka` | The broker. WebSocket mocks are stubs, not async mocks. |
+| `channel` | string | required | Kafka topic (`a-z A-Z 0-9 . _ -`, at most 249 characters), MQTT topic (no `+` or `#`), or AMQP routing key (at most 255 bytes, may be empty). |
+| `mqtt` | object | none | MQTT only: `qos` (0, 1, 2; default 0), `retain`, `messageExpirySeconds`. |
+| `amqp` | object | none | AMQP only: `exchange` (empty or `amq.default`: the default exchange), `exchangeType` and `durable` (used to declare a missing exchange), `persistent`, `expiration` (ms, digits), `priority`, `messageType`. |
 | `messages` | array | required | 1..100 examples: `{"name", "key", "headers", "payload"}`. `payload` is any JSON; a string is sent as raw text, other values as JSON. |
 | `frequencyMs` | integer | `10000` | Interval between publications, 1000..86400000. One example is sent per interval, round robin. |
 | `enabled` | boolean | `true` | Disabled mocks are kept but not published. |
 | `templated` | boolean | `true` | Render `payload`, `key` and header values as templates. |
 | `contentType` | string | none | Sent as the `content-type` header unless an example sets it. |
-| `avroSchema` | object | none | Publish as Confluent Avro with this schema. |
+| `avroSchema` | object | none | Kafka only: publish as Confluent Avro with this schema. |
 | `payloadSchema` | object | none | JSON Schema of the payload, kept for [contract testing](contract-testing.md). |
 | `operation`, `service` | string | none | Where the mock came from. |
 | `tags` | array | none | At most 32 tags of up to 128 characters. |
@@ -250,7 +275,30 @@ curl -X POST localhost:9090/__admin/async-mocks/0193a5c2-8f4e-7c1a-9d4e-2f6b1a7c
 ```
 
 ```json
-{"id": "0193a5c2-8f4e-7c1a-9d4e-2f6b1a7c9e01", "topic": "orders.v1", "partition": 2, "offset": 118}
+{"id": "0193a5c2-8f4e-7c1a-9d4e-2f6b1a7c9e01", "protocol": "kafka", "topic": "orders.v1", "partition": 2, "offset": 118}
+```
+
+An MQTT or AMQP mock publishes the same way; `trigger` answers without `partition` and `offset`, and with `exchange`
+for AMQP:
+
+```sh
+curl -X PUT localhost:9090/__admin/async-mocks/0193a5c2-8f4e-7c1a-9d4e-2f6b1a7c9e02 \
+  -H "Authorization: Bearer $FASTMOCK_TOKEN" -H 'content-type: application/json' -d '{
+  "name": "lamp state", "protocol": "mqtt", "channel": "devices/lamp-1/state", "frequencyMs": 5000,
+  "contentType": "application/json", "mqtt": {"qos": 1, "retain": true},
+  "messages": [{"headers": {"seq": "{{sequence}}"}, "payload": {"on": true, "lumens": "{{json (randomInt 0 800)}}"}}]
+}'
+
+curl -X PUT localhost:9090/__admin/async-mocks/0193a5c2-8f4e-7c1a-9d4e-2f6b1a7c9e03 \
+  -H "Authorization: Bearer $FASTMOCK_TOKEN" -H 'content-type: application/json' -d '{
+  "name": "invoices", "protocol": "amqp", "channel": "invoice.created", "frequencyMs": 10000,
+  "amqp": {"exchange": "billing", "persistent": true, "messageType": "invoice.created"},
+  "messages": [{"payload": {"invoiceId": "inv-{{sequence}}", "amount": "{{json (randomInt 10 500)}}"}}]
+}'
+```
+
+```json
+{"id": "0193a5c2-8f4e-7c1a-9d4e-2f6b1a7c9e03", "protocol": "amqp", "topic": "invoice.created", "exchange": "billing"}
 ```
 
 `trigger` works for disabled mocks too, and continues the same round robin as the background publisher.
@@ -283,12 +331,14 @@ Publishing is at-most-once per interval: a failed publication is logged and coun
 example follows at the next interval. Up to 32 publications run at once per leader; when they are all busy (for
 example Kafka is slow), due messages are skipped and counted as `dropped`.
 
-## Kafka topic allowlist
+## Allow-lists
 
-Async mocks publish through the same Kafka client as stub `messages`, so `FASTMOCK_KAFKA_ALLOWED_TOPICS` applies
-(`name` or `prefix*`, comma-separated; unset allows every topic). On import, topics outside the list produce a
-warning; at run time publishing to them fails and is counted as `failed`, and `trigger` answers `400`. The topics
-must exist; FastMock does not create them.
+Async mocks publish through the same clients as stub `messages`, so `FASTMOCK_KAFKA_ALLOWED_TOPICS`,
+`FASTMOCK_MQTT_ALLOWED_TOPICS` and `FASTMOCK_AMQP_ALLOWED_EXCHANGES` apply (`name` or `prefix*`, comma-separated;
+unset allows everything). On import, destinations outside the lists produce a warning; at run time publishing to
+them fails and is counted as `failed`, and `trigger` answers `400`. Kafka topics must exist unless
+`FASTMOCK_KAFKA_CREATE_TOPICS=true`; AMQP exchanges must exist unless `FASTMOCK_AMQP_DECLARE_EXCHANGES=true`. A mock
+whose broker is not configured is stored but not published (logged once per protocol).
 
 ```sh
 FASTMOCK_KAFKA_BOOTSTRAP=kafka-0.example.com:9092 \
@@ -303,10 +353,10 @@ fastmock serve
 |---|---|---|---|
 | `fastmock_async_messages_total` | counter | `mock` (async mock id), `result` = `sent`, `failed`, `dropped` | Publications by async mocks, scheduled or triggered. Ids of stored mocks only, at most 1000. |
 | `fastmock_async_leader` | gauge | none | `1` on the replica that holds the publisher lease. |
-| `fastmock_async_mocks_active` | gauge | none | Enabled Kafka async mocks loaded by the leader. |
+| `fastmock_async_mocks_active` | gauge | none | Enabled async mocks (Kafka, MQTT and AMQP) loaded by the leader. |
 | `fastmock_store_errors_total` | counter | `store` = `asyncmocks`, `asyncmock_lease` | Storage errors while loading mocks or renewing the lease. |
 
-Every publication has a span `fastmock.async_publish` (`otel.kind=producer`, `messaging.system=kafka`,
+Every publication has a span `fastmock.async_publish` (`otel.kind=producer`, `messaging.system` = `kafka`, `mqtt` or `rabbitmq`,
 `messaging.destination.name`, `fastmock.async_mock`). Leadership changes are logged at `info`, failed publications
 at `warn` with the topic and the error.
 
@@ -328,7 +378,7 @@ at `warn` with the topic and the error.
 
 | Status | When |
 |---|---|
-| `400` | The document is not AsyncAPI 2.x or 3.x, has no `channels` (2.x) or `operations` (3.0), exceeds a limit, is neither JSON nor YAML; invalid `frequencyMs`, `tag` or `pathPrefix`; an invalid async mock on `PUT`; storing would exceed 1000 mocks; `trigger` to a topic outside the allowlist or without `FASTMOCK_KAFKA_BOOTSTRAP`. The body is `{"error": "..."}`. |
+| `400` | The document is not AsyncAPI 2.x or 3.x, has no `channels` (2.x) or `operations` (3.0), exceeds a limit, is neither JSON nor YAML; invalid `frequencyMs`, `tag` or `pathPrefix`; an invalid async mock on `PUT`; storing would exceed 1000 mocks; `trigger` to a destination outside an allow-list or without the broker setting (`FASTMOCK_KAFKA_BOOTSTRAP`, `FASTMOCK_MQTT_URL`, `FASTMOCK_AMQP_URL`). The body is `{"error": "..."}`. |
 | `401` / `403` | Missing token, or a viewer token on a route that changes something. |
 | `404` | Unknown async mock id. |
-| `502` | `trigger` could not publish (Kafka unreachable, unknown topic, schema registry error); details are in the server log. |
+| `502` | `trigger` could not publish (broker unreachable, unknown topic or exchange, schema registry error); the error names the cause, for example `publishing to AMQP failed: ... NOT_FOUND - no exchange 'billing' in vhost '/'`. |

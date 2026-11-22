@@ -10,7 +10,7 @@ this one gives the model they share.
 - [Scenarios and key-value state](#scenarios-and-key-value-state)
 - [Request journal](#request-journal)
 - [Callbacks outbox](#callbacks-outbox)
-- [Kafka messages](#kafka-messages)
+- [Broker messages](#broker-messages)
 - [Plugins](#plugins)
 - [Storage modes](#storage-modes)
 - [Running several replicas](#running-several-replicas)
@@ -62,7 +62,7 @@ A **stub** is a JSON document: a request pattern and what to do when a request m
 | `response` | Status, headers, body, delay, fault, proxy, SSE. | [Responses](responses.md) |
 | `scenario` | State machine condition and transition. | [Scenarios and state](scenarios-and-state.md) |
 | `callbacks` | Durable HTTP requests sent after the response. | [Callbacks](callbacks.md) |
-| `messages` | Kafka records published when the stub matches. | [Kafka](kafka.md) |
+| `messages` | Kafka records, MQTT messages or AMQP messages published when the stub matches. | [Kafka](kafka.md), [MQTT and AMQP](mqtt-amqp.md) |
 
 Stub JSON is strict: unknown fields are rejected with 400, so typos do not silently change behaviour. Stubs can
 be validated without saving them (`POST /__admin/stubs/validate`, `fastmock validate file.json`), imported in
@@ -126,10 +126,12 @@ optionally an HMAC signature made with a server-side secret that stubs may use o
 `FASTMOCK_STUB_SECRETS`. Outgoing traffic passes the [egress policy](../operations/security.md#egress-policy).
 See [Callbacks](callbacks.md).
 
-## Kafka messages
+## Broker messages
 
-Stubs can publish Kafka records (text, JSON, or Avro registered in a Schema Registry) when they match.
-Publishing runs in the background and does not delay or fail the response. See [Kafka](kafka.md).
+Stubs can publish Kafka records (text, JSON, or Avro registered in a Schema Registry), MQTT messages and AMQP
+messages when they match. Publishing runs in the background and does not delay or fail the response. See
+[Kafka](kafka.md) and [MQTT and AMQP](mqtt-amqp.md). [Message capture](message-capture.md) goes the other way: it
+stores what the application under test publishes, for tests to wait for and verify.
 
 ## Plugins
 

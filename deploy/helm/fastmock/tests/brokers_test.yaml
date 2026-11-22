@@ -1,0 +1,520 @@
+suite: mqtt, amqp and message capture
+templates:
+  - templates/configmap.yaml
+  - templates/deployment.yaml
+  - templates/capture.yaml
+release:
+  name: fm
+  namespace: qa
+tests:
+  - it: renders no broker or capture settings by default
+    template: templates/configmap.yaml
+    set:
+      admin.tokensSecret.name: fastmock-admin-tokens
+      storage.mode: memory
+    asserts:
+      - notExists:
+          path: data.FASTMOCK_MQTT_URL
+      - notExists:
+          path: data.FASTMOCK_MQTT_VERSION
+      - notExists:
+          path: data.FASTMOCK_MQTT_CLIENT_ID_PREFIX
+      - notExists:
+          path: data.FASTMOCK_MQTT_KEEP_ALIVE
+      - notExists:
+          path: data.FASTMOCK_AMQP_URL
+      - notExists:
+          path: data.FASTMOCK_AMQP_DECLARE_EXCHANGES
+      - notExists:
+          path: data.FASTMOCK_CAPTURE_ENABLED
+      - notExists:
+          path: data.FASTMOCK_CAPTURE_SOURCES_FILE
+      - notExists:
+          path: data.FASTMOCK_CAPTURE_MAX_SOURCES
+
+  - it: mounts and references nothing for brokers or capture by default
+    template: templates/deployment.yaml
+    set:
+      admin.tokensSecret.name: fastmock-admin-tokens
+      storage.mode: memory
+    asserts:
+      - isNullOrEmpty:
+          path: spec.template.spec.containers[0].env
+      - notContains:
+          path: spec.template.spec.volumes
+          any: true
+          content:
+            name: capture-sources
+      - notExists:
+          path: spec.template.metadata.annotations["checksum/capture"]
+
+  - it: renders no capture sources ConfigMap by default
+    template: templates/capture.yaml
+    set:
+      admin.tokensSecret.name: fastmock-admin-tokens
+      storage.mode: memory
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: points FastMock at the MQTT broker
+    template: templates/configmap.yaml
+    values:
+      - ../ci/brokers-values.yaml
+    asserts:
+      - equal:
+          path: data.FASTMOCK_MQTT_URL
+          value: mqtts://mqtt.example.com:8883
+      - equal:
+          path: data.FASTMOCK_MQTT_VERSION
+          value: "3.1.1"
+      - equal:
+          path: data.FASTMOCK_MQTT_CLIENT_ID_PREFIX
+          value: fastmock-ci
+      - equal:
+          path: data.FASTMOCK_MQTT_KEEP_ALIVE
+          value: 20s
+      - equal:
+          path: data.FASTMOCK_MQTT_USERNAME
+          value: fastmock
+      - equal:
+          path: data.FASTMOCK_MQTT_TLS_CA_FILE
+          value: /etc/fastmock/tls/mqtt-ca/ca.crt
+      - equal:
+          path: data.FASTMOCK_MQTT_TLS_CERT_FILE
+          value: /etc/fastmock/tls/mqtt-client/tls.crt
+      - equal:
+          path: data.FASTMOCK_MQTT_TLS_KEY_FILE
+          value: /etc/fastmock/tls/mqtt-client/tls.key
+      - equal:
+          path: data.FASTMOCK_MQTT_ALLOWED_TOPICS
+          value: devices/*
+      - notExists:
+          path: data.FASTMOCK_MQTT_PASSWORD
+
+  - it: points FastMock at the AMQP broker
+    template: templates/configmap.yaml
+    values:
+      - ../ci/brokers-values.yaml
+    asserts:
+      - equal:
+          path: data.FASTMOCK_AMQP_URL
+          value: amqps://rabbitmq.example.com:5671/orders%2Fci
+      - equal:
+          path: data.FASTMOCK_AMQP_USERNAME
+          value: fastmock
+      - notExists:
+          path: data.FASTMOCK_AMQP_SASL_MECHANISM
+      - equal:
+          path: data.FASTMOCK_AMQP_TLS_CA_FILE
+          value: /etc/fastmock/tls/amqp-ca/ca.crt
+      - equal:
+          path: data.FASTMOCK_AMQP_TLS_CERT_FILE
+          value: /etc/fastmock/tls/amqp-client/tls.crt
+      - equal:
+          path: data.FASTMOCK_AMQP_TLS_KEY_FILE
+          value: /etc/fastmock/tls/amqp-client/tls.key
+      - equal:
+          path: data.FASTMOCK_AMQP_ALLOWED_EXCHANGES
+          value: orders,events.*
+      - equal:
+          path: data.FASTMOCK_AMQP_DECLARE_EXCHANGES
+          value: "true"
+      - notExists:
+          path: data.FASTMOCK_AMQP_PASSWORD
+
+  - it: enables capture with limits, allow-lists and the sources file
+    template: templates/configmap.yaml
+    values:
+      - ../ci/brokers-values.yaml
+    asserts:
+      - equal:
+          path: data.FASTMOCK_CAPTURE_ENABLED
+          value: "true"
+      - equal:
+          path: data.FASTMOCK_CAPTURE_SOURCES_FILE
+          value: /etc/fastmock/capture/sources.json
+      - equal:
+          path: data.FASTMOCK_CAPTURE_MAX_SOURCES
+          value: "10"
+      - equal:
+          path: data.FASTMOCK_CAPTURE_MAX_MESSAGES
+          value: "500"
+      - equal:
+          path: data.FASTMOCK_CAPTURE_MAX_MESSAGE_BYTES
+          value: "262144"
+      - equal:
+          path: data.FASTMOCK_CAPTURE_MAX_AGE
+          value: 12h
+      - equal:
+          path: data.FASTMOCK_CAPTURE_KAFKA_TOPICS
+          value: orders.*
+      - equal:
+          path: data.FASTMOCK_CAPTURE_MQTT_TOPICS
+          value: devices/*
+      - equal:
+          path: data.FASTMOCK_CAPTURE_AMQP_EXCHANGES
+          value: events.*
+      - notExists:
+          path: data.FASTMOCK_CAPTURE_SOURCES
+
+  - it: enables capture without a sources file when no sources are listed
+    template: templates/configmap.yaml
+    set:
+      admin.tokensSecret.name: fastmock-admin-tokens
+      storage.mode: memory
+      messaging.capture.enabled: true
+    asserts:
+      - equal:
+          path: data.FASTMOCK_CAPTURE_ENABLED
+          value: "true"
+      - equal:
+          path: data.FASTMOCK_CAPTURE_MAX_SOURCES
+          value: "50"
+      - equal:
+          path: data.FASTMOCK_CAPTURE_MAX_MESSAGE_BYTES
+          value: "1048576"
+      - equal:
+          path: data.FASTMOCK_CAPTURE_MAX_AGE
+          value: 24h
+      - notExists:
+          path: data.FASTMOCK_CAPTURE_SOURCES_FILE
+      - notExists:
+          path: data.FASTMOCK_CAPTURE_KAFKA_TOPICS
+
+  - it: reads the broker passwords from the existing Secrets
+    template: templates/deployment.yaml
+    values:
+      - ../ci/brokers-values.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: FASTMOCK_MQTT_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: fastmock-mqtt
+                key: password
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: FASTMOCK_AMQP_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: fastmock-amqp
+                key: amqp-password
+
+  - it: gives the MQTT TLS bridge a writable /tmp only with mqtts
+    template: templates/deployment.yaml
+    values:
+      - ../ci/brokers-values.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: tmp
+            emptyDir:
+              medium: Memory
+              sizeLimit: 1Mi
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tmp
+            mountPath: /tmp
+
+  - it: needs no /tmp volume for plain MQTT
+    template: templates/deployment.yaml
+    set:
+      admin.tokensSecret.name: fastmock-admin-tokens
+      storage.mode: memory
+      messaging.mqtt.url: mqtt://mqtt.example.com:1883
+    asserts:
+      - notContains:
+          path: spec.template.spec.volumes
+          any: true
+          content:
+            name: tmp
+
+  - it: mounts the broker certificates from Secrets
+    template: templates/deployment.yaml
+    values:
+      - ../ci/brokers-values.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: tls-mqtt-ca
+            secret:
+              secretName: fastmock-brokers-ca
+              items:
+                - key: ca.crt
+                  path: ca.crt
+              defaultMode: 0440
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: tls-mqtt-client
+            secret:
+              secretName: fastmock-mqtt-client
+              items:
+                - key: tls.crt
+                  path: tls.crt
+                - key: tls.key
+                  path: tls.key
+              defaultMode: 0440
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: tls-amqp-ca
+            secret:
+              secretName: fastmock-brokers-ca
+              items:
+                - key: bundle.pem
+                  path: ca.crt
+              defaultMode: 0440
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: tls-amqp-client
+            secret:
+              secretName: fastmock-amqp-client
+              items:
+                - key: tls.crt
+                  path: tls.crt
+                - key: tls.key
+                  path: tls.key
+              defaultMode: 0440
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tls-mqtt-ca
+            mountPath: /etc/fastmock/tls/mqtt-ca
+            readOnly: true
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tls-mqtt-client
+            mountPath: /etc/fastmock/tls/mqtt-client
+            readOnly: true
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tls-amqp-ca
+            mountPath: /etc/fastmock/tls/amqp-ca
+            readOnly: true
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tls-amqp-client
+            mountPath: /etc/fastmock/tls/amqp-client
+            readOnly: true
+
+  - it: mounts the capture sources file and restarts pods when it changes
+    template: templates/deployment.yaml
+    values:
+      - ../ci/brokers-values.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: capture-sources
+            configMap:
+              name: fm-fastmock-capture
+              items:
+                - key: sources.json
+                  path: sources.json
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: capture-sources
+            mountPath: /etc/fastmock/capture
+            readOnly: true
+      - exists:
+          path: spec.template.metadata.annotations["checksum/capture"]
+
+  - it: renders the capture sources into a ConfigMap
+    template: templates/capture.yaml
+    values:
+      - ../ci/brokers-values.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: ConfigMap
+      - equal:
+          path: metadata.name
+          value: fm-fastmock-capture
+      - matchRegex:
+          path: data["sources.json"]
+          pattern: '"name": "orders-created"'
+      - matchRegex:
+          path: data["sources.json"]
+          pattern: '"startFrom": "earliest"'
+      - matchRegex:
+          path: data["sources.json"]
+          pattern: '"qos": 1,'
+      - matchRegex:
+          path: data["sources.json"]
+          pattern: '"maxMessages": 200,'
+      - matchRegex:
+          path: data["sources.json"]
+          pattern: '"exchange": "events.billing"'
+
+  - it: uses SASL EXTERNAL with a client certificate and no password
+    template: templates/deployment.yaml
+    set:
+      admin.tokensSecret.name: fastmock-admin-tokens
+      storage.mode: memory
+      messaging.amqp.url: amqps://rabbitmq.example.com/
+      messaging.amqp.sasl.mechanism: external
+      messaging.amqp.tls.clientCertSecret: fastmock-amqp-client
+    asserts:
+      - isNullOrEmpty:
+          path: spec.template.spec.containers[0].env
+      - contains:
+          path: spec.template.spec.volumes
+          any: true
+          content:
+            name: tls-amqp-client
+
+  - it: renders SASL EXTERNAL in upper case
+    template: templates/configmap.yaml
+    set:
+      admin.tokensSecret.name: fastmock-admin-tokens
+      storage.mode: memory
+      messaging.amqp.url: amqps://rabbitmq.example.com/
+      messaging.amqp.sasl.mechanism: external
+      messaging.amqp.tls.clientCertSecret: fastmock-amqp-client
+    asserts:
+      - equal:
+          path: data.FASTMOCK_AMQP_SASL_MECHANISM
+          value: EXTERNAL
+      - notExists:
+          path: data.FASTMOCK_AMQP_USERNAME
+
+  - it: accepts the MQTT version as a number
+    template: templates/configmap.yaml
+    set:
+      admin.tokensSecret.name: fastmock-admin-tokens
+      storage.mode: memory
+      messaging.mqtt.url: mqtt://mqtt.example.com:1883
+      messaging.mqtt.version: 5
+    asserts:
+      - equal:
+          path: data.FASTMOCK_MQTT_VERSION
+          value: "5"
+      - notExists:
+          path: data.FASTMOCK_MQTT_TLS_CA_FILE
+
+  - it: rejects capture sources while capture is disabled
+    template: templates/deployment.yaml
+    set:
+      admin.tokensSecret.name: fastmock-admin-tokens
+      storage.mode: memory
+      messaging.capture.sources:
+        - name: orders
+          protocol: kafka
+          topics: [orders]
+    asserts:
+      - failedTemplate:
+          errorMessage: messaging.capture.enabled must be true when messaging.capture.sources is set
+
+  - it: rejects more sources than maxSources
+    template: templates/deployment.yaml
+    set:
+      admin.tokensSecret.name: fastmock-admin-tokens
+      storage.mode: memory
+      messaging.capture.enabled: true
+      messaging.capture.limits.maxSources: 1
+      messaging.capture.sources:
+        - name: orders
+          protocol: kafka
+          topics: [orders]
+        - name: payments
+          protocol: kafka
+          topics: [payments]
+    asserts:
+      - failedTemplate:
+          errorMessage: messaging.capture.sources has 2 sources but messaging.capture.limits.maxSources is 1
+
+  - it: rejects a source defined twice in one space
+    template: templates/deployment.yaml
+    set:
+      admin.tokensSecret.name: fastmock-admin-tokens
+      storage.mode: memory
+      messaging.capture.enabled: true
+      messaging.capture.sources:
+        - name: orders
+          protocol: kafka
+          topics: [orders]
+        - name: orders
+          protocol: mqtt
+          topics: [orders/#]
+    asserts:
+      - failedTemplate:
+          errorMessage: messaging.capture.sources defines orders twice in the same space
+
+  - it: rejects an AMQP source without an exchange
+    template: templates/deployment.yaml
+    set:
+      admin.tokensSecret.name: fastmock-admin-tokens
+      storage.mode: memory
+      messaging.capture.enabled: true
+      messaging.capture.sources:
+        - name: billing
+          protocol: amqp
+    asserts:
+      - failedTemplate:
+          errorMessage: "messaging.capture.sources billing: an amqp source needs an exchange"
+
+  - it: rejects MQTT certificates with a plain mqtt URL
+    template: templates/deployment.yaml
+    set:
+      admin.tokensSecret.name: fastmock-admin-tokens
+      storage.mode: memory
+      messaging.mqtt.url: mqtt://mqtt.example.com:1883
+      messaging.mqtt.tls.caSecret: fastmock-brokers-ca
+    asserts:
+      - failedTemplate:
+          errorMessage: messaging.mqtt.tls needs an mqtts:// URL in messaging.mqtt.url
+
+  - it: rejects MQTT settings without a URL
+    template: templates/deployment.yaml
+    set:
+      admin.tokensSecret.name: fastmock-admin-tokens
+      storage.mode: memory
+      messaging.mqtt.username: fastmock
+    asserts:
+      - failedTemplate:
+          errorMessage: messaging.mqtt.url is required when other messaging.mqtt settings are set
+
+  - it: rejects an AMQP user name without a password Secret
+    template: templates/deployment.yaml
+    set:
+      admin.tokensSecret.name: fastmock-admin-tokens
+      storage.mode: memory
+      messaging.amqp.url: amqp://rabbitmq.example.com/
+      messaging.amqp.sasl.username: fastmock
+    asserts:
+      - failedTemplate:
+          errorMessage: messaging.amqp.sasl.existingSecret is required when messaging.amqp.sasl.username is set
+
+  - it: rejects SASL EXTERNAL without a client certificate
+    template: templates/deployment.yaml
+    set:
+      admin.tokensSecret.name: fastmock-admin-tokens
+      storage.mode: memory
+      messaging.amqp.url: amqps://rabbitmq.example.com/
+      messaging.amqp.sasl.mechanism: EXTERNAL
+    asserts:
+      - failedTemplate:
+          errorMessage: messaging.amqp.sasl.mechanism=EXTERNAL needs an amqps:// URL and messaging.amqp.tls.clientCertSecret
+
+  - it: rejects credentials in the AMQP URL
+    template: templates/deployment.yaml
+    set:
+      admin.tokensSecret.name: fastmock-admin-tokens
+      storage.mode: memory
+      messaging.amqp.url: amqp://user:secret@rabbitmq.example.com/
+    asserts:
+      - failedTemplate: {}

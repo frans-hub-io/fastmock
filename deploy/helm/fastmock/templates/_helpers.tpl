@@ -122,3 +122,71 @@ verify-full
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{- define "fastmock.captureSourcesEnabled" -}}
+{{- $capture := .Values.messaging.capture -}}
+{{- if and $capture.enabled $capture.sources -}}true{{- end -}}
+{{- end -}}
+
+{{- define "fastmock.captureSourcesFile" -}}
+{{- toPrettyJson .Values.messaging.capture.sources -}}
+{{- end -}}
+
+{{- define "fastmock.brokersValidate" -}}
+{{- $mqtt := .Values.messaging.mqtt -}}
+{{- if $mqtt.url -}}
+{{- if and $mqtt.existingSecret (not $mqtt.username) -}}
+{{- fail "messaging.mqtt.username is required when messaging.mqtt.existingSecret is set" -}}
+{{- end -}}
+{{- if and (or $mqtt.tls.caSecret $mqtt.tls.clientCertSecret) (not (hasPrefix "mqtts://" $mqtt.url)) -}}
+{{- fail "messaging.mqtt.tls needs an mqtts:// URL in messaging.mqtt.url" -}}
+{{- end -}}
+{{- else if or $mqtt.username $mqtt.existingSecret $mqtt.tls.caSecret $mqtt.tls.clientCertSecret $mqtt.allowedTopics -}}
+{{- fail "messaging.mqtt.url is required when other messaging.mqtt settings are set" -}}
+{{- end -}}
+{{- $amqp := .Values.messaging.amqp -}}
+{{- if $amqp.url -}}
+{{- $tls := hasPrefix "amqps://" $amqp.url -}}
+{{- if and (or $amqp.tls.caSecret $amqp.tls.clientCertSecret) (not $tls) -}}
+{{- fail "messaging.amqp.tls needs an amqps:// URL in messaging.amqp.url" -}}
+{{- end -}}
+{{- if eq (upper ($amqp.sasl.mechanism | default "PLAIN")) "EXTERNAL" -}}
+{{- if or (not $tls) (not $amqp.tls.clientCertSecret) -}}
+{{- fail "messaging.amqp.sasl.mechanism=EXTERNAL needs an amqps:// URL and messaging.amqp.tls.clientCertSecret" -}}
+{{- end -}}
+{{- if or $amqp.sasl.username $amqp.sasl.existingSecret -}}
+{{- fail "messaging.amqp.sasl.mechanism=EXTERNAL takes no username or existingSecret" -}}
+{{- end -}}
+{{- else if and $amqp.sasl.username (not $amqp.sasl.existingSecret) -}}
+{{- fail "messaging.amqp.sasl.existingSecret is required when messaging.amqp.sasl.username is set" -}}
+{{- else if and $amqp.sasl.existingSecret (not $amqp.sasl.username) -}}
+{{- fail "messaging.amqp.sasl.username is required when messaging.amqp.sasl.existingSecret is set" -}}
+{{- end -}}
+{{- else if or $amqp.sasl.mechanism $amqp.sasl.username $amqp.sasl.existingSecret $amqp.tls.caSecret $amqp.tls.clientCertSecret $amqp.allowedExchanges $amqp.declareExchanges -}}
+{{- fail "messaging.amqp.url is required when other messaging.amqp settings are set" -}}
+{{- end -}}
+{{- $capture := .Values.messaging.capture -}}
+{{- if and $capture.sources (not $capture.enabled) -}}
+{{- fail "messaging.capture.enabled must be true when messaging.capture.sources is set" -}}
+{{- end -}}
+{{- if $capture.enabled -}}
+{{- $max := dig "limits" "maxSources" 50 $capture | int -}}
+{{- if gt (len ($capture.sources | default list)) $max -}}
+{{- fail (printf "messaging.capture.sources has %d sources but messaging.capture.limits.maxSources is %d" (len $capture.sources) $max) -}}
+{{- end -}}
+{{- $seen := dict -}}
+{{- range $s := $capture.sources | default list -}}
+{{- $id := printf "%s/%s" ($s.space | default "") $s.name -}}
+{{- if hasKey $seen $id -}}
+{{- fail (printf "messaging.capture.sources defines %s twice in the same space" $s.name) -}}
+{{- end -}}
+{{- $_ := set $seen $id true -}}
+{{- if and (ne $s.protocol "amqp") (not $s.topics) -}}
+{{- fail (printf "messaging.capture.sources %s: a %s source needs topics" $s.name $s.protocol) -}}
+{{- end -}}
+{{- if and (eq $s.protocol "amqp") (not $s.exchange) -}}
+{{- fail (printf "messaging.capture.sources %s: an amqp source needs an exchange" $s.name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

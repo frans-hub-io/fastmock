@@ -826,7 +826,7 @@ async fn call(
     };
     drop(held);
     if !r.messages.is_empty() {
-        app.kafka.publish_in_background(r.messages.clone());
+        app.brokers.publish_in_background(r.messages.clone());
     }
     if r.callbacks > 0 {
         metrics::counter!("fastmock_callbacks_scheduled_total", "source" => "stubs")

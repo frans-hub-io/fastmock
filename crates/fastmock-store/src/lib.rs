@@ -1,3 +1,4 @@
+pub mod capture;
 pub mod mail;
 pub mod mail_events;
 pub mod mail_login;
@@ -11,6 +12,7 @@ use std::time::Duration;
 use anyhow::Context;
 use fastmock_core::Stores;
 
+pub use capture::PgCaptureStore;
 pub use mail::{MailUsage, PgMailStore};
 pub use mail_events::ValkeyMailEvents;
 pub use mail_login::ValkeyLoginFailures;

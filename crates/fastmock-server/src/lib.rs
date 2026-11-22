@@ -3,6 +3,9 @@ pub mod admin;
 pub mod admin_core;
 pub mod asyncmock;
 pub mod auth;
+pub mod broker_settings;
+pub mod brokers;
+pub mod capture;
 pub mod cli;
 pub mod config;
 pub mod contract;
@@ -154,6 +157,7 @@ pub async fn build(
     };
     engine.set_ownership(access.ownership());
     let mail = mail_setup::build(&cfg, &access, pg.as_ref()).await?;
+    let capture = capture::build(&cfg, &access, pg.as_ref())?;
     let problems = spaces::ownership_problems(&access, engine.snapshot().iter().map(|c| &c.stub));
     for p in problems.iter().take(50) {
         tracing::warn!(stub_id = %p.stub_id, space = %p.space, reason = %p.reason, "stored stub breaks the rules of its space; fix or delete it");
@@ -233,6 +237,7 @@ pub async fn build(
         Some(pg) => Arc::new(pg.clone()),
         None => Arc::new(fastmock_core::memory::MemoryTokens::default()),
     };
+    let kafka = Arc::new(extras::KafkaHub::new(&cfg)?);
     let (journal_tx, journal_rx) = tokio::sync::mpsc::channel(cfg.journal_queue);
     tokio::spawn(journal_writer(stores.journal.clone(), journal_rx));
     let app = AppState {
@@ -249,7 +254,9 @@ pub async fn build(
         http,
         policy: policy.clone(),
         chaos: Arc::new(extras::ChaosCache::default()),
-        kafka: Arc::new(extras::KafkaHub::new(&cfg)?),
+        kafka: kafka.clone(),
+        brokers: Arc::new(brokers::Brokers::new(&cfg, kafka)),
+        capture,
         grpc: Arc::new(grpc::Registry::default()),
         body_budget: Arc::new(tokio::sync::Semaphore::new(
             (cfg.max_inflight_body_bytes / 1024).max(1),
@@ -334,6 +341,15 @@ pub async fn maintenance(app: AppState, mut shutdown: watch::Receiver<bool>) {
                 tracing::error!(error = %e, "audit retention failed");
             }
             tokens::maintain(&app).await;
+            if let Some(c) = &app.capture {
+                let cutoff =
+                    Utc::now() - chrono::Duration::from_std(c.config.max_age).unwrap_or_default();
+                match c.store.sweep(cutoff).await {
+                    Ok(n) if n > 0 => tracing::info!(deleted = n, "capture retention applied"),
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(error = %e, "capture retention failed"),
+                }
+            }
             if let Some(mail) = &app.mail {
                 match mail.sweep(Utc::now()).await {
                     Ok(n) if n > 0 => tracing::info!(deleted = n, "mail retention applied"),
@@ -397,6 +413,7 @@ pub async fn serve() -> anyhow::Result<()> {
     let maint = tokio::spawn(maintenance(app.clone(), rx.clone()));
     let notify = tokio::spawn(listen_notifications(app.clone(), rx.clone()));
     let async_publisher = tokio::spawn(asyncmock::run(app.clone(), rx.clone()));
+    let capture_runtime = tokio::spawn(capture::runtime::run(app.clone(), rx.clone()));
     tokio::spawn(shutdown_signal(
         tx,
         app.ready.clone(),
@@ -441,6 +458,7 @@ pub async fn serve() -> anyhow::Result<()> {
     })
     .await;
     let _ = tokio::time::timeout(Duration::from_secs(5), async_publisher).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), capture_runtime).await;
     telemetry.shutdown();
     tracing::info!("FastMock stopped");
     Ok(())

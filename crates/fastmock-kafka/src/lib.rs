@@ -330,6 +330,7 @@ pub struct SchemaRegistry {
     http: reqwest::Client,
     auth: Option<BasicAuth>,
     cache: Mutex<HashMap<(String, String), i32>>,
+    by_id: Mutex<HashMap<i32, Arc<Schema>>>,
 }
 
 impl SchemaRegistry {
@@ -353,7 +354,42 @@ impl SchemaRegistry {
             http: http.build()?,
             auth: opts.auth.clone(),
             cache: Mutex::new(HashMap::new()),
+            by_id: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// The Avro schema with this id (`GET /schemas/ids/{id}`), cached.
+    pub async fn schema(&self, id: i32) -> anyhow::Result<Arc<Schema>> {
+        if let Some(s) = self.by_id.lock().await.get(&id) {
+            return Ok(s.clone());
+        }
+        let mut req = self.http.get(format!("{}/schemas/ids/{id}", self.base));
+        if let Some(a) = &self.auth {
+            req = req.basic_auth(&a.username, Some(&a.password));
+        }
+        let resp = req.send().await.context("schema registry is unreachable")?;
+        let status = resp.status();
+        let body: Value = resp.json().await.unwrap_or(Value::Null);
+        if !status.is_success() {
+            anyhow::bail!("schema registry returned {status} for schema id {id}: {body}");
+        }
+        if let Some(t) = body.get("schemaType").and_then(Value::as_str)
+            && !t.eq_ignore_ascii_case("AVRO")
+        {
+            anyhow::bail!("schema {id} is {t}, not Avro");
+        }
+        let text = body
+            .get("schema")
+            .and_then(Value::as_str)
+            .context("schema registry response has no schema")?;
+        let schema =
+            Arc::new(Schema::parse_str(text).context("the registered schema is not valid Avro")?);
+        let mut cache = self.by_id.lock().await;
+        if cache.len() >= 1024 {
+            cache.clear();
+        }
+        cache.insert(id, schema.clone());
+        Ok(schema)
     }
 
     pub async fn register(&self, subject: &str, schema: &str) -> anyhow::Result<i32> {
@@ -382,6 +418,15 @@ impl SchemaRegistry {
             .context("schema registry response has no id")? as i32;
         self.cache.lock().await.insert(key, id);
         Ok(id)
+    }
+}
+
+/// The schema id of a Confluent-framed value (magic byte 0, then the id).
+pub fn confluent_schema_id(bytes: &[u8]) -> Option<i32> {
+    if bytes.len() > 5 && bytes[0] == 0 {
+        Some(i32::from_be_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]))
+    } else {
+        None
     }
 }
 
@@ -753,6 +798,8 @@ mod tests {
         let expected = serde_json::json!({"id": 7, "note": "x"});
         assert_eq!(decode_avro(&schema, &framed).unwrap(), expected);
         assert_eq!(decode_avro(&schema, &raw).unwrap(), expected);
+        assert_eq!(confluent_schema_id(&framed), Some(3));
+        assert_eq!(confluent_schema_id(b"{}"), None);
         assert!(decode_avro(&schema, &[0, 0, 0, 0, 1, 0xff]).is_err());
     }
 

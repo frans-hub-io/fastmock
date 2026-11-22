@@ -46,6 +46,7 @@ const VIEWER = [
   'contracts:read',
   'info:read',
   'mail:read',
+  'messages:read',
 ];
 const EDITOR = [
   ...VIEWER,
@@ -62,6 +63,8 @@ const EDITOR = [
   'contracts:write',
   'mail:write',
   'mail:delete',
+  'messages:write',
+  'messages:delete',
 ];
 
 /** Permission sets of the built-in roles, for servers that report only a role. */

@@ -26,6 +26,7 @@ const KvPage = lazy(() => import('./pages/Kv'));
 const ChaosPage = lazy(() => import('./pages/Chaos'));
 const CallbacksPage = lazy(() => import('./pages/Callbacks'));
 const MailPage = lazy(() => import('./pages/Mail'));
+const MessagesPage = lazy(() => import('./pages/Messages'));
 const RecordingsPage = lazy(() => import('./pages/Recordings'));
 const FilesPage = lazy(() => import('./pages/Files'));
 const SettingsPage = lazy(() => import('./pages/Settings'));
@@ -77,6 +78,9 @@ function Protected() {
           <Route path="mail/mailboxes" element={<MailPage section="mailboxes" />} />
           <Route path="mail/chaos" element={<MailPage section="chaos" />} />
           <Route path="mail/:id" element={<MailPage section="message" />} />
+          <Route path="messages" element={<MessagesPage section="messages" />} />
+          <Route path="messages/sources" element={<MessagesPage section="sources" />} />
+          <Route path="messages/:id" element={<MessagesPage section="message" />} />
           <Route path="callbacks" element={<CallbacksPage />} />
           <Route path="recordings" element={<RecordingsPage />} />
           <Route path="files" element={<FilesPage />} />

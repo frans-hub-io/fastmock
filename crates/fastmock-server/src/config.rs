@@ -234,6 +234,16 @@ pub struct Config {
     pub grpc_max_stream_duration: Duration,
     /// Concurrent HTTP/2 streams per connection on the data port (`FASTMOCK_HTTP2_MAX_CONCURRENT_STREAMS`).
     pub http2_max_concurrent_streams: u32,
+    /// The MQTT broker (`FASTMOCK_MQTT_*`); publishing to MQTT is off without it.
+    pub mqtt: Option<fastmock_brokers::mqtt::MqttSettings>,
+    /// `FASTMOCK_MQTT_ALLOWED_TOPICS`: topics stubs and async mocks may publish to.
+    pub mqtt_allowed_topics: Option<Vec<String>>,
+    /// The AMQP 0-9-1 broker (`FASTMOCK_AMQP_*`); publishing to AMQP is off without it.
+    pub amqp: Option<fastmock_brokers::amqp::AmqpSettings>,
+    /// `FASTMOCK_AMQP_ALLOWED_EXCHANGES`: exchanges stubs and async mocks may publish to.
+    pub amqp_allowed_exchanges: Option<Vec<String>>,
+    /// Message capture (`FASTMOCK_CAPTURE_*`).
+    pub capture: crate::broker_settings::CaptureConfig,
 }
 
 pub const DEFAULT_TOKEN_DAYS: u32 = 90;
@@ -644,6 +654,11 @@ impl Config {
             grpc_stream_idle_timeout: Duration::from_secs(60),
             grpc_max_stream_duration: Duration::from_secs(3600),
             http2_max_concurrent_streams: 200,
+            mqtt: None,
+            mqtt_allowed_topics: None,
+            amqp: None,
+            amqp_allowed_exchanges: None,
+            capture: Default::default(),
         }
     }
 
@@ -781,6 +796,11 @@ impl Config {
             grpc_stream_idle_timeout: dur("GRPC_STREAM_IDLE_TIMEOUT", "60s")?,
             grpc_max_stream_duration: dur("GRPC_MAX_STREAM_DURATION", "1h")?,
             http2_max_concurrent_streams: parse("HTTP2_MAX_CONCURRENT_STREAMS", 200u32)?,
+            mqtt: crate::broker_settings::mqtt_settings(&env)?,
+            mqtt_allowed_topics: env("MQTT_ALLOWED_TOPICS").map(|v| list(&v)),
+            amqp: crate::broker_settings::amqp_settings(&env)?,
+            amqp_allowed_exchanges: env("AMQP_ALLOWED_EXCHANGES").map(|v| list(&v)),
+            capture: crate::broker_settings::capture_settings(&env)?,
         };
         if cfg.grpc_stream_idle_timeout.is_zero() || cfg.grpc_max_stream_duration.is_zero() {
             bail!(

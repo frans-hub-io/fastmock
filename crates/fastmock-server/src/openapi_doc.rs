@@ -116,6 +116,7 @@ pub fn spec() -> utoipa::openapi::OpenApi {
     doc.merge(crate::admin_core::CoreApi::openapi());
     doc.merge(crate::tokens::TokensApi::openapi());
     doc.merge(crate::mail_chaos_api::MailChaosApi::openapi());
+    doc.merge(crate::capture::api::CaptureApi::openapi());
     doc.merge(crate::mail_webhooks_api::MailWebhooksApi::openapi());
     doc.merge(crate::oidc::routes::AuthApi::openapi());
     doc.merge(crate::mail_api::MailApi::openapi());

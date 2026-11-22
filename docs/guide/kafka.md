@@ -4,7 +4,9 @@ A stub can publish Kafka records when it matches: the event a real service would
 (`OrderShipped` after `POST /orders/{id}/ship`). Values can be plain text, JSON, or Avro in the Confluent wire
 format with automatic schema registration.
 
-For mocking event-driven APIs described by AsyncAPI documents, see [AsyncAPI](asyncapi.md).
+For mocking event-driven APIs described by AsyncAPI documents, see [AsyncAPI](asyncapi.md). Stubs publish to MQTT
+and AMQP brokers the same way ([MQTT and AMQP messages](mqtt-amqp.md)), and [Message capture](message-capture.md)
+reads what your application publishes to Kafka.
 
 ## Server settings
 
@@ -109,6 +111,9 @@ client certificate) or `SaslAuthenticationFailed` (wrong user, password or mecha
 | `value` | template | Text value, used when `jsonValue` is not set. Without both, the record has an empty value. |
 | `headers` | map of templates | Record headers (UTF-8 values). |
 | `avroSchema` | JSON | Avro schema; the value (from `jsonValue`) is encoded as Avro. See [Avro](#avro). |
+| `contentType` | template | Sent as the `content-type` header unless `headers` sets it. |
+| `delayMs` | integer | Publish this long after the match (at most `FASTMOCK_MAX_DELAY`). |
+| `protocol` | `kafka` | The default; `mqtt` and `amqp` publish to other brokers ([MQTT and AMQP messages](mqtt-amqp.md)). |
 
 A stub may publish several messages, to different topics. The template context is the same as for the response,
 including scenario `state` (see [Templating](templating.md)).
@@ -192,7 +197,7 @@ A value that does not fit the schema fails the message with a path to the field,
 With `FASTMOCK_KAFKA_ALLOWED_TOPICS=orders.*`, a message to `audit.events` is not published:
 
 ```json
-{"level":"ERROR","message":"message publishing failed","topic":"audit.not-allowed","error":"topic is not in FASTMOCK_KAFKA_ALLOWED_TOPICS"}
+{"level":"ERROR","message":"message publishing failed","protocol":"kafka","topic":"audit.not-allowed","error":"topic is not in FASTMOCK_KAFKA_ALLOWED_TOPICS"}
 ```
 
 The stub still answers; only the message is refused.
@@ -201,14 +206,14 @@ The stub still answers; only the message is refused.
 
 | Signal | Content |
 |---|---|
-| `fastmock_messages_total{result}` | `sent`, `failed` (encoding, registry, broker or allow-list errors), `dropped` (more than 256 publications of a replica in flight) |
-| log `message published` | `topic`, `partition`, `offset`, inside the span of the request (with its `trace_id`) |
-| log `message publishing failed` | `topic`, `error` |
+| `fastmock_messages_total{protocol, result}` | `protocol="kafka"`; `result` = `sent`, `failed` (encoding, registry, broker or allow-list errors), `dropped` (more than 256 publications of a replica in flight) |
+| log `message published` | `protocol`, `topic`, `partition`, `offset`, inside the span of the request (with its `trace_id`) |
+| log `message publishing failed` | `protocol`, `topic`, `error` |
 
 Example:
 
 ```json
-{"level":"INFO","message":"message published","topic":"orders.events","partition":0,"offset":0,"span":{"fastmock.stub_id":"20e363c3-ab06-4c2e-b1d5-5d39a3739653","trace_id":"74cf475f875a2a5ac559937ca032c427","url.path":"/orders/A-1/ship"}}
+{"level":"INFO","message":"message published","protocol":"kafka","topic":"orders.events","partition":0,"offset":0,"span":{"fastmock.stub_id":"20e363c3-ab06-4c2e-b1d5-5d39a3739653","trace_id":"74cf475f875a2a5ac559937ca032c427","url.path":"/orders/A-1/ship"}}
 ```
 
 ## Troubleshooting

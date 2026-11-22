@@ -25,6 +25,7 @@ chrono.workspace = true
 clap = { version = "4.6", features = ["derive", "env"] }
 fastmock-core.workspace = true
 fastmock-kafka.workspace = true
+fastmock-brokers.workspace = true
 fastmock-mail.workspace = true
 apache-avro.workspace = true
 fastmock-store.workspace = true

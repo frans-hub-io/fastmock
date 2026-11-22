@@ -253,6 +253,16 @@ correlation, filtered by status, correlation and source and refreshed every 3 se
 with its delivery id, timestamps, `traceparent`, headers (signatures masked) and body. Editors can clear the
 outbox.
 
+### Messages
+
+Shown when [message capture](message-capture.md) is enabled and the user holds `messages:read`. **Messages** lists
+the captured Kafka, MQTT and AMQP messages, newest first, filtered by source, protocol, exact topic or routing key
+and time; **Match** takes a JSON [match](message-capture.md#matching-messages) for header, property and body
+conditions. A message opens with its metadata, headers, properties and decoded body (JSON, Avro with its schema id,
+text, or base64 with a download of the bytes). **Sources** shows each capture source with its state, last error,
+stored and received counts; users with `messages:write` add, edit and delete sources (those from the server
+configuration are read-only), and users with `messages:delete` delete messages.
+
 ### Recordings
 
 Start recording against a target base URL with a tag, the response headers to keep and the request headers to
@@ -281,9 +291,9 @@ messages, status, trailers and reply rules of a gRPC stub, which are edited in t
 
 ### Async mocks
 
-Kafka and WebSocket mocks imported from AsyncAPI: name, protocol, channel, publish interval and messages. Editors
-enable or disable a mock, publish one message now (**Trigger**, shows topic, partition and offset), edit the JSON
-or delete it.
+Kafka, MQTT and AMQP mocks imported from AsyncAPI: name, protocol, channel (for AMQP the exchange and routing
+key), MQTT QoS and retain, publish interval and messages. Editors enable or disable a mock, publish one message now
+(**Trigger**, shows the topic, and for Kafka the partition and offset), edit the JSON or delete it.
 
 ### Services
 

@@ -86,10 +86,25 @@ avoid generating thousands of uniquely named stubs per run.
 | `fastmock_callback_duration_seconds` | histogram | `source` | Duration of a delivery attempt. |
 | `fastmock_callbacks_pending` | gauge | | Pending callbacks in the outbox (all replicas), refreshed every `FASTMOCK_STUB_POLL`. |
 | `fastmock_callbacks_stale_results_total` | counter | | Attempt results ignored because the lease had expired and another attempt owned the callback. |
-| `fastmock_messages_total` | counter | `result` (`sent`, `failed`, `dropped`) | Kafka messages from stubs. |
-| `fastmock_async_messages_total` | counter | `mock`, `result` (`sent`, `failed`, `dropped`) | Messages published by AsyncAPI async mocks. |
+| `fastmock_messages_total` | counter | `protocol` (`kafka`, `mqtt`, `amqp`), `result` (`sent`, `failed`, `dropped`) | Messages from stubs ([Kafka](../guide/kafka.md), [MQTT and AMQP](../guide/mqtt-amqp.md)). |
+| `fastmock_async_messages_total` | counter | `mock`, `result` (`sent`, `failed`, `dropped`) | Messages published by async mocks, every protocol. |
 | `fastmock_async_mocks_active` | gauge | | Active async mocks on the publishing replica. |
 | `fastmock_async_leader` | gauge | | 1 on the replica that currently publishes async mock messages, 0 elsewhere. |
+
+### Message capture
+
+Present only with `FASTMOCK_CAPTURE_ENABLED=true` ([Message capture](../guide/message-capture.md)).
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `fastmock_capture_messages_total` | counter | `protocol` (`kafka`, `mqtt`, `amqp`), `result` (`stored`, `truncated`, `dropped`) | Captured messages; `truncated` ones are also `stored`; `dropped`: the buffer between broker and store was full, or storing failed. |
+| `fastmock_capture_leader` | gauge | | 1 on the replica that runs the capture consumers, 0 elsewhere. |
+| `fastmock_capture_sources_active` | gauge | | Consumers running on the leader. |
+| `fastmock_capture_waits_total` | counter | `result` (`found`, `timeout`) | Finished `POST /__admin/capture/messages/wait` requests. |
+| `fastmock_capture_waits_active` | gauge | | Waits in progress. |
+
+Verifications count in `fastmock_admin_verifications_total{kind="capture"}`, storage errors in
+`fastmock_store_errors_total{store="capture" | "capture_sources" | "capture_lease"}`.
 
 ### Mail
 
@@ -184,8 +199,11 @@ sum by (source) (rate(fastmock_callbacks_total{result="sent"}[15m]))
 # callback backlog
 max(fastmock_callbacks_pending)
 
-# Kafka publishing failures
-sum by (result) (rate(fastmock_messages_total{result!="sent"}[5m]))
+# publishing failures by broker
+sum by (protocol, result) (rate(fastmock_messages_total{result!="sent"}[5m]))
+
+# no replica runs the capture consumers
+sum(fastmock_capture_leader) == 0
 
 # replicas that disagree on the number of loaded stubs
 max(fastmock_stubs_loaded) - min(fastmock_stubs_loaded)
@@ -300,7 +318,7 @@ Examples (shortened):
 
 ```json
 {"timestamp":"2026-11-19T05:48:43.474008Z","level":"WARN","message":"callback attempt failed","callback_id":"01a1f259-a1b1-76f3-a75b-3bb920a85dad","attempt":2,"error":"unexpected status 500","retry":true,"target":"fastmock_server::outbox","span":{"fastmock.attempt":2,"fastmock.source":"stubs","otel.kind":"client","url.full":"http://shop.example.com/hooks/payments","name":"fastmock.callback"}}
-{"timestamp":"2026-11-19T05:52:09.411191Z","level":"INFO","message":"message published","topic":"orders.events","partition":0,"offset":0,"target":"fastmock_server::extras","span":{"fastmock.stub_id":"20e363c3-ab06-4c2e-b1d5-5d39a3739653","trace_id":"74cf475f875a2a5ac559937ca032c427","url.path":"/orders/A-1/ship","name":"fastmock.request"}}
+{"timestamp":"2026-11-19T05:52:09.411191Z","level":"INFO","message":"message published","protocol":"kafka","topic":"orders.events","partition":0,"offset":0,"target":"fastmock_server::brokers","span":{"fastmock.stub_id":"20e363c3-ab06-4c2e-b1d5-5d39a3739653","trace_id":"74cf475f875a2a5ac559937ca032c427","url.path":"/orders/A-1/ship","name":"fastmock.request"}}
 {"timestamp":"2026-11-19T05:49:27.026678Z","level":"INFO","message":"admin change","principal":"me","role":"Admin","action":"reset","detail":"{\"requests\":19,\"callbacks\":7,\"scenarios\":0}","target":"audit"}
 ```
 
@@ -313,7 +331,11 @@ Useful messages:
 | `stub evaluation failed` | error | A request got 500; see `error` and the trace id. |
 | `callback delivered`, `callback attempt failed` | info, warn | Callback outcomes. |
 | `delivery result ignored: the lease expired ...` | warn | A late attempt result (at-least-once). |
-| `message published`, `message publishing failed` | info, error | Kafka. |
+| `message published`, `message publishing failed` | info, error | Stub messages to Kafka, MQTT and AMQP (`protocol`, `topic`, `error`). |
+| `MQTT connected`, `MQTT connection lost; reconnecting`, `MQTT connection failed` | info, warn | MQTT connections (publishing and capture), with the broker URL and `retry_in`. |
+| `AMQP connected`, `AMQP connection failed` | info, warn | The AMQP publishing connection. |
+| `capture consumer started`, `Kafka capture subscribed`, `AMQP capture subscribed`, `... capture interrupted` | info, warn | Message capture consumers (`source`). |
+| `message capture leadership changed` | info | This replica took or lost the capture lease. |
 | `journal write failed` | error | Journal entries lost. |
 | `readiness check failed` | warn | A store does not answer. |
 | `admin change` (target `audit`) | info | Every change through the admin API. |

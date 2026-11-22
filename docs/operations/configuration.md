@@ -258,6 +258,54 @@ certificate without its key, an unreadable or empty PEM file, or SASL or TLS set
 use stop the server with an error naming the variable. See [Kafka messages](../guide/kafka.md) and
 [Secure connections](../guide/kafka.md#secure-connections).
 
+## MQTT
+
+Publishing to MQTT from stubs and async mocks, and MQTT [capture sources](../guide/message-capture.md). See
+[MQTT and AMQP messages](../guide/mqtt-amqp.md).
+
+| Variable | Type | Default | Meaning |
+|---|---|---|---|
+| `FASTMOCK_MQTT_URL` | URL | none | `mqtt://host:port` (default port 1883) or `mqtts://host:port` (8883); `tcp://`, `ssl://`, `tls://` also work. No credentials, path or query. Without it MQTT messages fail and MQTT capture sources are refused. |
+| `FASTMOCK_MQTT_VERSION` | enum | `5` | `5` or `3.1.1`. |
+| `FASTMOCK_MQTT_CLIENT_ID_PREFIX` | string | `fastmock` | Client ids are `<prefix>-pub-<random>` and `<prefix>-cap-<random>`; 1..40 characters. |
+| `FASTMOCK_MQTT_USERNAME` | string | none | User name. |
+| `FASTMOCK_MQTT_PASSWORD` | string | none | Password; needs the user name. Never logged. |
+| `FASTMOCK_MQTT_TLS_CA_FILE` | path | none | PEM bundle trusted in addition to the public roots; `mqtts://` only. |
+| `FASTMOCK_MQTT_TLS_CERT_FILE`, `FASTMOCK_MQTT_TLS_KEY_FILE` | path | none | Client certificate and key (PEM) for mTLS; set both. |
+| `FASTMOCK_MQTT_KEEP_ALIVE` | duration | `30s` | Keep-alive interval (at least 5 s). |
+| `FASTMOCK_MQTT_ALLOWED_TOPICS` | list | none (any) | Topics stubs and async mocks may publish to: names or `prefix*`. |
+
+## AMQP
+
+Publishing to AMQP 0-9-1 brokers (RabbitMQ, LavinMQ, ...) and AMQP capture sources.
+
+| Variable | Type | Default | Meaning |
+|---|---|---|---|
+| `FASTMOCK_AMQP_URL` | URL | none | `amqp://host:port/vhost` (default port 5672) or `amqps://host:port/vhost` (5671). The virtual host is the URL-encoded path; no path or `/%2f` is `/`. No credentials or query. |
+| `FASTMOCK_AMQP_USERNAME`, `FASTMOCK_AMQP_PASSWORD` | string | none (`guest`) | SASL `PLAIN` credentials; set both or neither. The password is never logged. |
+| `FASTMOCK_AMQP_SASL_MECHANISM` | enum | `PLAIN` | `PLAIN` or `EXTERNAL` (needs `amqps://` and a client certificate, and no password). |
+| `FASTMOCK_AMQP_TLS_CA_FILE` | path | none | PEM bundle trusted in addition to the public roots; `amqps://` only. |
+| `FASTMOCK_AMQP_TLS_CERT_FILE`, `FASTMOCK_AMQP_TLS_KEY_FILE` | path | none | Client certificate and key (PEM) for mTLS and `EXTERNAL`; set both. |
+| `FASTMOCK_AMQP_ALLOWED_EXCHANGES` | list | none (any) | Exchanges stubs and async mocks may publish to: names or `prefix*`; the default exchange is `amq.default`. |
+| `FASTMOCK_AMQP_DECLARE_EXCHANGES` | boolean | `false` | Declare missing exchanges before publishing (type from the message, default `topic`). |
+
+## Message capture
+
+See [Message capture](../guide/message-capture.md).
+
+| Variable | Type | Default | Meaning |
+|---|---|---|---|
+| `FASTMOCK_CAPTURE_ENABLED` | boolean | `false` | Turns capture on; `/__admin/capture/*` answers `404` otherwise. |
+| `FASTMOCK_CAPTURE_SOURCES` | JSON or YAML | none | Sources defined in the configuration (a list, or `{"sources": [...]}`); read-only in the API. |
+| `FASTMOCK_CAPTURE_SOURCES_FILE` | path | none | The same in a file. |
+| `FASTMOCK_CAPTURE_MAX_SOURCES` | integer | `50` | Sources in total, 1..1000. |
+| `FASTMOCK_CAPTURE_MAX_MESSAGES` | integer | `1000` | Messages kept per source, 1..100000. |
+| `FASTMOCK_CAPTURE_MAX_MESSAGE_BYTES` | integer | `1048576` | Body bytes kept per message, at most 16 MiB; longer bodies are cut. |
+| `FASTMOCK_CAPTURE_MAX_AGE` | duration | `24h` | Retention by age. |
+| `FASTMOCK_CAPTURE_KAFKA_TOPICS` | list | none (any) | Topics capture sources may read: names or `prefix*`. |
+| `FASTMOCK_CAPTURE_MQTT_TOPICS` | list | none (any) | MQTT topic filters capture sources may use: names or `prefix*`. |
+| `FASTMOCK_CAPTURE_AMQP_EXCHANGES` | list | none (any) | Exchanges capture sources may bind to: names or `prefix*`. |
+
 ## Mail
 
 Mail capture is off by default. While `FASTMOCK_MAIL_ENABLED` is not `true`, every other `FASTMOCK_MAIL_*`

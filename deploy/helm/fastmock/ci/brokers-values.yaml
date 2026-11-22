@@ -1,0 +1,94 @@
+replicaCount: 1
+
+admin:
+  tokensSecret:
+    name: fastmock-admin-tokens
+
+storage:
+  mode: memory
+
+messaging:
+  kafka:
+    bootstrap:
+      - kafka.example.com:9093
+    securityProtocol: sasl_ssl
+    sasl:
+      mechanism: SCRAM-SHA-512
+      username: fastmock
+      existingSecret: fastmock-kafka
+    tls:
+      caSecret: fastmock-brokers-ca
+  mqtt:
+    url: mqtts://mqtt.example.com:8883
+    version: "3.1.1"
+    clientIdPrefix: fastmock-ci
+    keepAlive: 20s
+    username: fastmock
+    existingSecret: fastmock-mqtt
+    tls:
+      caSecret: fastmock-brokers-ca
+      clientCertSecret: fastmock-mqtt-client
+    allowedTopics:
+      - "devices/*"
+  amqp:
+    url: amqps://rabbitmq.example.com:5671/orders%2Fci
+    sasl:
+      username: fastmock
+      existingSecret: fastmock-amqp
+      passwordKey: amqp-password
+    tls:
+      caSecret: fastmock-brokers-ca
+      caKey: bundle.pem
+      clientCertSecret: fastmock-amqp-client
+    allowedExchanges:
+      - orders
+      - "events.*"
+    declareExchanges: true
+  capture:
+    enabled: true
+    sources:
+      - name: orders-created
+        protocol: kafka
+        topics:
+          - orders.created
+        startFrom: earliest
+      - name: telemetry
+        protocol: mqtt
+        space: devices
+        topics:
+          - devices/+/telemetry
+        qos: 1
+        maxMessages: 200
+      - name: billing-events
+        protocol: amqp
+        exchange: events.billing
+        bindingKeys:
+          - "invoice.#"
+        description: Invoices published by the billing service
+    limits:
+      maxSources: 10
+      maxMessages: 500
+      maxMessageBytes: 262144
+      maxAge: 12h
+    allowedKafkaTopics:
+      - "orders.*"
+    allowedMqttTopics:
+      - "devices/*"
+    allowedAmqpExchanges:
+      - "events.*"
+
+networkPolicy:
+  enabled: true
+  egress:
+    enabled: true
+    rules:
+      - to:
+          - ipBlock:
+              cidr: 203.0.113.0/24
+        ports:
+          - port: 9093
+            protocol: TCP
+          - port: 8883
+            protocol: TCP
+          - port: 5671
+            protocol: TCP

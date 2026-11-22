@@ -1,4 +1,5 @@
 pub mod asyncapi;
+pub mod capture;
 pub mod datetime;
 pub mod engine;
 pub mod fakedata;

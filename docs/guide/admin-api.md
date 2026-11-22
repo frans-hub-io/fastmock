@@ -131,6 +131,9 @@ selects data are listed in [Access control](../operations/access-control.md#perm
 | `GET /mail/messages`, `/mail/messages/{id}` and its renditions, `/mail/stream`, `/mail/mailboxes`, `/mail/chaos`, `/mail/webhooks`; `POST /mail/messages/wait`, `/mail/verify` | viewer (`mail:read`) |
 | `POST /mail/messages`, `PUT /mail/messages/{id}/labels`, `PUT`/`DELETE /mail/mailboxes/{address}/password`, `PUT`/`DELETE /mail/chaos`, `PUT`/`DELETE /mail/webhooks`, `POST /mail/inbound` | editor (`mail:write`) |
 | `DELETE /mail/messages`, `DELETE /mail/messages/{id}` | editor (`mail:delete`) |
+| `GET /capture/sources`, `/capture/sources/{id}`, `/capture/messages`, `/capture/messages/{id}`, `/capture/messages/{id}/body`; `POST /capture/messages/find`, `/capture/messages/wait`, `/capture/verify` | viewer (`messages:read`) |
+| `PUT`/`DELETE /capture/sources/{id}` | editor (`messages:write`) |
+| `DELETE /capture/messages`, `DELETE /capture/messages/{id}` | editor (`messages:delete`) |
 
 ## Sign-in endpoints
 

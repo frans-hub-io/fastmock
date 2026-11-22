@@ -99,6 +99,7 @@ nav:
       - guide/graphql.md
       - guide/soap.md
       - guide/kafka.md
+      - guide/mqtt-amqp.md
       - guide/asyncapi.md
       - guide/mock-mcp-servers.md
   - Importing:
@@ -113,6 +114,7 @@ nav:
   - Testing:
       - guide/verification.md
       - guide/mail.md
+      - guide/message-capture.md
       - guide/java-client.md
       - guide/contract-testing.md
       - guide/admin-api.md

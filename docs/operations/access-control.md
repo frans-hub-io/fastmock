@@ -64,6 +64,9 @@ everywhere.
 | `mail:read` | captured mail: `GET /mail/messages*`, `/mail/stream`, `/mail/mailboxes`, `/mail/chaos`, `/mail/webhooks`; `POST /mail/messages/wait`, `/mail/verify` | space |
 | `mail:write` | `POST /mail/messages` (inject), `PUT /mail/messages/{id}/labels`, mailbox passwords (together with `mail:read`), mail chaos rules and webhooks, `POST /mail/inbound` | space |
 | `mail:delete` | `DELETE /mail/messages`, `/mail/messages/{id}` | space |
+| `messages:read` | [message capture](../guide/message-capture.md): `GET /capture/sources*`, `GET /capture/messages*`; `POST /capture/messages/find`, `/capture/messages/wait`, `/capture/verify` | space |
+| `messages:write` | `PUT` and `DELETE /capture/sources/{id}` | space |
+| `messages:delete` | `DELETE /capture/messages`, `/capture/messages/{id}` (and `?purge=true` when deleting a source) | space |
 
 Mail permissions also apply outside the admin API ([Mail: spaces](../guide/mail.md#spaces)): a managed token with
 `mail:read` is accepted as an IMAP or POP3 password for the mailboxes of its space (changing the mailbox needs
@@ -89,7 +92,7 @@ masked ([Security: redaction](security.md#redaction)).
 | Role | Permissions |
 |---|---|
 | `viewer` | every `*:read` permission except `audit:read`, `tokens:read` and `access:read` |
-| `editor` | `viewer` plus `stubs:write`, `imports:run`, `journal:delete`, `files:write`, `recordings:write`, `callbacks:delete`, `state:write`, `chaos:write`, `grpc:write`, `contracts:details`, `contracts:write`, `mail:write`, `mail:delete` |
+| `editor` | `viewer` plus `stubs:write`, `imports:run`, `journal:delete`, `files:write`, `recordings:write`, `callbacks:delete`, `state:write`, `chaos:write`, `grpc:write`, `contracts:details`, `contracts:write`, `mail:write`, `mail:delete`, `messages:write`, `messages:delete` |
 | `admin` | every permission |
 
 The built-in roles cannot be redefined.
@@ -301,7 +304,7 @@ The built-in `editor` role lacks `tokens:write`; to let a team manage its own to
 roles:
   - name: team-lead
     permissions: [stubs:*, imports:run, journal:*, files:*, callbacks:*, state:*, contracts:read,
-      contracts:details, contracts:write, mail:*, tokens:read, tokens:write]
+      contracts:details, contracts:write, mail:*, messages:*, tokens:read, tokens:write]
 bindings:
   - subject: token:billing-lead
     role: team-lead
@@ -935,6 +938,12 @@ publish/subscribe: a Valkey ACL user needs the channel rule `&<prefix>mail:event
 ([Security: storage connections](security.md#storage-connections)). If you grant table rights one by one, grant
 them on `fm_mail_messages`, `fm_mail_mailboxes`, `fm_mail_folders` and `fm_mail_entries`, and `USAGE` on the
 sequence `fm_mail_uid_validity`.
+
+**Message capture permissions.** The release that adds [message capture](../guide/message-capture.md) adds
+`messages:read`, `messages:write` and `messages:delete`. `viewer` gains `messages:read`, `editor` gains all three. As
+with the mail permissions, custom roles that copy the permission list of `editor` need `messages:*` before they can
+create `editor` tokens again. Capture stays off until `FASTMOCK_CAPTURE_ENABLED=true`; with PostgreSQL storage it adds
+the table `fm_captured_messages` (grant `SELECT, INSERT, DELETE` on it if you grant table rights one by one).
 
 **Logs.** Audit log lines (target `audit`) change:
 

@@ -538,6 +538,299 @@
             }
           },
           "additionalProperties": false
+        },
+        "mqtt": {
+          "type": "object",
+          "description": "The MQTT broker stubs and async mocks publish to and capture sources read from. Nothing is rendered without url.",
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "mqtt://host:1883 or mqtts://host:8883, without credentials or path.",
+              "pattern": "^$|^mqtts?://[^/@?#\\s]+/?$"
+            },
+            "version": {
+              "description": "MQTT protocol version.",
+              "enum": [
+                "5",
+                "3.1.1",
+                5
+              ]
+            },
+            "clientIdPrefix": {
+              "type": "string",
+              "description": "Prefix of the client ids FastMock connects with.",
+              "minLength": 1,
+              "maxLength": 40
+            },
+            "keepAlive": {
+              "type": "string",
+              "description": "Keep-alive interval.",
+              "pattern": "^[0-9]+(ms|s|m|h|d)?$"
+            },
+            "username": {
+              "type": "string",
+              "description": "User name; the password comes from existingSecret."
+            },
+            "existingSecret": {
+              "type": "string",
+              "description": "Secret holding the password under passwordKey.",
+              "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+              "maxLength": 253
+            },
+            "passwordKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tls": {
+              "type": "object",
+              "description": "CA and client certificate for mqtts:// URLs, mounted from Secrets.",
+              "properties": {
+                "caSecret": {
+                  "type": "string",
+                  "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+                  "maxLength": 253
+                },
+                "caKey": {
+                  "type": "string"
+                },
+                "clientCertSecret": {
+                  "type": "string",
+                  "description": "kubernetes.io/tls Secret with tls.crt and tls.key.",
+                  "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+                  "maxLength": 253
+                }
+              },
+              "additionalProperties": false
+            },
+            "allowedTopics": {
+              "type": "array",
+              "description": "Topics stubs and async mocks may publish to (name or prefix*); empty allows all.",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "amqp": {
+          "type": "object",
+          "description": "The AMQP 0-9-1 broker stubs and async mocks publish to and capture sources read from. Nothing is rendered without url.",
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "amqp://host:5672/vhost or amqps://host:5671/vhost with a URL-encoded vhost, without credentials.",
+              "pattern": "^$|^amqps?://[^/@?#\\s]+(/[^/@?#\\s]*)?$"
+            },
+            "sasl": {
+              "type": "object",
+              "properties": {
+                "mechanism": {
+                  "type": "string",
+                  "description": "PLAIN (the default) or EXTERNAL, which needs an amqps:// URL and tls.clientCertSecret.",
+                  "enum": [
+                    "",
+                    "PLAIN",
+                    "EXTERNAL",
+                    "plain",
+                    "external"
+                  ]
+                },
+                "username": {
+                  "type": "string",
+                  "description": "User name for PLAIN; the password comes from existingSecret."
+                },
+                "existingSecret": {
+                  "type": "string",
+                  "description": "Secret holding the password under passwordKey.",
+                  "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+                  "maxLength": 253
+                },
+                "passwordKey": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "additionalProperties": false
+            },
+            "tls": {
+              "type": "object",
+              "description": "CA and client certificate for amqps:// URLs, mounted from Secrets.",
+              "properties": {
+                "caSecret": {
+                  "type": "string",
+                  "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+                  "maxLength": 253
+                },
+                "caKey": {
+                  "type": "string"
+                },
+                "clientCertSecret": {
+                  "type": "string",
+                  "description": "kubernetes.io/tls Secret with tls.crt and tls.key.",
+                  "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+                  "maxLength": 253
+                }
+              },
+              "additionalProperties": false
+            },
+            "allowedExchanges": {
+              "type": "array",
+              "description": "Exchanges stubs and async mocks may publish to (name or prefix*); empty allows all.",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "declareExchanges": {
+              "type": "boolean",
+              "description": "Declare missing exchanges before publishing."
+            }
+          },
+          "additionalProperties": false
+        },
+        "capture": {
+          "type": "object",
+          "description": "Capture of the messages an application publishes to Kafka, MQTT or AMQP.",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "sources": {
+              "type": "array",
+              "description": "Capture sources defined by configuration, rendered into a ConfigMap file.",
+              "items": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "protocol"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9._-]{1,64}$"
+                  },
+                  "protocol": {
+                    "type": "string",
+                    "enum": [
+                      "kafka",
+                      "mqtt",
+                      "amqp"
+                    ]
+                  },
+                  "space": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+                  },
+                  "topics": {
+                    "type": "array",
+                    "description": "Kafka topics or MQTT topic filters.",
+                    "maxItems": 20,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "exchange": {
+                    "type": "string",
+                    "description": "AMQP exchange to bind a queue to.",
+                    "minLength": 1,
+                    "maxLength": 255
+                  },
+                  "bindingKeys": {
+                    "type": "array",
+                    "description": "AMQP binding keys.",
+                    "maxItems": 20,
+                    "items": {
+                      "type": "string",
+                      "maxLength": 255
+                    }
+                  },
+                  "qos": {
+                    "type": "integer",
+                    "description": "MQTT subscription QoS.",
+                    "minimum": 0,
+                    "maximum": 2
+                  },
+                  "startFrom": {
+                    "type": "string",
+                    "description": "Where a Kafka source starts reading.",
+                    "enum": [
+                      "latest",
+                      "earliest"
+                    ]
+                  },
+                  "maxMessages": {
+                    "type": "integer",
+                    "description": "Messages kept for this source.",
+                    "minimum": 1
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "description": {
+                    "type": "string",
+                    "maxLength": 1024
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "limits": {
+              "type": "object",
+              "properties": {
+                "maxSources": {
+                  "type": "integer",
+                  "description": "Capture sources at most.",
+                  "minimum": 1,
+                  "maximum": 1000
+                },
+                "maxMessages": {
+                  "type": "integer",
+                  "description": "Messages kept per source.",
+                  "minimum": 1,
+                  "maximum": 100000
+                },
+                "maxMessageBytes": {
+                  "type": "integer",
+                  "description": "Body bytes kept per message; longer bodies are cut.",
+                  "minimum": 1,
+                  "maximum": 16777216
+                },
+                "maxAge": {
+                  "type": "string",
+                  "description": "How long captured messages are kept.",
+                  "pattern": "^[0-9]*[1-9][0-9]*(ms|s|m|h|d)?$"
+                }
+              },
+              "additionalProperties": false
+            },
+            "allowedKafkaTopics": {
+              "type": "array",
+              "description": "Kafka topics sources may read (name or prefix*); empty allows all.",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "allowedMqttTopics": {
+              "type": "array",
+              "description": "MQTT topic filters sources may read (name or prefix*); empty allows all.",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "allowedAmqpExchanges": {
+              "type": "array",
+              "description": "AMQP exchanges sources may bind to (name or prefix*); empty allows all.",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

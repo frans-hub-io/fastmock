@@ -707,7 +707,7 @@ export default function StubEditor() {
                     </div>
                   </div>
                   <Text size="xs" c="dimmed">
-                    Callbacks, Kafka messages, response sequences, proxying and other advanced fields are kept as they are; edit them in the JSON tab.
+                    Callbacks, broker messages (Kafka, MQTT, AMQP), response sequences, proxying and other advanced fields are kept as they are; edit them in the JSON tab.
                   </Text>
                 </Stack>
               </Fieldset>

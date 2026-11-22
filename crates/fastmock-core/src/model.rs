@@ -505,20 +505,253 @@ pub struct SseEvent {
     pub delay_ms: u64,
 }
 
+/// The broker a message goes to.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    utoipa::ToSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageProtocol {
+    #[default]
+    Kafka,
+    Mqtt,
+    Amqp,
+}
+
+impl MessageProtocol {
+    pub fn is_kafka(&self) -> bool {
+        *self == MessageProtocol::Kafka
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MessageProtocol::Kafka => "kafka",
+            MessageProtocol::Mqtt => "mqtt",
+            MessageProtocol::Amqp => "amqp",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "kafka" => Some(MessageProtocol::Kafka),
+            "mqtt" => Some(MessageProtocol::Mqtt),
+            "amqp" => Some(MessageProtocol::Amqp),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for MessageProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A message a stub publishes when it matches: a Kafka record, an MQTT publication or an AMQP message.
+/// String fields marked as templates are rendered with the context of the response.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MessageDef {
+    /// `kafka` (default), `mqtt` or `amqp`.
+    #[serde(default, skip_serializing_if = "MessageProtocol::is_kafka")]
+    pub protocol: MessageProtocol,
+    /// Kafka or MQTT topic (template); required for both, not used for AMQP.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub topic: String,
+    /// Kafka record key (template).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub json_value: Option<Value>,
+    /// Kafka headers, MQTT 5 user properties or AMQP headers (values are templates).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
+    /// Kafka only: publish as Confluent-framed Avro with this schema.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avro_schema: Option<Value>,
+    /// Content type (template): MQTT 5 `content-type` property, AMQP `content_type` property, Kafka
+    /// `content-type` header unless `headers` sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    /// Wait this long after the match before publishing (capped by `FASTMOCK_MAX_DELAY`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay_ms: Option<u64>,
+    /// MQTT: quality of service 0, 1 or 2 (default 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qos: Option<u8>,
+    /// MQTT: retain the message on the topic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retain: Option<bool>,
+    /// MQTT 5: correlation data (template, sent as UTF-8 bytes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_data: Option<String>,
+    /// MQTT 5: response topic (template).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_topic: Option<String>,
+    /// MQTT 5: message expiry interval in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_expiry_seconds: Option<u32>,
+    /// AMQP: exchange (template); `amq.default` or empty is the default exchange.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exchange: Option<String>,
+    /// AMQP: routing key (template).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_key: Option<String>,
+    /// AMQP: type to declare a missing exchange with when `FASTMOCK_AMQP_DECLARE_EXCHANGES=true`
+    /// (`topic` by default, `direct`, `fanout`, `headers`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exchange_type: Option<String>,
+    /// AMQP `message_id` (template).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    /// AMQP `correlation_id` (template).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    /// AMQP `reply_to` (template).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+    /// AMQP per-message TTL in milliseconds (`expiration`, template giving digits).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expiration: Option<String>,
+    /// AMQP: delivery mode 2 (persistent) instead of 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persistent: Option<bool>,
+    /// AMQP priority 0..255.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<u8>,
+    /// AMQP `type` (template).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_type: Option<String>,
+    /// AMQP `app_id` (template).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+}
+
+impl MessageDef {
+    /// The name of the destination for logs and errors: the topic, or `exchange/routing key`.
+    pub fn destination(&self) -> String {
+        match self.protocol {
+            MessageProtocol::Amqp => format!(
+                "{}/{}",
+                self.exchange.as_deref().unwrap_or(""),
+                self.routing_key.as_deref().unwrap_or("")
+            ),
+            _ => self.topic.clone(),
+        }
+    }
+
+    /// Checks which fields fit the protocol; templates are checked by the engine.
+    pub fn check_fields(&self) -> Result<(), String> {
+        let mqtt = [
+            ("qos", self.qos.is_some()),
+            ("retain", self.retain.is_some()),
+            ("correlationData", self.correlation_data.is_some()),
+            ("responseTopic", self.response_topic.is_some()),
+            (
+                "messageExpirySeconds",
+                self.message_expiry_seconds.is_some(),
+            ),
+        ];
+        let amqp = [
+            ("exchange", self.exchange.is_some()),
+            ("routingKey", self.routing_key.is_some()),
+            ("exchangeType", self.exchange_type.is_some()),
+            ("messageId", self.message_id.is_some()),
+            ("correlationId", self.correlation_id.is_some()),
+            ("replyTo", self.reply_to.is_some()),
+            ("expiration", self.expiration.is_some()),
+            ("persistent", self.persistent.is_some()),
+            ("priority", self.priority.is_some()),
+            ("messageType", self.message_type.is_some()),
+            ("appId", self.app_id.is_some()),
+        ];
+        let kafka = [
+            ("key", self.key.is_some()),
+            ("avroSchema", self.avro_schema.is_some()),
+        ];
+        let foreign: Vec<&str> = match self.protocol {
+            MessageProtocol::Kafka => mqtt.iter().chain(amqp.iter()).collect::<Vec<_>>(),
+            MessageProtocol::Mqtt => kafka.iter().chain(amqp.iter()).collect(),
+            MessageProtocol::Amqp => kafka.iter().chain(mqtt.iter()).collect(),
+        }
+        .into_iter()
+        .filter(|(_, set)| *set)
+        .map(|(n, _)| *n)
+        .collect();
+        if !foreign.is_empty() {
+            return Err(format!(
+                "{} not used with protocol {}",
+                foreign.join(", "),
+                self.protocol
+            ));
+        }
+        match self.protocol {
+            MessageProtocol::Kafka | MessageProtocol::Mqtt => {
+                if self.topic.trim().is_empty() {
+                    return Err("topic must not be empty".into());
+                }
+            }
+            MessageProtocol::Amqp => {
+                if !self.topic.is_empty() {
+                    return Err("AMQP messages use exchange and routingKey, not topic".into());
+                }
+                if self.exchange.is_none() && self.routing_key.is_none() {
+                    return Err("an AMQP message needs exchange, routingKey or both".into());
+                }
+                if let Some(t) = &self.exchange_type
+                    && !["topic", "direct", "fanout", "headers"].contains(&t.as_str())
+                {
+                    return Err(format!(
+                        "exchangeType `{t}` is not topic, direct, fanout or headers"
+                    ));
+                }
+            }
+        }
+        if self.qos.is_some_and(|q| q > 2) {
+            return Err("qos must be 0, 1 or 2".into());
+        }
+        if self.delay_ms.is_some_and(|d| d > 3_600_000) {
+            return Err("delayMs must be at most 3600000".into());
+        }
+        Ok(())
+    }
+
+    /// Template strings of the message besides `value`, `jsonValue` and header values.
+    pub fn template_fields(&self) -> Vec<(&'static str, &str)> {
+        let mut v: Vec<(&'static str, &str)> = vec![("topic", self.topic.as_str())];
+        let opt = [
+            ("key", &self.key),
+            ("contentType", &self.content_type),
+            ("correlationData", &self.correlation_data),
+            ("responseTopic", &self.response_topic),
+            ("exchange", &self.exchange),
+            ("routingKey", &self.routing_key),
+            ("messageId", &self.message_id),
+            ("correlationId", &self.correlation_id),
+            ("replyTo", &self.reply_to),
+            ("expiration", &self.expiration),
+            ("messageType", &self.message_type),
+            ("appId", &self.app_id),
+        ];
+        for (n, x) in opt {
+            if let Some(s) = x {
+                v.push((n, s.as_str()));
+            }
+        }
+        v
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]

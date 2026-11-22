@@ -598,7 +598,7 @@ fn reset_response() -> Response {
 /// The response of a matched stub: messages, delay, faults, chunked dribble, status and headers.
 pub async fn stub_response(app: &AppState, r: fastmock_core::EngineResponse) -> Response {
     if !r.messages.is_empty() {
-        app.kafka.publish_in_background(r.messages.clone());
+        app.brokers.publish_in_background(r.messages.clone());
     }
     let delay = Duration::from_millis(r.delay_ms).min(app.cfg.max_delay);
     if !delay.is_zero() {
@@ -717,7 +717,7 @@ pub async fn stub_handler(State(app): State<AppState>, req: Request) -> Response
         }
         Ok(Some(r)) if r.sse.is_some() => {
             if !r.messages.is_empty() {
-                app.kafka.publish_in_background(r.messages.clone());
+                app.brokers.publish_in_background(r.messages.clone());
             }
             let delay = Duration::from_millis(r.delay_ms).min(app.cfg.max_delay);
             if !delay.is_zero() {

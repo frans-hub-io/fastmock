@@ -138,13 +138,65 @@ pub struct GrpcPlan {
     pub context: Value,
 }
 
-#[derive(Debug, Clone)]
+/// A message ready to publish: templates are rendered.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RenderedMessage {
+    pub protocol: crate::model::MessageProtocol,
+    /// Kafka or MQTT topic; for AMQP the routing key.
     pub topic: String,
     pub key: Option<String>,
     pub value: Value,
     pub headers: std::collections::BTreeMap<String, String>,
     pub avro_schema: Option<Value>,
+    pub content_type: Option<String>,
+    /// Publish this long after the match.
+    pub delay_ms: u64,
+    pub mqtt: Option<RenderedMqtt>,
+    pub amqp: Option<RenderedAmqp>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RenderedMqtt {
+    pub qos: u8,
+    pub retain: bool,
+    pub correlation_data: Option<String>,
+    pub response_topic: Option<String>,
+    pub message_expiry_seconds: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RenderedAmqp {
+    /// As the API names it: empty or `amq.default` is the default exchange.
+    pub exchange: String,
+    pub exchange_type: Option<String>,
+    /// Declare a missing exchange durable (async mocks may ask for a transient one).
+    pub durable: bool,
+    pub message_id: Option<String>,
+    pub correlation_id: Option<String>,
+    pub reply_to: Option<String>,
+    pub expiration: Option<String>,
+    pub persistent: bool,
+    pub priority: Option<u8>,
+    pub message_type: Option<String>,
+    pub app_id: Option<String>,
+}
+
+impl RenderedMessage {
+    /// The destination for logs: the topic, or `exchange/routing key` for AMQP.
+    pub fn destination(&self) -> String {
+        match &self.amqp {
+            Some(a) => format!(
+                "{}/{}",
+                if a.exchange.is_empty() {
+                    "amq.default"
+                } else {
+                    a.exchange.as_str()
+                },
+                self.topic
+            ),
+            None => self.topic.clone(),
+        }
+    }
 }
 
 pub struct Engine {
@@ -390,8 +442,15 @@ impl Engine {
             return Err("ttlSeconds must be between 1 and 31536000".into());
         }
         for (i, m) in stub.messages.iter().enumerate() {
-            if m.topic.trim().is_empty() {
-                return Err(format!("messages[{i}].topic must not be empty"));
+            m.check_fields()
+                .map_err(|e| format!("messages[{i}]: {e}"))?;
+            for (name, tpl) in m.template_fields() {
+                t.validate(tpl)
+                    .map_err(|x| format!("messages[{i}].{name}: {x}"))?;
+            }
+            for (k, v) in &m.headers {
+                t.validate(v)
+                    .map_err(|x| format!("messages[{i}].headers.{k}: {x}"))?;
             }
             if let Some(v) = &m.value {
                 t.validate(v)
@@ -880,12 +939,50 @@ impl Engine {
                 (None, Some(v)) => Value::String(t.render_in(v, ctx)?),
                 (None, None) => Value::Null,
             };
+            let opt = |x: &Option<String>| x.as_ref().map(|v| t.render_in(v, ctx)).transpose();
+            let protocol = m.protocol;
+            let (topic, mqtt, amqp) = match protocol {
+                crate::model::MessageProtocol::Kafka => (t.render_in(&m.topic, ctx)?, None, None),
+                crate::model::MessageProtocol::Mqtt => (
+                    t.render_in(&m.topic, ctx)?,
+                    Some(RenderedMqtt {
+                        qos: m.qos.unwrap_or(0),
+                        retain: m.retain.unwrap_or(false),
+                        correlation_data: opt(&m.correlation_data)?,
+                        response_topic: opt(&m.response_topic)?,
+                        message_expiry_seconds: m.message_expiry_seconds,
+                    }),
+                    None,
+                ),
+                crate::model::MessageProtocol::Amqp => (
+                    opt(&m.routing_key)?.unwrap_or_default(),
+                    None,
+                    Some(RenderedAmqp {
+                        exchange: opt(&m.exchange)?.unwrap_or_default(),
+                        exchange_type: m.exchange_type.clone(),
+                        durable: true,
+                        message_id: opt(&m.message_id)?,
+                        correlation_id: opt(&m.correlation_id)?,
+                        reply_to: opt(&m.reply_to)?,
+                        expiration: opt(&m.expiration)?,
+                        persistent: m.persistent.unwrap_or(false),
+                        priority: m.priority,
+                        message_type: opt(&m.message_type)?,
+                        app_id: opt(&m.app_id)?,
+                    }),
+                ),
+            };
             messages.push(RenderedMessage {
-                topic: t.render_in(&m.topic, ctx)?,
-                key: m.key.as_ref().map(|k| t.render_in(k, ctx)).transpose()?,
+                protocol,
+                topic,
+                key: opt(&m.key)?,
                 value,
                 headers,
                 avro_schema: m.avro_schema.clone(),
+                content_type: opt(&m.content_type)?,
+                delay_ms: m.delay_ms.unwrap_or(0),
+                mqtt,
+                amqp,
             });
         }
         let mut correlation = None;
@@ -1180,6 +1277,67 @@ mod tests {
         assert_eq!(plan.json_body.unwrap()["n"], "{{size request.json}}");
         assert_eq!(plan.context["request"]["json"][1]["a"], 2);
         assert_eq!(plan.def.unwrap().messages.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn mqtt_and_amqp_messages_are_rendered() {
+        let (e, s) = engine();
+        add(&e, &s, json!({"request": {"urlPathTemplate": "/ship/{id}"}, "response": {"status": 202},
+            "messages": [
+                {"protocol": "mqtt", "topic": "orders/{{request.pathParams.id}}", "qos": 2, "retain": true,
+                 "correlationData": "c-{{request.pathParams.id}}", "responseTopic": "replies/{{request.pathParams.id}}",
+                 "messageExpirySeconds": 60, "contentType": "application/json", "headers": {"k": "{{request.pathParams.id}}"},
+                 "jsonValue": {"id": "{{request.pathParams.id}}"}, "delayMs": 50},
+                {"protocol": "amqp", "exchange": "ex-{{request.pathParams.id}}", "routingKey": "order.{{request.pathParams.id}}",
+                 "exchangeType": "direct", "messageId": "m-{{request.pathParams.id}}", "correlationId": "c", "replyTo": "r",
+                 "expiration": "1000", "persistent": true, "priority": 3, "messageType": "t", "appId": "a", "value": "plain"}
+            ]})).await;
+        let r = e
+            .handle(&post("/ship/A-1", json!({})))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.messages.len(), 2);
+        let m = &r.messages[0];
+        assert_eq!(m.protocol, crate::model::MessageProtocol::Mqtt);
+        assert_eq!(m.topic, "orders/A-1");
+        assert_eq!(m.value, json!({"id": "A-1"}));
+        assert_eq!(m.headers["k"], "A-1");
+        assert_eq!(m.content_type.as_deref(), Some("application/json"));
+        assert_eq!(m.delay_ms, 50);
+        assert_eq!(
+            m.mqtt,
+            Some(RenderedMqtt {
+                qos: 2,
+                retain: true,
+                correlation_data: Some("c-A-1".into()),
+                response_topic: Some("replies/A-1".into()),
+                message_expiry_seconds: Some(60),
+            })
+        );
+        let a = &r.messages[1];
+        assert_eq!(a.topic, "order.A-1", "the routing key");
+        assert_eq!(a.destination(), "ex-A-1/order.A-1");
+        let o = a.amqp.as_ref().unwrap();
+        assert_eq!(o.exchange, "ex-A-1");
+        assert_eq!(o.exchange_type.as_deref(), Some("direct"));
+        assert!(o.durable && o.persistent);
+        assert_eq!(o.message_id.as_deref(), Some("m-A-1"));
+        assert_eq!(o.expiration.as_deref(), Some("1000"));
+        assert_eq!(o.priority, Some(3));
+        assert_eq!(a.value, json!("plain"));
+        let bad: Stub = serde_json::from_value(json!({"request": {"urlPath": "/x"},
+            "messages": [{"protocol": "mqtt", "topic": "{{#if}}"}]}))
+        .unwrap();
+        assert!(e.validate(&bad).unwrap_err().contains("messages[0].topic"));
+        let bad: Stub = serde_json::from_value(json!({"request": {"urlPath": "/x"},
+            "messages": [{"protocol": "amqp", "routingKey": "k", "qos": 1}]}))
+        .unwrap();
+        assert!(
+            e.validate(&bad)
+                .unwrap_err()
+                .contains("qos not used with protocol amqp")
+        );
     }
 
     #[tokio::test]

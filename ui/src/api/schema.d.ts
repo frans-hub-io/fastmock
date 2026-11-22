@@ -201,6 +201,173 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/__admin/capture/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List captured messages
+         * @description Summaries (no bodies) of the stored messages of the areas the caller may read, newest first unless `order=oldest`, filtered by source, protocol, topic and time, paged with `cursor`. For conditions on keys, headers, properties and bodies use `POST /capture/messages/find`.
+         */
+        get: operations["listCapturedMessages"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete captured messages
+         * @description Deletes the stored messages of `space` (or of every area where the caller holds `messages:delete`), of one source when `source` is given. Use it to reset between tests. Audited as `capture.messages.delete`.
+         */
+        delete: operations["deleteCapturedMessages"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/capture/messages/find": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Find captured messages
+         * @description The stored messages of `space` (or of the areas the caller may read) matching `match`: source, protocol, topic, exchange, key, headers, properties, content type (string matchers) and `body` (the body matchers of stubs; JSON matchers see Avro bodies decoded). Looks at up to 10000 stored messages.
+         */
+        post: operations["findCapturedMessages"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/capture/messages/wait": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Wait for captured messages
+         * @description Long-polls until `count` messages matching `match` were captured in `space` (or the areas the caller may read) and answers 200 with them, oldest first, or 408 with what was seen when `timeoutMs` (at most 60 s) runs out. Messages stored before the request count only with `includeExisting`, `since` or `lookbackMs`. Works on any replica; replicas that do not run the consumers re-read the store every 500 ms. Stops when the client disconnects; 503 while the server shuts down.
+         */
+        post: operations["waitForCapturedMessages"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/capture/messages/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One captured message with its decoded body
+         * @description The body is decoded as `json`, `text`, `avro` (Confluent-framed Avro, with the schema from `FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL`) or `base64` for other binary data. `/body` returns the bytes.
+         */
+        get: operations["getCapturedMessage"];
+        put?: never;
+        post?: never;
+        /** Delete one captured message */
+        delete: operations["deleteCapturedMessage"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/capture/messages/{id}/body": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The body of a captured message as stored */
+        get: operations["getCapturedMessageBody"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/capture/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List capture sources
+         * @description The sources of the areas the caller may read (`messages:read`), from the configuration and the API, with the state of their consumer and the number of stored messages.
+         */
+        get: operations["listCaptureSources"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/capture/sources/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One capture source */
+        get: operations["getCaptureSource"];
+        /**
+         * Create or replace a capture source
+         * @description Stores a source in `space` (or the caller's only space); the leading replica subscribes within a few seconds. Kafka sources read the partitions of their `topics` directly, without a consumer group; MQTT sources subscribe to the topic filters in `topics`; AMQP sources bind a server-named, exclusive, auto-delete queue of FastMock's own to `exchange` with `bindingKeys`, so the application's queues never lose a message. Sources from the configuration cannot be changed (409). Audited as `capture.source.put`.
+         */
+        put: operations["putCaptureSource"];
+        post?: never;
+        /**
+         * Delete a capture source
+         * @description Stops its consumer within a few seconds. Stored messages stay until retention removes them, unless `purge=true`. Audited as `capture.source.delete`.
+         */
+        delete: operations["deleteCaptureSource"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/__admin/capture/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify how many messages were captured
+         * @description Counts the stored messages of `space` (or of the areas the caller may read) matching `match`. Give `count` for an exact number, or `atLeast` and/or `atMost` (default: at least 1). 200 when it holds; 422 with the count and the closest non-matching messages and their failed conditions when it does not.
+         */
+        post: operations["verifyCapturedMessages"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/__admin/chaos": {
         parameters: {
             query?: never;
@@ -1810,6 +1977,23 @@ export interface components {
             /** @description Catalog id of the imported or updated service (absent on a dry run). */
             serviceId?: string | null;
         };
+        /** @description AMQP options of an async mock; `channel` is the routing key. */
+        AsyncAmqp: {
+            /** @description Exchange; empty or `amq.default` is the default exchange (the routing key is then a queue name). */
+            exchange?: string;
+            /** @description Type used to declare a missing exchange (`topic` by default). */
+            exchangeType?: string | null;
+            /** @description Durability used to declare a missing exchange (default true). */
+            durable?: boolean | null;
+            /** @description Delivery mode 2 (persistent). */
+            persistent?: boolean;
+            /** @description Per-message TTL in milliseconds. */
+            expiration?: string | null;
+            /** Format: int32 */
+            priority?: number | null;
+            /** @description AMQP `type` property. */
+            messageType?: string | null;
+        };
         AsyncMessage: {
             name?: string | null;
             key?: string | null;
@@ -1834,6 +2018,8 @@ export interface components {
             contentType?: string | null;
             avroSchema?: unknown;
             payloadSchema?: unknown;
+            mqtt?: null | components["schemas"]["AsyncMqtt"];
+            amqp?: null | components["schemas"]["AsyncAmqp"];
             tags?: string[];
             /** Format: date-time */
             updatedAt?: string | null;
@@ -1841,8 +2027,22 @@ export interface components {
         AsyncMockList: {
             asyncMocks: components["schemas"]["AsyncMock"][];
         };
+        /** @description MQTT options of an async mock. */
+        AsyncMqtt: {
+            /**
+             * Format: int32
+             * @description Quality of service 0, 1 or 2.
+             */
+            qos?: number;
+            retain?: boolean;
+            /**
+             * Format: int32
+             * @description MQTT 5 message expiry interval in seconds.
+             */
+            messageExpirySeconds?: number | null;
+        };
         /** @enum {string} */
-        AsyncProtocol: "kafka" | "ws";
+        AsyncProtocol: "kafka" | "ws" | "mqtt" | "amqp";
         AuditEvent: {
             /** Format: int64 */
             id?: number;
@@ -1953,6 +2153,36 @@ export interface components {
         };
         /** @enum {string} */
         CallbackStatus: "pending" | "sent" | "failed";
+        /** @description A subscription whose messages FastMock stores: Kafka topics, MQTT topic filters or an AMQP exchange. */
+        CaptureSource: {
+            /** Format: uuid */
+            id?: string;
+            /** @description 1..64 characters of `a-z 0-9 . _ -`, unique in its space; matchers and filters use it. */
+            name: string;
+            /** @description The space of the source and of its messages; set from `?space=` by the API. */
+            space?: string | null;
+            protocol: components["schemas"]["MessageProtocol"];
+            /** @description Kafka topics, or MQTT topic filters (`+` and `#` wildcards). */
+            topics?: string[];
+            /** @description AMQP: the exchange to bind FastMock's own queue to (not the default exchange). */
+            exchange?: string | null;
+            /** @description AMQP: binding keys of FastMock's queue (default `#`, every message of a topic exchange). */
+            bindingKeys?: string[];
+            /**
+             * Format: int32
+             * @description MQTT: subscription QoS (default 1).
+             */
+            qos?: number | null;
+            startFrom?: null | components["schemas"]["StartFrom"];
+            /** @description Messages kept for this source, oldest dropped first; at most `FASTMOCK_CAPTURE_MAX_MESSAGES`. */
+            maxMessages?: number | null;
+            enabled?: boolean;
+            description?: string | null;
+            /** @description Defined in the server configuration (`FASTMOCK_CAPTURE_SOURCES` or `_FILE`); read-only in the API. */
+            fromConfig?: boolean;
+            /** Format: date-time */
+            updatedAt?: string | null;
+        };
         /**
          * @description What a firing rule does: optionally wait (`delay`), then one of `reply`, `disconnect` or
          *     `providerError`, or continue normally after a delay alone.
@@ -2201,6 +2431,23 @@ export interface components {
         };
         /** @enum {string} */
         DateTruncation: "first second of minute" | "first minute of hour" | "first hour of day" | "first day of month" | "first day of next month" | "last day of month" | "first day of year" | "first day of next year" | "last day of year";
+        /** @description A message body for people and tests. */
+        DecodedBody: {
+            /**
+             * @description `json`, `text`, `avro` (Confluent-framed, decoded with the registered schema), `base64` (other
+             *     binary data) or `empty`.
+             */
+            encoding: string;
+            /** @description The JSON value (`json`, `avro`), the text (`text`) or the base64 of the bytes (`base64`). */
+            value: Record<string, never>;
+            /**
+             * Format: int32
+             * @description Avro: the schema id of the frame.
+             */
+            schemaId?: number | null;
+            /** @description Why an Avro body could not be decoded (it is then shown as base64). */
+            error?: string | null;
+        };
         Delay: {
             /** Format: int64 */
             fixedMs?: number | null;
@@ -2209,6 +2456,10 @@ export interface components {
             /** Format: int64 */
             maxMs?: number | null;
             lognormal?: null | components["schemas"]["LogNormalDelay"];
+        };
+        Deleted: {
+            /** Format: int64 */
+            deleted: number;
         };
         DeletedCount: {
             /** Format: int64 */
@@ -2277,6 +2528,23 @@ export interface components {
         FileList: {
             total: number;
             files: components["schemas"]["FileInfo"][];
+        };
+        FindBody: {
+            /** @description Conditions on the message; all given ones must hold. Empty: any message. */
+            match?: components["schemas"]["MessageMatch"];
+            /**
+             * Format: date-time
+             * @description Only messages received at or after this time.
+             */
+            since?: string | null;
+            /** @description Matching messages to return, newest first, 1 to 500 (default 50). */
+            limit?: number | null;
+        };
+        FindResult: {
+            /** @description Matching messages, newest first. */
+            messages: components["schemas"]["MessageSummary"][];
+            /** @description All matching messages, also those beyond `limit`. */
+            count: number;
         };
         FoundRequests: {
             requests: components["schemas"]["JournalEntry"][];
@@ -2484,8 +2752,8 @@ export interface components {
             frequencyMs?: number | null;
             pathPrefix?: string | null;
             /**
-             * @description Kafka topic names: `channel` (default, the channel address) or `microcks`
-             *     (`<service>-<version>-<channel>`, as Microcks publishes).
+             * @description Destination names: `channel` (default, the channel address) or `microcks`
+             *     (`<service>-<version>-<channel>`, the Kafka topic, MQTT topic or AMQP exchange Microcks uses).
              */
             topicNaming?: components["schemas"]["TopicNaming"];
         };
@@ -3074,16 +3342,140 @@ export interface components {
              */
             arguments?: components["schemas"]["BodyMatcher"][];
         };
+        /**
+         * @description A message a stub publishes when it matches: a Kafka record, an MQTT publication or an AMQP message.
+         *     String fields marked as templates are rendered with the context of the response.
+         */
         MessageDef: {
-            topic: string;
+            /** @description `kafka` (default), `mqtt` or `amqp`. */
+            protocol?: components["schemas"]["MessageProtocol"];
+            /** @description Kafka or MQTT topic (template); required for both, not used for AMQP. */
+            topic?: string;
+            /** @description Kafka record key (template). */
             key?: string | null;
             value?: string | null;
             jsonValue?: unknown;
+            /** @description Kafka headers, MQTT 5 user properties or AMQP headers (values are templates). */
             headers?: {
                 [key: string]: string;
             };
+            /** @description Kafka only: publish as Confluent-framed Avro with this schema. */
             avroSchema?: unknown;
+            /**
+             * @description Content type (template): MQTT 5 `content-type` property, AMQP `content_type` property, Kafka
+             *     `content-type` header unless `headers` sets it.
+             */
+            contentType?: string | null;
+            /**
+             * Format: int64
+             * @description Wait this long after the match before publishing (capped by `FASTMOCK_MAX_DELAY`).
+             */
+            delayMs?: number | null;
+            /**
+             * Format: int32
+             * @description MQTT: quality of service 0, 1 or 2 (default 0).
+             */
+            qos?: number | null;
+            /** @description MQTT: retain the message on the topic. */
+            retain?: boolean | null;
+            /** @description MQTT 5: correlation data (template, sent as UTF-8 bytes). */
+            correlationData?: string | null;
+            /** @description MQTT 5: response topic (template). */
+            responseTopic?: string | null;
+            /**
+             * Format: int32
+             * @description MQTT 5: message expiry interval in seconds.
+             */
+            messageExpirySeconds?: number | null;
+            /** @description AMQP: exchange (template); `amq.default` or empty is the default exchange. */
+            exchange?: string | null;
+            /** @description AMQP: routing key (template). */
+            routingKey?: string | null;
+            /**
+             * @description AMQP: type to declare a missing exchange with when `FASTMOCK_AMQP_DECLARE_EXCHANGES=true`
+             *     (`topic` by default, `direct`, `fanout`, `headers`).
+             */
+            exchangeType?: string | null;
+            /** @description AMQP `message_id` (template). */
+            messageId?: string | null;
+            /** @description AMQP `correlation_id` (template). */
+            correlationId?: string | null;
+            /** @description AMQP `reply_to` (template). */
+            replyTo?: string | null;
+            /** @description AMQP per-message TTL in milliseconds (`expiration`, template giving digits). */
+            expiration?: string | null;
+            /** @description AMQP: delivery mode 2 (persistent) instead of 1. */
+            persistent?: boolean | null;
+            /**
+             * Format: int32
+             * @description AMQP priority 0..255.
+             */
+            priority?: number | null;
+            /** @description AMQP `type` (template). */
+            messageType?: string | null;
+            /** @description AMQP `app_id` (template). */
+            appId?: string | null;
         };
+        /** @description A message with its decoded body. */
+        MessageDetail: components["schemas"]["MessageSummary"] & {
+            body: components["schemas"]["DecodedBody"];
+        };
+        MessageList: {
+            messages: components["schemas"]["MessageSummary"][];
+            /** @description Pass as `cursor` for the next page; absent on the last page. */
+            nextCursor?: string | null;
+        };
+        /**
+         * @description Conditions on a captured message; all given ones must hold. String conditions are string matchers
+         *     (`equalTo`, `contains`, `matches`, `caseInsensitive`, `and`/`or`/`not`, `absent`, ...); `body` takes
+         *     the body matchers of stubs (`equalToJson`, `jsonPath`, `jsonSchema`, `contains`, `matches`, ...).
+         */
+        MessageMatch: {
+            source?: null | components["schemas"]["StringMatcher"];
+            protocol?: null | components["schemas"]["MessageProtocol"];
+            topic?: null | components["schemas"]["StringMatcher"];
+            exchange?: null | components["schemas"]["StringMatcher"];
+            key?: null | components["schemas"]["StringMatcher"];
+            /** @description Header name (case-insensitive) to matcher. */
+            headers?: {
+                [key: string]: components["schemas"]["StringMatcher"];
+            };
+            /** @description Protocol property (`correlationId`, `messageId`, `qos`, `retain`, `partition`, ...) to matcher. */
+            properties?: {
+                [key: string]: components["schemas"]["StringMatcher"];
+            };
+            contentType?: null | components["schemas"]["StringMatcher"];
+            /** @description Body matchers; JSON matchers see Avro bodies decoded when the schema registry knows the schema. */
+            body?: components["schemas"]["BodyMatcher"][];
+        };
+        /** @description A stored message that fails some conditions. */
+        MessageNearMiss: {
+            /** Format: uuid */
+            id: string;
+            space?: string | null;
+            source: string;
+            topic: string;
+            /** Format: date-time */
+            receivedAt: string;
+            preview?: string | null;
+            /**
+             * Format: double
+             * @description Share of the conditions that held, 0..1.
+             */
+            score: number;
+            /**
+             * @description The failed conditions: `topic`, `key`, `headers.event-type`, `properties.correlationId`, `body[0]`, ...
+             * @example [
+             *       "body[0]"
+             *     ]
+             */
+            mismatches: string[];
+        };
+        /**
+         * @description The broker a message goes to.
+         * @enum {string}
+         */
+        MessageProtocol: "kafka" | "mqtt" | "amqp";
         MessageRecord: {
             /** Format: int32 */
             partition: number;
@@ -3092,6 +3484,32 @@ export interface components {
             key?: string | null;
             excerpt: string;
             errors: string[];
+        };
+        /** @description A stored message without its body. */
+        MessageSummary: {
+            /** Format: uuid */
+            id: string;
+            space?: string | null;
+            /** Format: uuid */
+            sourceId: string;
+            /** @description The name of the source. */
+            source: string;
+            protocol: components["schemas"]["MessageProtocol"];
+            /** @description Kafka or MQTT topic; AMQP routing key. */
+            topic: string;
+            exchange?: string | null;
+            key?: string | null;
+            headers: {
+                [key: string]: string;
+            };
+            properties: Record<string, never>;
+            contentType?: string | null;
+            /** Format: int64 */
+            size: number;
+            truncated?: boolean;
+            preview?: string | null;
+            /** Format: date-time */
+            receivedAt: string;
         };
         /** @description Admin API paths of a message's renditions. */
         MessageUrls: {
@@ -3530,6 +3948,50 @@ export interface components {
             replace?: boolean;
             dryRun?: boolean;
         };
+        SourceList: {
+            sources: components["schemas"]["SourceView"][];
+            /** @description `FASTMOCK_CAPTURE_MAX_SOURCES`. */
+            maxSources: number;
+            /** @description `FASTMOCK_CAPTURE_MAX_MESSAGES`: messages kept per source at most. */
+            maxMessages: number;
+        };
+        /** @description What the replica running a source's consumer reports about it. */
+        SourceStatus: {
+            /**
+             * @description `running` (subscribed), `connecting`, `error` (see `lastError`), `disabled`, or `stopped` (no
+             *     replica runs it, for example while no replica holds the capture lease).
+             */
+            state: string;
+            lastError?: string | null;
+            /**
+             * Format: int64
+             * @description Messages received by the current consumer.
+             */
+            received?: number;
+            /**
+             * Format: int64
+             * @description Messages the consumer dropped because storing could not keep up.
+             */
+            dropped?: number;
+            /** Format: date-time */
+            lastMessageAt?: string | null;
+            /** Format: date-time */
+            since?: string | null;
+            /**
+             * Format: int64
+             * @description Messages stored for the source now.
+             */
+            stored?: number;
+            /**
+             * Format: int64
+             * @description Successful connections of the current consumer; more than 1 means it reconnected.
+             */
+            connects?: number;
+        };
+        /** @description A source with what the consumer reports. */
+        SourceView: components["schemas"]["CaptureSource"] & {
+            status: components["schemas"]["SourceStatus"];
+        };
         SpaceInfo: {
             /** @example payments */
             name: string;
@@ -3558,6 +4020,11 @@ export interface components {
             /** Format: int64 */
             delayMs?: number;
         };
+        /**
+         * @description Where a Kafka source starts reading.
+         * @enum {string}
+         */
+        StartFrom: "latest" | "earliest";
         StateBody: {
             /** @example Paid */
             state: string;
@@ -3730,11 +4197,20 @@ export interface components {
         TriggerResult: {
             /** Format: uuid */
             id: string;
+            protocol: components["schemas"]["MessageProtocol"];
+            /** @description Kafka or MQTT topic; AMQP routing key. */
             topic: string;
-            /** Format: int32 */
-            partition: number;
-            /** Format: int64 */
-            offset: number;
+            exchange?: string | null;
+            /**
+             * Format: int32
+             * @description Kafka only.
+             */
+            partition?: number | null;
+            /**
+             * Format: int64
+             * @description Kafka only.
+             */
+            offset?: number | null;
         };
         ValidationResult: {
             valid: boolean;
@@ -3790,47 +4266,45 @@ export interface components {
             gitSha?: string | null;
             /**
              * @description Compiled-in optional features and capabilities; with the mail module enabled also `mail`, and
-             *     `mail.imap`, `mail.pop3` (when their listeners are on) and `mail.providers`.
+             *     `mail.imap`, `mail.pop3` (when their listeners are on) and `mail.providers`; with message capture
+             *     enabled also `capture`.
              */
             features: string[];
         };
         WaitBody: {
-            /** @description Conditions on the message; all given ones must hold. Empty: any message. */
-            match?: components["schemas"]["MailMatch"];
+            match?: components["schemas"]["MessageMatch"];
             /** @description Matching messages to wait for, 1 to 500 (default 1). */
             count?: number;
             /**
              * Format: int64
-             * @description How long to wait, 0 to 60000 ms (default 10000).
+             * @description 0 to 60000 ms (default 10000).
              */
             timeoutMs?: number | null;
             /** @description Count matching messages already stored, whenever they arrived. */
             includeExisting?: boolean;
             /**
              * Format: date-time
-             * @description Count stored messages received at or after this time too (ignored with `includeExisting`).
+             * @description Count stored messages received at or after this time too.
              */
             since?: string | null;
             /**
              * Format: int64
-             * @description Without `since`: count stored messages received up to this many milliseconds before the request
-             *     (default 0: only messages arriving from now on).
+             * @description Without `since`: count stored messages received up to this many milliseconds before the request.
              */
             lookbackMs?: number | null;
         };
         WaitResult: {
             /** @description The first `count` matching messages, oldest first. */
-            messages: components["schemas"]["MailEntry"][];
+            messages: components["schemas"]["MessageSummary"][];
             count: number;
         };
         WaitTimeout: {
             /** @example timed out after 10000 ms: 0 of 1 matching messages received */
             error: string;
             details: string[];
-            /** @description Matching messages seen before the time ran out. */
             count: number;
             expected: number;
-            messages: components["schemas"]["MailEntry"][];
+            messages: components["schemas"]["MessageSummary"][];
         };
         WebSocketDef: {
             messages?: components["schemas"]["WsMessage"][];
@@ -4168,7 +4642,7 @@ export interface operations {
                     "application/json": components["schemas"]["TriggerResult"];
                 };
             };
-            /** @description The topic is not allowed */
+            /** @description The broker is not configured, or the topic or exchange is not allowed */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -4204,7 +4678,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Publishing to Kafka failed */
+            /** @description Publishing to the broker failed */
             502: {
                 headers: {
                     [name: string]: unknown;
@@ -4534,6 +5008,862 @@ export interface operations {
             };
             /** @description Unknown space, or a space the caller cannot see */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    listCapturedMessages: {
+        parameters: {
+            query?: {
+                /** @description Space to list; without it every area the caller may read. */
+                space?: string;
+                /** @description Source name or id. */
+                source?: string;
+                /** @description `kafka`, `mqtt` or `amqp`. */
+                protocol?: string;
+                /** @description Exact topic or AMQP routing key. */
+                topic?: string;
+                /** @description Received at or after (RFC 3339). */
+                since?: string;
+                /** @description Received before (RFC 3339). */
+                until?: string;
+                /** @description 1 to 500 (default 50). */
+                limit?: number;
+                /** @description `nextCursor` of the previous page. */
+                cursor?: string;
+                /** @description `newest` (default) or `oldest` first. */
+                order?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of messages */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MessageList"];
+                };
+            };
+            /** @description Invalid filter, limit, order or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Capture is not enabled, an unknown space or source */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    deleteCapturedMessages: {
+        parameters: {
+            query?: {
+                space?: string;
+                /** @description Only the messages of this source (name or id). */
+                source?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Deleted"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The caller lacks messages:delete */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Capture is not enabled, an unknown space or source */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    findCapturedMessages: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "match": {
+                 *         "topic": {
+                 *           "equalTo": "orders.events"
+                 *         },
+                 *         "headers": {
+                 *           "event-type": {
+                 *             "equalTo": "OrderShipped"
+                 *           }
+                 *         },
+                 *         "body": [
+                 *           {
+                 *             "jsonPath": "$.orderId",
+                 *             "value": {
+                 *               "equalTo": "A-1"
+                 *             }
+                 *           }
+                 *         ]
+                 *       },
+                 *       "limit": 10
+                 *     }
+                 */
+                "application/json": components["schemas"]["FindBody"];
+            };
+        };
+        responses: {
+            /** @description Matching messages */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FindResult"];
+                };
+            };
+            /** @description Invalid match or limit */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Capture is not enabled, or an unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description More than 10000 stored messages to check */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Too many searches are reading stored messages */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    waitForCapturedMessages: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "match": {
+                 *         "source": {
+                 *           "equalTo": "orders"
+                 *         },
+                 *         "body": [
+                 *           {
+                 *             "jsonPath": "$.status",
+                 *             "value": {
+                 *               "equalTo": "SHIPPED"
+                 *             }
+                 *           }
+                 *         ]
+                 *       },
+                 *       "count": 1,
+                 *       "timeoutMs": 10000
+                 *     }
+                 */
+                "application/json": components["schemas"]["WaitBody"];
+            };
+        };
+        responses: {
+            /** @description The matching messages arrived */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaitResult"];
+                };
+            };
+            /** @description Invalid match, count or timeout */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Capture is not enabled, or an unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Timed out */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaitTimeout"];
+                };
+            };
+            /** @description More than 10000 stored messages to check */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Too many waits are reading stored messages, or the server is shutting down */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getCapturedMessage: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Message id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The message */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MessageDetail"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Not found, or capture is not enabled */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    deleteCapturedMessage: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Message id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The caller lacks messages:delete */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Not found, or capture is not enabled */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getCapturedMessageBody: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Message id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The bytes, with the message's content type (application/octet-stream otherwise) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": unknown;
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Not found, or capture is not enabled */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    listCaptureSources: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sources */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceList"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Capture is not enabled, or an unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    getCaptureSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Source id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The source */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceView"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Not found, or capture is not enabled */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    putCaptureSource: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Source id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "name": "orders",
+                 *       "protocol": "kafka",
+                 *       "topics": [
+                 *         "orders.events"
+                 *       ],
+                 *       "startFrom": "latest"
+                 *     }
+                 */
+                "application/json": components["schemas"]["CaptureSource"];
+            };
+        };
+        responses: {
+            /** @description Stored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceView"];
+                };
+            };
+            /** @description Invalid source, broker not configured, not allowed, name taken or too many sources */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The caller lacks messages:write */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Capture is not enabled, or an unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The source comes from the configuration */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    deleteCaptureSource: {
+        parameters: {
+            query?: {
+                /** @description Delete the source's stored messages too. */
+                purge?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description Source id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The caller lacks messages:write */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Not found, or capture is not enabled */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The source comes from the configuration */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    verifyCapturedMessages: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "match": {
+                 *         "topic": {
+                 *           "equalTo": "orders.events"
+                 *         }
+                 *       },
+                 *       "count": 1
+                 *     }
+                 */
+                "application/json": components["schemas"]["VerifyBody"];
+            };
+        };
+        responses: {
+            /** @description Expectation met */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VerifyResult"];
+                };
+            };
+            /** @description Invalid match or expectation */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Forbidden: the caller lacks the permission named in `required`, or the browser origin is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Capture is not enabled, or an unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Expectation not met (`VerifyResult`), or more than 10000 stored messages to check (`ErrorBody`) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VerifyResult"];
+                };
+            };
+            /** @description Too many verifications are reading stored messages */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

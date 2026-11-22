@@ -318,6 +318,57 @@ struct ReadMailArgs {
     code_pattern: Option<String>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FindMessagesArgs {
+    /// Message matcher: `{source, protocol, topic, exchange, key, headers, properties, contentType, body}`;
+    /// string conditions are string matchers such as `{"equalTo": "orders.events"}`, `body` is a list of
+    /// body matchers such as `{"jsonPath": "$.status", "value": {"equalTo": "SHIPPED"}}`.
+    #[serde(rename = "match", default)]
+    matcher: Option<Map<String, Value>>,
+    /// Only messages received at or after this time (RFC 3339).
+    since: Option<String>,
+    /// Messages to return, newest first, 1 to 100 (default 20).
+    limit: Option<u32>,
+    /// Only messages of this space.
+    space: Option<String>,
+    /// Include the decoded body of each returned message (at most 20 messages).
+    with_bodies: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WaitForMessageArgs {
+    /// Message matcher, as in find_messages.
+    #[serde(rename = "match", default)]
+    matcher: Option<Map<String, Value>>,
+    /// Messages to wait for, 1 to 500 (default 1).
+    count: Option<usize>,
+    /// Longest wait in milliseconds, 0 to 30000 (default 10000).
+    timeout_ms: Option<u64>,
+    /// Also count messages captured before the call.
+    include_existing: Option<bool>,
+    /// Also count messages captured up to this many milliseconds before the call.
+    lookback_ms: Option<u64>,
+    /// Only messages of this space.
+    space: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct VerifyMessagesArgs {
+    /// Message matcher, as in find_messages.
+    #[serde(rename = "match", default)]
+    matcher: Option<Map<String, Value>>,
+    /// Exactly this many matching messages.
+    count: Option<u64>,
+    at_least: Option<u64>,
+    at_most: Option<u64>,
+    /// Only messages received at or after this time (RFC 3339).
+    since: Option<String>,
+    space: Option<String>,
+}
+
 // ---------------------------------------------------------------------------------------------
 // Tool table
 // ---------------------------------------------------------------------------------------------
@@ -332,7 +383,25 @@ struct ToolSpec {
     output: fn() -> Value,
     read_only: bool,
     destructive: bool,
-    mail: bool,
+    module: Module,
+}
+
+/// The module a tool needs: tools of a module that is off are not listed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Module {
+    Core,
+    Mail,
+    Capture,
+}
+
+impl Module {
+    fn on(self, mail: bool, capture: bool) -> bool {
+        match self {
+            Module::Core => true,
+            Module::Mail => mail,
+            Module::Capture => capture,
+        }
+    }
 }
 
 fn schema<T: JsonSchema>() -> Value {
@@ -371,7 +440,7 @@ const TOOLS: &[ToolSpec] = &[
         },
         read_only: true,
         destructive: false,
-        mail: false,
+        module: Module::Core,
     },
     ToolSpec {
         name: "get_stub",
@@ -382,7 +451,7 @@ const TOOLS: &[ToolSpec] = &[
         output: out_any,
         read_only: true,
         destructive: false,
-        mail: false,
+        module: Module::Core,
     },
     ToolSpec {
         name: "create_stub",
@@ -393,7 +462,7 @@ const TOOLS: &[ToolSpec] = &[
         output: out_any,
         read_only: false,
         destructive: false,
-        mail: false,
+        module: Module::Core,
     },
     ToolSpec {
         name: "update_stub",
@@ -404,7 +473,7 @@ const TOOLS: &[ToolSpec] = &[
         output: out_any,
         read_only: false,
         destructive: false,
-        mail: false,
+        module: Module::Core,
     },
     ToolSpec {
         name: "delete_stub",
@@ -415,7 +484,7 @@ const TOOLS: &[ToolSpec] = &[
         output: || out_object(json!({"deleted": {"type": "boolean"}, "id": {"type": "string"}})),
         read_only: false,
         destructive: true,
-        mail: false,
+        module: Module::Core,
     },
     ToolSpec {
         name: "validate_stub",
@@ -426,7 +495,7 @@ const TOOLS: &[ToolSpec] = &[
         output: || out_object(json!({"valid": {"type": "boolean"}, "error": {"type": "string"}})),
         read_only: true,
         destructive: false,
-        mail: false,
+        module: Module::Core,
     },
     ToolSpec {
         name: "find_requests",
@@ -437,7 +506,7 @@ const TOOLS: &[ToolSpec] = &[
         output: || out_list("requests"),
         read_only: true,
         destructive: false,
-        mail: false,
+        module: Module::Core,
     },
     ToolSpec {
         name: "get_request",
@@ -448,7 +517,7 @@ const TOOLS: &[ToolSpec] = &[
         output: out_any,
         read_only: true,
         destructive: false,
-        mail: false,
+        module: Module::Core,
     },
     ToolSpec {
         name: "near_misses",
@@ -461,7 +530,7 @@ const TOOLS: &[ToolSpec] = &[
         },
         read_only: true,
         destructive: false,
-        mail: false,
+        module: Module::Core,
     },
     ToolSpec {
         name: "verify",
@@ -479,7 +548,7 @@ const TOOLS: &[ToolSpec] = &[
         },
         read_only: true,
         destructive: false,
-        mail: false,
+        module: Module::Core,
     },
     ToolSpec {
         name: "reset_journal",
@@ -490,7 +559,7 @@ const TOOLS: &[ToolSpec] = &[
         output: || out_object(json!({"deleted": {"type": "integer"}})),
         read_only: false,
         destructive: true,
-        mail: false,
+        module: Module::Core,
     },
     ToolSpec {
         name: "get_scenarios",
@@ -501,7 +570,7 @@ const TOOLS: &[ToolSpec] = &[
         output: || out_list("scenarios"),
         read_only: true,
         destructive: false,
-        mail: false,
+        module: Module::Core,
     },
     ToolSpec {
         name: "set_scenario",
@@ -512,7 +581,7 @@ const TOOLS: &[ToolSpec] = &[
         output: || out_object(json!({"name": {"type": "string"}, "state": {"type": "string"}})),
         read_only: false,
         destructive: false,
-        mail: false,
+        module: Module::Core,
     },
     ToolSpec {
         name: "list_callbacks",
@@ -523,7 +592,7 @@ const TOOLS: &[ToolSpec] = &[
         output: || out_list("callbacks"),
         read_only: true,
         destructive: false,
-        mail: false,
+        module: Module::Core,
     },
     ToolSpec {
         name: "import",
@@ -534,7 +603,7 @@ const TOOLS: &[ToolSpec] = &[
         output: out_any,
         read_only: false,
         destructive: false,
-        mail: false,
+        module: Module::Core,
     },
     ToolSpec {
         name: "get_chaos",
@@ -545,7 +614,7 @@ const TOOLS: &[ToolSpec] = &[
         output: || out_list("rules"),
         read_only: true,
         destructive: false,
-        mail: false,
+        module: Module::Core,
     },
     ToolSpec {
         name: "wait_for_mail",
@@ -561,7 +630,7 @@ const TOOLS: &[ToolSpec] = &[
         },
         read_only: true,
         destructive: false,
-        mail: true,
+        module: Module::Mail,
     },
     ToolSpec {
         name: "read_mail",
@@ -578,15 +647,65 @@ const TOOLS: &[ToolSpec] = &[
         },
         read_only: true,
         destructive: false,
-        mail: true,
+        module: Module::Mail,
+    },
+    ToolSpec {
+        name: "find_messages",
+        title: "Find captured broker messages",
+        description: "Messages FastMock captured from the Kafka topics, MQTT topic filters and AMQP exchanges of its capture sources (what the application under test published), newest first, filtered by `match`: source, protocol, topic (AMQP: routing key), exchange, key, headers, properties (correlationId, messageId, qos, partition, ...), contentType and body matchers. withBodies adds the decoded bodies (JSON, text, Avro or base64). REST: POST /__admin/capture/messages/find and GET /__admin/capture/messages/{id}.",
+        permission: Permission::MessagesRead,
+        input: schema::<FindMessagesArgs>,
+        output: || {
+            out_object(json!({
+                "messages": {"type": "array", "items": {"type": "object"}},
+                "count": {"type": "integer"},
+            }))
+        },
+        read_only: true,
+        destructive: false,
+        module: Module::Capture,
+    },
+    ToolSpec {
+        name: "wait_for_message",
+        title: "Wait for a broker message",
+        description: "Wait until `count` captured broker messages matching `match` arrive (Kafka, MQTT or AMQP, see find_messages for the matcher) and return them with their decoded bodies. By default only messages arriving after the call count; use includeExisting or lookbackMs when the application may already have published. Times out after timeoutMs with {timedOut: true} and what was seen. REST: POST /__admin/capture/messages/wait.",
+        permission: Permission::MessagesRead,
+        input: schema::<WaitForMessageArgs>,
+        output: || {
+            out_object(json!({
+                "messages": {"type": "array", "items": {"type": "object"}},
+                "count": {"type": "integer"}, "timedOut": {"type": "boolean"},
+            }))
+        },
+        read_only: true,
+        destructive: false,
+        module: Module::Capture,
+    },
+    ToolSpec {
+        name: "verify_messages",
+        title: "Verify captured broker messages",
+        description: "Check how many captured broker messages match `match`: exactly `count`, or between `atLeast` and `atMost` (default: at least 1). Answers {verified, count, expected} and, when the expectation fails, the closest messages with the conditions they failed (topic, headers.x, body[0], ...). REST: POST /__admin/capture/verify.",
+        permission: Permission::MessagesRead,
+        input: schema::<VerifyMessagesArgs>,
+        output: || {
+            out_object(json!({
+                "verified": {"type": "boolean"}, "count": {"type": "integer"},
+                "expected": {"type": "string"}, "error": {"type": "string"},
+                "details": {"type": "array", "items": {"type": "string"}},
+                "nearMisses": {"type": "array", "items": {"type": "object"}},
+            }))
+        },
+        read_only: true,
+        destructive: false,
+        module: Module::Capture,
     },
 ];
 
 /// The tools a principal may use: those whose REST permission it holds somewhere.
-pub fn tools_for(p: Option<&Principal>, mail: bool) -> Vec<Tool> {
+pub fn tools_for(p: Option<&Principal>, mail: bool, capture: bool) -> Vec<Tool> {
     TOOLS
         .iter()
-        .filter(|t| mail || !t.mail)
+        .filter(|t| t.module.on(mail, capture))
         .filter(|t| p.is_none_or(|p| p.permissions.anywhere(t.permission)))
         .map(tool_def)
         .collect()
@@ -1161,8 +1280,139 @@ impl McpServer {
                     "codes": codes.get("codes").cloned().unwrap_or(json!([])),
                 }))
             }
+            "find_messages" => {
+                let x: FindMessagesArgs = args(a)?;
+                let limit = limit(x.limit, 20, 100)?;
+                let mut body = json!({
+                    "match": Value::Object(x.matcher.unwrap_or_default()),
+                    "limit": limit,
+                });
+                if let Some(s) = x.since {
+                    body["since"] = json!(s);
+                }
+                let q = Query::new().opt("space", x.space.clone());
+                let mut v = self
+                    .ok(
+                        call,
+                        Method::POST,
+                        q.to("/capture/messages/find"),
+                        RestBody::Json(body),
+                    )
+                    .await?;
+                if x.with_bodies == Some(true) {
+                    self.add_bodies(call, &mut v, x.space).await?;
+                }
+                Ok(v)
+            }
+            "wait_for_message" => {
+                let x: WaitForMessageArgs = args(a)?;
+                let timeout = x.timeout_ms.unwrap_or(10_000);
+                if timeout > MAX_MAIL_WAIT_MS {
+                    return Err(ToolError::Invalid(format!(
+                        "timeoutMs must be 0 to {MAX_MAIL_WAIT_MS}"
+                    )));
+                }
+                let mut body = json!({
+                    "match": Value::Object(x.matcher.unwrap_or_default()),
+                    "count": x.count.unwrap_or(1),
+                    "timeoutMs": timeout,
+                });
+                if let Some(v) = x.include_existing {
+                    body["includeExisting"] = json!(v);
+                }
+                if let Some(v) = x.lookback_ms {
+                    body["lookbackMs"] = json!(v);
+                }
+                let q = Query::new().opt("space", x.space.clone());
+                let (status, mut v) = self
+                    .rest(
+                        call,
+                        Method::POST,
+                        q.to("/capture/messages/wait"),
+                        RestBody::Json(body),
+                    )
+                    .await?;
+                match status {
+                    s if s.is_success() => {
+                        self.add_bodies(call, &mut v, x.space).await?;
+                        v["timedOut"] = json!(false);
+                        Ok(v)
+                    }
+                    StatusCode::REQUEST_TIMEOUT => {
+                        v["timedOut"] = json!(true);
+                        Ok(v)
+                    }
+                    s => Err(ToolError::Rest(s, v)),
+                }
+            }
+            "verify_messages" => {
+                let x: VerifyMessagesArgs = args(a)?;
+                let mut body = json!({"match": Value::Object(x.matcher.unwrap_or_default())});
+                for (k, v) in [
+                    ("count", x.count),
+                    ("atLeast", x.at_least),
+                    ("atMost", x.at_most),
+                ] {
+                    if let Some(v) = v {
+                        body[k] = json!(v);
+                    }
+                }
+                if let Some(s) = x.since {
+                    body["since"] = json!(s);
+                }
+                let q = Query::new().opt("space", x.space);
+                let (status, v) = self
+                    .rest(
+                        call,
+                        Method::POST,
+                        q.to("/capture/verify"),
+                        RestBody::Json(body),
+                    )
+                    .await?;
+                if status.is_success() || v.get("verified").is_some() {
+                    Ok(v)
+                } else {
+                    Err(ToolError::Rest(status, v))
+                }
+            }
             other => Err(ToolError::Invalid(format!("unknown tool {other:?}"))),
         }
+    }
+
+    /// Adds the decoded body to the first 20 messages of a result.
+    async fn add_bodies(
+        &self,
+        call: &Call,
+        v: &mut Value,
+        space: Option<String>,
+    ) -> Result<(), ToolError> {
+        let Some(list) = v.get_mut("messages").and_then(Value::as_array_mut) else {
+            return Ok(());
+        };
+        for m in list.iter_mut().take(20) {
+            let Some(id) = m.get("id").and_then(Value::as_str).map(String::from) else {
+                continue;
+            };
+            let q = Query::new().opt("space", space.clone());
+            let detail = self
+                .ok(
+                    call,
+                    Method::GET,
+                    q.to(&format!("/capture/messages/{id}")),
+                    RestBody::None,
+                )
+                .await?;
+            if let Some(b) = detail.get("body") {
+                let mut b = b.clone();
+                if let Some(s) = b.get("value").and_then(Value::as_str)
+                    && s.len() > MAX_STRING
+                {
+                    b["value"] = json!(clip(s, MAX_STRING));
+                }
+                m["body"] = b;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1347,6 +1597,7 @@ impl ServerHandler for McpServer {
         Ok(ListToolsResult::with_all_items(tools_for(
             p.as_ref(),
             self.app.mail.is_some(),
+            self.app.capture.is_some(),
         )))
     }
 
@@ -1355,10 +1606,11 @@ impl ServerHandler for McpServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        let Some(spec) = TOOLS
-            .iter()
-            .find(|t| t.name == request.name && (self.app.mail.is_some() || !t.mail))
-        else {
+        let Some(spec) = TOOLS.iter().find(|t| {
+            t.name == request.name
+                && t.module
+                    .on(self.app.mail.is_some(), self.app.capture.is_some())
+        }) else {
             metrics::counter!("fastmock_mcp_tool_calls_total", "tool" => "unknown", "outcome" => "unknown_tool").increment(1);
             return Err(McpError::invalid_params(
                 format!("unknown tool {:?}", request.name),
@@ -1512,7 +1764,8 @@ mod tests {
             assert_eq!((t.input)()["type"], "object", "{}", t.name);
             assert_eq!((t.output)()["type"], "object", "{}", t.name);
         }
-        assert_eq!(tools_for(None, false).len(), TOOLS.len() - 2);
+        assert_eq!(tools_for(None, false, false).len(), TOOLS.len() - 5);
+        assert_eq!(tools_for(None, true, true).len(), TOOLS.len());
     }
 
     #[test]

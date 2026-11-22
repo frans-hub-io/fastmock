@@ -36,6 +36,10 @@ pub struct AppState {
     pub policy: Arc<crate::outbox::EgressPolicy>,
     pub chaos: Arc<crate::extras::ChaosCache>,
     pub kafka: Arc<crate::extras::KafkaHub>,
+    /// Publishers of stub messages and async mocks: Kafka, MQTT and AMQP.
+    pub brokers: Arc<crate::brokers::Brokers>,
+    /// Message capture; `None` unless `FASTMOCK_CAPTURE_ENABLED=true`.
+    pub capture: Option<Arc<crate::capture::CaptureService>>,
     pub grpc: Arc<crate::grpc::Registry>,
     pub body_budget: Arc<tokio::sync::Semaphore>,
     pub journal_tx: tokio::sync::mpsc::Sender<fastmock_core::JournalEntry>,

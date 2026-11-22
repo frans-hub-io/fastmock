@@ -159,6 +159,81 @@ data:
   {{- with $kafka.contractTopics }}
   FASTMOCK_KAFKA_CONTRACT_TOPICS: {{ join "," . | quote }}
   {{- end }}
+  {{- $mqtt := .Values.messaging.mqtt }}
+  {{- if $mqtt.url }}
+  FASTMOCK_MQTT_URL: {{ $mqtt.url | quote }}
+  {{- with $mqtt.version }}
+  FASTMOCK_MQTT_VERSION: {{ . | toString | quote }}
+  {{- end }}
+  {{- with $mqtt.clientIdPrefix }}
+  FASTMOCK_MQTT_CLIENT_ID_PREFIX: {{ . | quote }}
+  {{- end }}
+  {{- with $mqtt.keepAlive }}
+  FASTMOCK_MQTT_KEEP_ALIVE: {{ . | quote }}
+  {{- end }}
+  {{- with $mqtt.username }}
+  FASTMOCK_MQTT_USERNAME: {{ . | quote }}
+  {{- end }}
+  {{- if $mqtt.tls.caSecret }}
+  FASTMOCK_MQTT_TLS_CA_FILE: "/etc/fastmock/tls/mqtt-ca/ca.crt"
+  {{- end }}
+  {{- if $mqtt.tls.clientCertSecret }}
+  FASTMOCK_MQTT_TLS_CERT_FILE: "/etc/fastmock/tls/mqtt-client/tls.crt"
+  FASTMOCK_MQTT_TLS_KEY_FILE: "/etc/fastmock/tls/mqtt-client/tls.key"
+  {{- end }}
+  {{- with $mqtt.allowedTopics }}
+  FASTMOCK_MQTT_ALLOWED_TOPICS: {{ join "," . | quote }}
+  {{- end }}
+  {{- end }}
+  {{- $amqp := .Values.messaging.amqp }}
+  {{- if $amqp.url }}
+  FASTMOCK_AMQP_URL: {{ $amqp.url | quote }}
+  {{- with $amqp.sasl.mechanism }}
+  FASTMOCK_AMQP_SASL_MECHANISM: {{ . | upper | quote }}
+  {{- end }}
+  {{- with $amqp.sasl.username }}
+  FASTMOCK_AMQP_USERNAME: {{ . | quote }}
+  {{- end }}
+  {{- if $amqp.tls.caSecret }}
+  FASTMOCK_AMQP_TLS_CA_FILE: "/etc/fastmock/tls/amqp-ca/ca.crt"
+  {{- end }}
+  {{- if $amqp.tls.clientCertSecret }}
+  FASTMOCK_AMQP_TLS_CERT_FILE: "/etc/fastmock/tls/amqp-client/tls.crt"
+  FASTMOCK_AMQP_TLS_KEY_FILE: "/etc/fastmock/tls/amqp-client/tls.key"
+  {{- end }}
+  {{- with $amqp.allowedExchanges }}
+  FASTMOCK_AMQP_ALLOWED_EXCHANGES: {{ join "," . | quote }}
+  {{- end }}
+  {{- if $amqp.declareExchanges }}
+  FASTMOCK_AMQP_DECLARE_EXCHANGES: "true"
+  {{- end }}
+  {{- end }}
+  {{- $capture := .Values.messaging.capture }}
+  {{- if $capture.enabled }}
+  FASTMOCK_CAPTURE_ENABLED: "true"
+  {{- if include "fastmock.captureSourcesEnabled" . }}
+  FASTMOCK_CAPTURE_SOURCES_FILE: "/etc/fastmock/capture/sources.json"
+  {{- end }}
+  {{- with $capture.limits }}
+  {{- range $key, $var := dict "maxSources" "MAX_SOURCES" "maxMessages" "MAX_MESSAGES" "maxMessageBytes" "MAX_MESSAGE_BYTES" }}
+  {{- if hasKey $.Values.messaging.capture.limits $key }}
+  FASTMOCK_CAPTURE_{{ $var }}: {{ index $.Values.messaging.capture.limits $key | int64 | quote }}
+  {{- end }}
+  {{- end }}
+  {{- with .maxAge }}
+  FASTMOCK_CAPTURE_MAX_AGE: {{ . | quote }}
+  {{- end }}
+  {{- end }}
+  {{- with $capture.allowedKafkaTopics }}
+  FASTMOCK_CAPTURE_KAFKA_TOPICS: {{ join "," . | quote }}
+  {{- end }}
+  {{- with $capture.allowedMqttTopics }}
+  FASTMOCK_CAPTURE_MQTT_TOPICS: {{ join "," . | quote }}
+  {{- end }}
+  {{- with $capture.allowedAmqpExchanges }}
+  FASTMOCK_CAPTURE_AMQP_EXCHANGES: {{ join "," . | quote }}
+  {{- end }}
+  {{- end }}
   {{- with .Values.admin.uiDataPlaneUrls }}
   FASTMOCK_UI_DATA_PLANE_URL: {{ join "," . | quote }}
   {{- end }}

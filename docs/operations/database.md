@@ -24,6 +24,7 @@ upgrade PostgreSQL to a new major version. Connection settings and TLS are in
 | PostgreSQL | `fm_api_tokens` | [Managed tokens](access-control.md#managed-tokens): hashes and metadata, never the values. |
 | PostgreSQL | `fm_mail_messages` | Captured [mail](../guide/mail.md): envelope, parsed summary, labels, provider fields, SMTP transcript and the raw message (kept for `FASTMOCK_MAIL_MAX_AGE`, at most `FASTMOCK_MAIL_MAX_MESSAGES` and `FASTMOCK_MAIL_MAX_BYTES` per space). |
 | PostgreSQL | `fm_mail_mailboxes`, `fm_mail_folders`, `fm_mail_entries`, sequence `fm_mail_uid_validity` | IMAP and POP3 mailboxes: mailbox password hashes, folders with their UID counters, and per-folder message flags. |
+| PostgreSQL | `fm_captured_messages` | Messages of [message capture](../guide/message-capture.md): metadata as `jsonb` and the body (at most `FASTMOCK_CAPTURE_MAX_MESSAGES` per source, kept for `FASTMOCK_CAPTURE_MAX_AGE`). Capture sources defined through the API are in `fm_data`. |
 | PostgreSQL | `_sqlx_migrations` | Applied migrations: version, description, checksum, success. |
 | Valkey | keys under `FASTMOCK_VALKEY_PREFIX` | Scenario states, key-value entries, counters, delayed deliveries, caches, OIDC sessions and pending sign-ins, mail chaos counters, Resend idempotency keys, failed mail logins (`<prefix>mail:login:*`, keyed by a digest, expiring). |
 | Valkey | channels `<prefix>mail:events:<space>` (`_global` for the global area) | New and deleted mail, so waits, event streams and IMAP `IDLE` on every replica see messages accepted by another one. |
@@ -132,6 +133,8 @@ are additive and are applied whether or not mail is enabled:
 | 12 | `mail_messages_space_index` | Index on `fm_mail_messages (space, received_at, id)`, built concurrently. |
 | 13 | `mail_messages_received_index` | Index on `fm_mail_messages (received_at, id)`, built concurrently. |
 | 14 | `mail_entries_message_index` | Index on `fm_mail_entries (message_id)`, built concurrently. |
+| 15 | `journal_grpc` | Column `grpc` of `fm_journal`. |
+| 16 | `captured_messages` | Table `fm_captured_messages` with indexes on `(source_id, id)` and `received_at`. |
 
 On a new installation the tables are empty, so the index builds take no time. When migrations run separately and
 the server user gets rights per table:
@@ -139,6 +142,7 @@ the server user gets rights per table:
 ```sql
 GRANT SELECT, INSERT, UPDATE, DELETE ON fm_mail_messages, fm_mail_mailboxes, fm_mail_folders, fm_mail_entries TO fastmock;
 GRANT USAGE ON SEQUENCE fm_mail_uid_validity TO fastmock;
+GRANT SELECT, INSERT, DELETE ON fm_captured_messages TO fastmock;
 ```
 
 ## Writing migrations

@@ -8,8 +8,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
+use fastmock_core::MessageProtocol;
 use fastmock_core::asyncapi::{self, AsyncImportOptions, AsyncMock, AsyncProtocol};
-use fastmock_core::engine::RenderedMessage;
+use fastmock_core::engine::{RenderedAmqp, RenderedMessage, RenderedMqtt};
 use fastmock_core::template::context;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -101,12 +102,19 @@ pub fn render(app: &AppState, m: &AsyncMock, seq: u64) -> anyhow::Result<Rendere
         };
         headers.insert(k.clone(), v);
     }
-    if let Some(ct) = &m.content_type
-        && !headers
-            .keys()
-            .any(|k| k.eq_ignore_ascii_case("content-type"))
-    {
-        headers.insert("content-type".into(), ct.clone());
+    let protocol = message_protocol(m.protocol);
+    let mut content_type = None;
+    if let Some(ct) = &m.content_type {
+        if protocol == MessageProtocol::Kafka {
+            if !headers
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case("content-type"))
+            {
+                headers.insert("content-type".into(), ct.clone());
+            }
+        } else {
+            content_type = Some(ct.clone());
+        }
     }
     let value = if m.templated {
         t.render_json_in(&ex.payload, &ctx)?
@@ -118,12 +126,77 @@ pub fn render(app: &AppState, m: &AsyncMock, seq: u64) -> anyhow::Result<Rendere
         other => other.clone(),
     };
     Ok(RenderedMessage {
+        protocol,
         topic: m.channel.clone(),
-        key,
+        key: key.filter(|_| protocol == MessageProtocol::Kafka),
         value,
         headers,
         avro_schema: m.avro_schema.clone(),
+        content_type,
+        delay_ms: 0,
+        mqtt: m.mqtt.as_ref().map(|o| RenderedMqtt {
+            qos: o.qos,
+            retain: o.retain,
+            message_expiry_seconds: o.message_expiry_seconds,
+            ..Default::default()
+        }),
+        amqp: (protocol == MessageProtocol::Amqp).then(|| {
+            let o = m.amqp.clone().unwrap_or_default();
+            RenderedAmqp {
+                exchange: o.exchange,
+                exchange_type: o.exchange_type,
+                durable: o.durable.unwrap_or(true),
+                expiration: o.expiration,
+                persistent: o.persistent,
+                priority: o.priority,
+                message_type: o.message_type,
+                ..Default::default()
+            }
+        }),
     })
+}
+
+/// The broker protocol of an async mock (WebSocket mocks are stubs and never published here).
+pub fn message_protocol(p: AsyncProtocol) -> MessageProtocol {
+    match p {
+        AsyncProtocol::Mqtt => MessageProtocol::Mqtt,
+        AsyncProtocol::Amqp => MessageProtocol::Amqp,
+        AsyncProtocol::Kafka | AsyncProtocol::Ws => MessageProtocol::Kafka,
+    }
+}
+
+/// The allow-listed name of an async mock's destination: the topic, or the AMQP exchange.
+pub fn destination(m: &AsyncMock) -> String {
+    match m.protocol {
+        AsyncProtocol::Amqp => m
+            .amqp
+            .as_ref()
+            .map(|a| a.exchange.clone())
+            .unwrap_or_default(),
+        _ => m.channel.clone(),
+    }
+}
+
+/// Why publishing an async mock cannot work in this configuration: a missing setting or the allow-list.
+pub fn publish_problem(app: &AppState, m: &AsyncMock) -> Option<String> {
+    let p = message_protocol(m.protocol);
+    if let Some(setting) = app.brokers.missing_setting(&app.cfg, p) {
+        return Some(format!("{setting} is not configured"));
+    }
+    let dest = destination(m);
+    if !app.brokers.allowed(p, &dest) {
+        return Some(format!(
+            "{} {} is not in {}",
+            if p == MessageProtocol::Amqp {
+                "exchange"
+            } else {
+                "topic"
+            },
+            fastmock_brokers::amqp::api_exchange(&dest),
+            crate::brokers::Brokers::allow_list_name(p)
+        ));
+    }
+    None
 }
 
 async fn next_seq(app: &AppState, id: Uuid) -> u64 {
@@ -144,12 +217,19 @@ async fn next_seq(app: &AppState, id: Uuid) -> u64 {
     }
 }
 
-pub async fn publish_mock(app: &AppState, m: &AsyncMock) -> anyhow::Result<(i32, i64)> {
+pub async fn publish_mock(
+    app: &AppState,
+    m: &AsyncMock,
+) -> anyhow::Result<crate::brokers::Receipt> {
+    let system = match m.protocol {
+        AsyncProtocol::Amqp => "rabbitmq",
+        other => other.as_str(),
+    };
     let span = tracing::info_span!(
         "fastmock.async_publish",
         otel.name = %format!("publish {}", m.channel),
         otel.kind = "producer",
-        messaging.system = "kafka",
+        messaging.system = system,
         messaging.destination.name = %m.channel,
         fastmock.async_mock = %m.id,
     );
@@ -157,15 +237,15 @@ pub async fn publish_mock(app: &AppState, m: &AsyncMock) -> anyhow::Result<(i32,
         let seq = next_seq(app, m.id).await;
         let r = async {
             let msg = render(app, m, seq)?;
-            app.kafka.publish_one(&msg).await
+            app.brokers.publish_one(&msg).await
         }
         .await;
         let id = m.id.to_string();
         match &r {
-            Ok((partition, offset)) => {
+            Ok(receipt) => {
                 metrics::counter!("fastmock_async_messages_total", "mock" => id, "result" => "sent")
                     .increment(1);
-                tracing::debug!(topic = %m.channel, partition, offset, "async mock message published");
+                tracing::debug!(topic = %m.channel, protocol = system, partition = receipt.partition, offset = receipt.offset, "async mock message published");
             }
             Err(e) => {
                 metrics::counter!("fastmock_async_messages_total", "mock" => id, "result" => "failed")
@@ -200,14 +280,21 @@ impl Default for PublisherOptions {
 
 pub struct Leader {
     id: String,
+    key: &'static str,
     ttl: Duration,
     valid_until: Option<Instant>,
 }
 
 impl Leader {
     pub fn new(ttl: Duration) -> Self {
+        Self::with_key(LEASE_KEY, ttl)
+    }
+
+    /// A lease under another hot-store key (message capture elects its consumer replica the same way).
+    pub fn with_key(key: &'static str, ttl: Duration) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
+            key,
             ttl,
             valid_until: None,
         }
@@ -220,12 +307,12 @@ impl Leader {
     pub async fn refresh(&mut self, hot: &dyn fastmock_core::HotStore) -> bool {
         let started = Instant::now();
         let renewed = match hot
-            .compare_and_set(LEASE_KEY, Some(&self.id), &self.id, Some(self.ttl))
+            .compare_and_set(self.key, Some(&self.id), &self.id, Some(self.ttl))
             .await
         {
             Ok(true) => Ok(true),
             Ok(false) => {
-                hot.compare_and_set(LEASE_KEY, None, &self.id, Some(self.ttl))
+                hot.compare_and_set(self.key, None, &self.id, Some(self.ttl))
                     .await
             }
             Err(e) => Err(e),
@@ -237,9 +324,13 @@ impl Leader {
             }
             Ok(false) => self.valid_until = None,
             Err(e) => {
-                metrics::counter!("fastmock_store_errors_total", "store" => "asyncmock_lease")
-                    .increment(1);
-                tracing::warn!(error = %e, "renewing the async mock leader lease failed");
+                let store = if self.key == LEASE_KEY {
+                    "asyncmock_lease"
+                } else {
+                    "capture_lease"
+                };
+                metrics::counter!("fastmock_store_errors_total", "store" => store).increment(1);
+                tracing::warn!(error = %e, key = self.key, "renewing a leader lease failed");
             }
         }
         self.is_leader()
@@ -249,7 +340,7 @@ impl Leader {
         if self.valid_until.take().is_some() {
             let _ = hot
                 .compare_and_set(
-                    LEASE_KEY,
+                    self.key,
                     Some(&self.id),
                     "released",
                     Some(Duration::from_millis(1)),
@@ -270,7 +361,7 @@ pub async fn run_with(app: AppState, mut shutdown: watch::Receiver<bool>, opts: 
     let mut mocks: Arc<Vec<AsyncMock>> = Arc::new(Vec::new());
     let mut next_due: HashMap<Uuid, Instant> = HashMap::new();
     let inflight = Arc::new(Semaphore::new(MAX_INFLIGHT));
-    let mut warned_no_kafka = false;
+    let mut warned_missing: std::collections::HashSet<&'static str> = Default::default();
     metrics::gauge!("fastmock_async_leader").set(0.0);
     loop {
         tokio::select! {
@@ -301,7 +392,7 @@ pub async fn run_with(app: AppState, mut shutdown: watch::Receiver<bool>, opts: 
                 Ok(all) => {
                     let active: Vec<AsyncMock> = all
                         .into_iter()
-                        .filter(|m| m.enabled && m.protocol == AsyncProtocol::Kafka)
+                        .filter(|m| m.enabled && m.protocol.is_broker())
                         .collect();
                     next_due.retain(|id, _| active.iter().any(|m| m.id == *id));
                     mocks = Arc::new(active);
@@ -318,17 +409,20 @@ pub async fn run_with(app: AppState, mut shutdown: watch::Receiver<bool>, opts: 
         if mocks.is_empty() {
             continue;
         }
-        if app.cfg.kafka_bootstrap.is_none() {
-            if !warned_no_kafka {
-                tracing::warn!(
-                    "async mocks are configured but FASTMOCK_KAFKA_BOOTSTRAP is not set; nothing is published"
-                );
-                warned_no_kafka = true;
-            }
-            continue;
-        }
         let now = Instant::now();
         for m in mocks.iter() {
+            if let Some(setting) = app
+                .brokers
+                .missing_setting(&app.cfg, message_protocol(m.protocol))
+            {
+                if warned_missing.insert(setting) {
+                    tracing::warn!(
+                        "{} async mocks are configured but {setting} is not set; they are not published",
+                        m.protocol.as_str()
+                    );
+                }
+                continue;
+            }
             let due = next_due.entry(m.id).or_insert(now);
             if now < *due {
                 continue;
@@ -363,8 +457,8 @@ pub struct ImportAsyncApiRequest {
     pub frequency_ms: Option<u64>,
     #[serde(default)]
     pub path_prefix: Option<String>,
-    /// Kafka topic names: `channel` (default, the channel address) or `microcks`
-    /// (`<service>-<version>-<channel>`, as Microcks publishes).
+    /// Destination names: `channel` (default, the channel address) or `microcks`
+    /// (`<service>-<version>-<channel>`, the Kafka topic, MQTT topic or AMQP exchange Microcks uses).
     #[serde(default)]
     pub topic_naming: asyncapi::TopicNaming,
 }
@@ -389,9 +483,17 @@ pub struct AsyncMockList {
 #[serde(rename_all = "camelCase")]
 pub struct TriggerResult {
     pub id: Uuid,
+    pub protocol: MessageProtocol,
+    /// Kafka or MQTT topic; AMQP routing key.
     pub topic: String,
-    pub partition: i32,
-    pub offset: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exchange: Option<String>,
+    /// Kafka only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partition: Option<i32>,
+    /// Kafka only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -525,11 +627,20 @@ pub async fn import_document(
             }
         }
         match m.protocol {
-            AsyncProtocol::Kafka => {
-                if !app.kafka.topic_allowed(&m.channel) {
+            AsyncProtocol::Kafka | AsyncProtocol::Mqtt | AsyncProtocol::Amqp => {
+                let p = message_protocol(m.protocol);
+                let dest = destination(&m);
+                if !app.brokers.allowed(p, &dest) {
                     warnings.push(format!(
-                        "{}: topic {} is not in FASTMOCK_KAFKA_ALLOWED_TOPICS; publishing will fail",
-                        m.name, m.channel
+                        "{}: {} {} is not in {}; publishing will fail",
+                        m.name,
+                        if p == MessageProtocol::Amqp {
+                            "exchange"
+                        } else {
+                            "topic"
+                        },
+                        fastmock_brokers::amqp::api_exchange(&dest),
+                        crate::brokers::Brokers::allow_list_name(p)
                     ));
                 }
                 m.updated_at = Some(Utc::now());
@@ -554,10 +665,32 @@ pub async fn import_document(
         }
         return Err(bad(msg));
     }
-    if app.cfg.kafka_bootstrap.is_none() && !kafka.is_empty() {
+    let mut missing: Vec<(&str, &str)> = Vec::new();
+    for m in &kafka {
+        let p = message_protocol(m.protocol);
+        if let Some(setting) = app.brokers.missing_setting(&app.cfg, p)
+            && !missing.iter().any(|(s, _)| *s == setting)
+        {
+            missing.push((setting, m.protocol.as_str()));
+        }
+    }
+    for (setting, proto) in missing {
+        let name = match proto {
+            "kafka" => "Kafka",
+            "mqtt" => "MQTT",
+            _ => "AMQP",
+        };
+        warnings.push(format!(
+            "{setting} is not set; {name} async mocks are stored but not published"
+        ));
+    }
+    if kafka.iter().any(|m| {
+        m.protocol == AsyncProtocol::Amqp
+            && m.amqp.as_ref().is_some_and(|a| a.durable == Some(false))
+    }) && app.cfg.amqp.as_ref().is_some_and(|a| !a.declare_exchanges)
+    {
         warnings.push(
-            "FASTMOCK_KAFKA_BOOTSTRAP is not set; Kafka async mocks are stored but not published"
-                .into(),
+            "Microcks exchange names are declared only with FASTMOCK_AMQP_DECLARE_EXCHANGES=true; create the exchanges or set it".into(),
         );
     }
     if !req.dry_run {
@@ -670,9 +803,9 @@ pub async fn put_one(
     let mut m: AsyncMock =
         serde_json::from_value(body).map_err(|e| bad(format!("invalid async mock: {e}")))?;
     m.id = id;
-    if m.protocol != AsyncProtocol::Kafka {
+    if !m.protocol.is_broker() {
         return Err(bad(
-            "only Kafka async mocks are stored here; WebSocket mocks are stubs with response.websocket",
+            "only Kafka, MQTT and AMQP async mocks are stored here; WebSocket mocks are stubs with response.websocket",
         ));
     }
     validate_mock(&app, &m).map_err(bad)?;
@@ -739,9 +872,9 @@ pub async fn delete_one(
     params(("id" = Uuid, Path, description = "Async mock id")),
     responses(
         (status = 200, description = "One message published", body = TriggerResult),
-        (status = 400, description = "The topic is not allowed", body = ErrorBody),
+        (status = 400, description = "The broker is not configured, or the topic or exchange is not allowed", body = ErrorBody),
         (status = 404, description = "Not found", body = ErrorBody),
-        (status = 502, description = "Publishing to Kafka failed", body = ErrorBody),
+        (status = 502, description = "Publishing to the broker failed", body = ErrorBody),
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
         (status = 403, description = "The token lacks the editor role", body = ErrorBody),
     ),
@@ -753,26 +886,30 @@ pub async fn trigger(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<TriggerResult>> {
     let m = get_mock(&app, id).await?;
-    if !app.kafka.topic_allowed(&m.channel) {
-        return Err(bad(format!(
-            "topic {} is not in FASTMOCK_KAFKA_ALLOWED_TOPICS",
-            m.channel
-        )));
-    }
-    if app.cfg.kafka_bootstrap.is_none() {
-        return Err(bad("FASTMOCK_KAFKA_BOOTSTRAP is not configured"));
+    if let Some(problem) = publish_problem(&app, &m) {
+        return Err(bad(problem));
     }
     audit(&app, &p, "asyncmock.trigger", json!({"id": id})).await;
     match publish_mock(&app, &m).await {
-        Ok((partition, offset)) => Ok(Json(TriggerResult {
+        Ok(r) => Ok(Json(TriggerResult {
             id,
-            topic: m.channel,
-            partition,
-            offset,
+            protocol: r.protocol,
+            topic: r.topic,
+            exchange: r.exchange,
+            partition: r.partition,
+            offset: r.offset,
         })),
-        Err(_) => Err(ApiError(
+        Err(e) => Err(ApiError(
             StatusCode::BAD_GATEWAY,
-            "publishing to Kafka failed; see the server log for this trace".into(),
+            format!(
+                "publishing to {} failed: {}",
+                match m.protocol {
+                    AsyncProtocol::Mqtt => "MQTT",
+                    AsyncProtocol::Amqp => "AMQP",
+                    _ => "Kafka",
+                },
+                crate::redact::truncate(format!("{e:#}"), 512)
+            ),
         )),
     }
 }
@@ -790,7 +927,7 @@ pub fn routes() -> Router<AppState> {
 
 #[derive(utoipa::OpenApi)]
 #[openapi(
-    tags((name = "asyncapi", description = "AsyncAPI import and async mocks that publish to Kafka")),
+    tags((name = "asyncapi", description = "AsyncAPI import and async mocks that publish to Kafka, MQTT and AMQP")),
     paths(import_asyncapi, list_mocks, get_one, put_one, delete_one, trigger),
     components(schemas(
         ImportAsyncApiRequest,
@@ -800,6 +937,8 @@ pub fn routes() -> Router<AppState> {
         AsyncMock,
         fastmock_core::asyncapi::AsyncMessage,
         fastmock_core::asyncapi::AsyncProtocol,
+        fastmock_core::asyncapi::AsyncMqtt,
+        fastmock_core::asyncapi::AsyncAmqp,
         fastmock_core::ws_model::WebSocketDef,
         fastmock_core::ws_model::WsMessage,
         fastmock_core::ws_model::WsReply,

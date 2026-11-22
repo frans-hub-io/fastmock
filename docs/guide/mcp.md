@@ -138,10 +138,13 @@ only when [mail capture](mail.md) is on.
 | `get_chaos` | Active chaos rules | `chaos:read` (global) | `GET /__admin/chaos` |
 | `wait_for_mail` | Wait for emails matching a matcher (at most 30 s) | `mail:read` | `POST /__admin/mail/messages/wait` |
 | `read_mail` | One email with its links and one-time codes | `mail:read` | `GET /__admin/mail/messages/{id}`, `/links`, `/codes` |
+| `find_messages` | Captured Kafka, MQTT and AMQP messages matching a matcher, newest first, optionally with decoded bodies | `messages:read` | `POST /__admin/capture/messages/find`, `GET /__admin/capture/messages/{id}` |
+| `wait_for_message` | Wait for captured broker messages (at most 30 s), with their decoded bodies | `messages:read` | `POST /__admin/capture/messages/wait` |
+| `verify_messages` | Check a count of captured broker messages, with near misses | `messages:read` | `POST /__admin/capture/verify` |
 
 Every tool has a description written for the model and JSON Schemas for its arguments and its result. Two
 behaviours differ from the REST defaults on purpose: `import` keeps existing stubs with the same tag unless
-`replace: true` is given, and `wait_for_mail` waits at most 30 seconds, because MCP clients often stop waiting
+`replace: true` is given, and `wait_for_mail` and `wait_for_message` wait at most 30 seconds, because MCP clients often stop waiting
 for a tool sooner than that.
 
 ### Resources

@@ -1,8 +1,8 @@
 # FastMock
 
 FastMock is an API mock server for test environments. It mocks HTTP/1.1, HTTP/2 and HTTPS with mTLS, gRPC
-(unary and streaming calls, gRPC-Web, server reflection), GraphQL, SOAP, WebSocket and Server-Sent Events, publishes Kafka messages (JSON or Confluent Avro), runs AsyncAPI
-mocks, and sends durable, signed callbacks with retries. State lives in PostgreSQL and Valkey, so any number of
+(unary and streaming calls, gRPC-Web, server reflection), GraphQL, SOAP, WebSocket and Server-Sent Events, publishes Kafka (JSON or Confluent Avro), MQTT and AMQP messages, runs AsyncAPI
+mocks, captures the messages an application publishes so tests can wait for and verify them, and sends durable, signed callbacks with retries. State lives in PostgreSQL and Valkey, so any number of
 replicas share stubs, scenarios, the request journal and the callback queue. It runs as a single binary or
 container, as a Helm release, or through a Kubernetes operator.
 
@@ -18,6 +18,7 @@ requires a token.
 | **Durable callbacks** | Webhooks are written to an outbox before the response, delivered by any replica after a delay, retried with backoff on network errors, 408, 429 and 5xx, signed with HMAC from a server-side secret, idempotent by `x-fastmock-delivery-id`, and visible per delivery in the API. [Callbacks](docs/guide/callbacks.md) |
 | **Shared state, any number of replicas** | Stubs, journal, audit and outbox in PostgreSQL; scenarios, key-value entries and counters in Valkey with atomic transitions. A test can call one replica and verify through another. [Concepts](docs/guide/concepts.md#running-several-replicas) |
 | **Security by default** | Separate admin port, no start without tokens, viewer/editor/admin roles, origin checks, security settings only at start-up, templates without code execution, one egress policy against SSRF, secrets masked in journal and logs, bounded inputs, audit log. [Security](docs/operations/security.md) |
+| **Kafka, MQTT and AMQP, both ways** | Stubs and AsyncAPI async mocks publish to Kafka (JSON or Confluent Avro), MQTT 3.1.1/5 (QoS, retain, user properties) and AMQP 0-9-1 exchanges (RabbitMQ properties, persistent delivery), with TLS, mTLS, allow-lists and one publishing replica. Capture sources store what the application publishes, from Kafka topics, MQTT topic filters or a private AMQP queue that never steals messages, and tests find, wait for and verify them like captured mail. [Kafka](docs/guide/kafka.md), [MQTT and AMQP](docs/guide/mqtt-amqp.md), [Message capture](docs/guide/message-capture.md) |
 | **MCP for agents, and MCP mocks** | Coding agents (GitHub Copilot, Claude Code, Cursor) manage stubs, search the journal, explain near misses and verify calls through `/mcp` on the admin port, with the same tokens, permissions, spaces and audit log as the admin API; and stubs can serve mock MCP tools and resources on the data port, to test AI agents against a fake MCP server. [MCP for coding agents](docs/guide/mcp.md), [Mock MCP servers](docs/guide/mock-mcp-servers.md) |
 | **Observability** | Prometheus metrics with bounded labels, OpenTelemetry traces that continue through callbacks, JSON logs with trace ids, a Grafana dashboard and alert rules in the chart. [Observability](docs/operations/observability.md) |
 | **Bring your existing mocks** | Imports WireMock mappings, MockServer expectations, OpenAPI, AsyncAPI, Postman, HAR, WSDL/SoapUI, GraphQL schemas and Microcks artifacts; records real traffic. [Importing](docs/guide/importing.md) |
@@ -95,7 +96,7 @@ callbacks and scenarios.
 
 [Request matching](docs/guide/request-matching.md), [Responses](docs/guide/responses.md),
 [Templating](docs/guide/templating.md), [Scenarios](docs/guide/scenarios-and-state.md),
-[Callbacks](docs/guide/callbacks.md), [Kafka](docs/guide/kafka.md).
+[Callbacks](docs/guide/callbacks.md), [Kafka](docs/guide/kafka.md), [MQTT and AMQP](docs/guide/mqtt-amqp.md), [Message capture](docs/guide/message-capture.md).
 
 ## Testing with Java
 

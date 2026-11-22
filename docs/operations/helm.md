@@ -250,6 +250,19 @@ helm uninstall fastmock -n mocks
 | `messaging.kafka.allowedTopics` | `[]` | `FASTMOCK_KAFKA_ALLOWED_TOPICS` |
 | `messaging.kafka.createTopics.enabled`, `.partitions`, `.replication` | `false`, `1`, `-1` | Create a missing topic on its first message (`FASTMOCK_KAFKA_CREATE_TOPICS`); only topics allowed by `allowedTopics`. `-1` uses the broker's default replication. Useful with `kafka.enabled`. |
 | `messaging.kafka.contractTopics` | `[]` (reading disabled) | `FASTMOCK_KAFKA_CONTRACT_TOPICS`: topics AsyncAPI contract tests may read. |
+| `messaging.mqtt.url` | `""` | `FASTMOCK_MQTT_URL` (`mqtt://host:1883` or `mqtts://host:8883`, no credentials). Nothing MQTT renders without it. See [MQTT and AMQP messages](../guide/mqtt-amqp.md). |
+| `messaging.mqtt.version`, `.clientIdPrefix`, `.keepAlive` | `"5"`, `fastmock`, `30s` | `FASTMOCK_MQTT_VERSION` (`5` or `3.1.1`), `_CLIENT_ID_PREFIX`, `_KEEP_ALIVE`. |
+| `messaging.mqtt.username`, `.existingSecret`, `.passwordKey` | `""`, `""`, `password` | User and the Secret holding the password. |
+| `messaging.mqtt.tls.caSecret`, `.caKey`, `.clientCertSecret` | `""`, `ca.crt`, `""` | CA bundle and `kubernetes.io/tls` client certificate, mounted as files; needs `mqtts://`. |
+| `messaging.mqtt.allowedTopics` | `[]` | `FASTMOCK_MQTT_ALLOWED_TOPICS` |
+| `messaging.amqp.url` | `""` | `FASTMOCK_AMQP_URL` (`amqp://host:5672/vhost` or `amqps://`, vhost URL-encoded, no credentials). |
+| `messaging.amqp.sasl.mechanism`, `.username`, `.existingSecret`, `.passwordKey` | `""` (`PLAIN`), `""`, `""`, `password` | `FASTMOCK_AMQP_SASL_MECHANISM` (`PLAIN` or `EXTERNAL`, which needs `amqps://` and a client certificate), user and password Secret. |
+| `messaging.amqp.tls.caSecret`, `.caKey`, `.clientCertSecret` | `""`, `ca.crt`, `""` | As for MQTT; needs `amqps://`. |
+| `messaging.amqp.allowedExchanges`, `.declareExchanges` | `[]`, `false` | `FASTMOCK_AMQP_ALLOWED_EXCHANGES`, `FASTMOCK_AMQP_DECLARE_EXCHANGES`. |
+| `messaging.capture.enabled` | `false` | `FASTMOCK_CAPTURE_ENABLED`: [message capture](../guide/message-capture.md). |
+| `messaging.capture.sources` | `[]` | Sources from the configuration (`name`, `protocol`, `space`, `topics`, `exchange`, `bindingKeys`, `qos`, `startFrom`, `maxMessages`, `enabled`, `description`), rendered into the ConfigMap `<fullname>-capture` and read through `FASTMOCK_CAPTURE_SOURCES_FILE`; pods restart when they change. |
+| `messaging.capture.limits.maxSources`, `.maxMessages`, `.maxMessageBytes`, `.maxAge` | `50`, `1000`, `1048576`, `24h` | `FASTMOCK_CAPTURE_MAX_*`. |
+| `messaging.capture.allowedKafkaTopics`, `.allowedMqttTopics`, `.allowedAmqpExchanges` | `[]` (any) | `FASTMOCK_CAPTURE_KAFKA_TOPICS`, `_MQTT_TOPICS`, `_AMQP_EXCHANGES`: what capture sources may read. |
 | `kafka.enabled` | `false` | Install the CloudPirates `kafka` chart (one broker, KRaft) and connect FastMock to it with SASL/PLAIN. |
 | `kafka.auth.existingSecret` | `""` (required when enabled) | Secret with `client-password`, `inter-broker-password` and `controller-password`. |
 | `kafka.auth.clientUser` | `fastmock` | SASL user FastMock connects as. |
@@ -485,6 +498,8 @@ the matching variables ([Configuration](configuration.md)).
 | Valkey | a `rediss://` URL in `storage.valkey.existingSecret`, `storage.valkey.username`, `.tls.caSecret`, `.tls.clientCertSecret` | `FASTMOCK_VALKEY_USERNAME`, `_TLS_CA_FILE`, `_TLS_CERT_FILE`, `_TLS_KEY_FILE` |
 | Kafka | `messaging.kafka.securityProtocol`, `.sasl.*`, `.tls.*` | `FASTMOCK_KAFKA_SECURITY_PROTOCOL`, `_SASL_*`, `_TLS_*` |
 | Schema Registry | `messaging.kafka.schemaRegistry.*` with an `https://` URL | basic authentication, trusts `messaging.kafka.tls.caSecret` |
+| MQTT | an `mqtts://` URL in `messaging.mqtt.url`, `.username`, `.existingSecret`, `.tls.*` | `FASTMOCK_MQTT_USERNAME`, `_PASSWORD`, `_TLS_*` |
+| AMQP | an `amqps://` URL in `messaging.amqp.url`, `.sasl.*`, `.tls.*` | `FASTMOCK_AMQP_USERNAME`, `_PASSWORD`, `_SASL_MECHANISM`, `_TLS_*` |
 
 CA Secrets need the key named in `caKey` (default `ca.crt`); client certificates are standard `kubernetes.io/tls`
 Secrets (`tls.crt`, `tls.key`), for example issued by cert-manager.
@@ -512,6 +527,49 @@ With `networkPolicy.enabled: true` the chart creates one policy for FastMock pod
 
 With `postgresql.enabled` or `valkey.enabled`, `networkPolicy.storage: true` adds a second policy that lets only FastMock pods of the
 release reach them.
+
+## MQTT, AMQP and message capture
+
+Stub messages and async mocks publish to MQTT and AMQP brokers once their URL is set
+([MQTT and AMQP messages](../guide/mqtt-amqp.md)); `messaging.capture` turns on
+[message capture](../guide/message-capture.md). Passwords come from Secrets, CA bundles and client certificates are
+mounted as files, and capture sources are rendered into a ConfigMap:
+
+```yaml
+messaging:
+  mqtt:
+    url: mqtts://mqtt.example.com:8883
+    username: fastmock
+    existingSecret: fastmock-mqtt
+    tls:
+      caSecret: fastmock-brokers-ca
+    allowedTopics: ["devices/*"]
+  amqp:
+    url: amqps://rabbitmq.example.com:5671/orders
+    sasl:
+      username: fastmock
+      existingSecret: fastmock-amqp
+    tls:
+      caSecret: fastmock-brokers-ca
+    allowedExchanges: [orders]
+  capture:
+    enabled: true
+    sources:
+      - name: orders
+        protocol: amqp
+        exchange: orders
+        bindingKeys: ["order.*"]
+      - name: telemetry
+        protocol: mqtt
+        topics: ["devices/+/telemetry"]
+    allowedMqttTopics: ["devices/*"]
+    allowedAmqpExchanges: [orders]
+```
+
+The install fails with a clear message for settings the server would refuse: TLS settings with a plain URL, a
+user without its password Secret, `EXTERNAL` without `amqps://` and a client certificate, sources while capture is
+off, duplicate source names in a space, or more sources than `limits.maxSources`. With a NetworkPolicy egress
+allow-list, allow the broker ports (1883/8883, 5672/5671).
 
 ## Mail
 
@@ -653,6 +711,11 @@ start-up: after rotating it, `kubectl rollout restart deploy/<fullname>`.
   in `postgres` mode and a restricted Valkey ACL user, add the channel rule `&<prefix>mail:events:*` and
   `+publish +psubscribe`; otherwise the pods stop at start-up. With per-table grants, grant the new tables before
   upgrading.
+- **0.2.0**: MQTT and AMQP publishing (`messaging.mqtt`, `messaging.amqp`) and [message capture](../guide/message-capture.md)
+  (`messaging.capture`), all off by default. The release adds migration 16 (table `fm_captured_messages`) and the
+  `messages:*` permissions: `editor` now includes `messages:write` and `messages:delete`, so custom roles that copy
+  editor's permission list need `messages:*` to keep creating editor tokens. The metric `fastmock_messages_total`
+  gains the label `protocol`.
 - **0.1.0**: first release. `FASTMOCK_STUB_SECRETS` (`secrets.stubSecrets`) is required for stub HMAC
   signatures; stubs that reference other secrets produce failed callbacks with
   `secret ... is not configured`.

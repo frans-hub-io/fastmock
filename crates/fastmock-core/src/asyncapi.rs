@@ -40,6 +40,64 @@ fn default_protocol() -> AsyncProtocol {
 pub enum AsyncProtocol {
     Kafka,
     Ws,
+    Mqtt,
+    Amqp,
+}
+
+impl AsyncProtocol {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AsyncProtocol::Kafka => "kafka",
+            AsyncProtocol::Ws => "ws",
+            AsyncProtocol::Mqtt => "mqtt",
+            AsyncProtocol::Amqp => "amqp",
+        }
+    }
+
+    /// Whether the mock is stored and published by the async mock publisher (all but WebSocket).
+    pub fn is_broker(self) -> bool {
+        self != AsyncProtocol::Ws
+    }
+}
+
+/// MQTT options of an async mock.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AsyncMqtt {
+    /// Quality of service 0, 1 or 2.
+    #[serde(default)]
+    pub qos: u8,
+    #[serde(default)]
+    pub retain: bool,
+    /// MQTT 5 message expiry interval in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_expiry_seconds: Option<u32>,
+}
+
+/// AMQP options of an async mock; `channel` is the routing key.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AsyncAmqp {
+    /// Exchange; empty or `amq.default` is the default exchange (the routing key is then a queue name).
+    #[serde(default)]
+    pub exchange: String,
+    /// Type used to declare a missing exchange (`topic` by default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exchange_type: Option<String>,
+    /// Durability used to declare a missing exchange (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub durable: Option<bool>,
+    /// Delivery mode 2 (persistent).
+    #[serde(default)]
+    pub persistent: bool,
+    /// Per-message TTL in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expiration: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<u8>,
+    /// AMQP `type` property.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_type: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
@@ -68,6 +126,12 @@ pub struct AsyncMock {
     pub avro_schema: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload_schema: Option<Value>,
+    /// MQTT options (`protocol: mqtt`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mqtt: Option<AsyncMqtt>,
+    /// AMQP options (`protocol: amqp`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amqp: Option<AsyncAmqp>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -114,6 +178,61 @@ impl AsyncMock {
                 if !self.channel.starts_with('/') || self.channel.len() > 2048 {
                     return Err("a WebSocket channel must be a path starting with /".into());
                 }
+            }
+            AsyncProtocol::Mqtt => {
+                if self.channel.is_empty()
+                    || self.channel.len() > 65_535
+                    || self.channel.contains(['+', '#', '\0'])
+                {
+                    return Err(format!(
+                        "channel `{}` is not a valid MQTT topic (not empty, no + or # wildcards)",
+                        self.channel
+                    ));
+                }
+            }
+            AsyncProtocol::Amqp => {
+                if self.channel.len() > 255 {
+                    return Err("an AMQP routing key (channel) is at most 255 bytes".into());
+                }
+            }
+        }
+        if self.protocol != AsyncProtocol::Mqtt && self.mqtt.is_some() {
+            return Err("mqtt options need protocol mqtt".into());
+        }
+        if self.protocol != AsyncProtocol::Amqp && self.amqp.is_some() {
+            return Err("amqp options need protocol amqp".into());
+        }
+        if self.protocol != AsyncProtocol::Kafka && self.avro_schema.is_some() {
+            return Err("avroSchema is only supported for Kafka".into());
+        }
+        if let Some(m) = &self.mqtt
+            && m.qos > 2
+        {
+            return Err("mqtt.qos must be 0, 1 or 2".into());
+        }
+        if let Some(a) = &self.amqp {
+            if a.exchange.len() > 255
+                || !a
+                    .exchange
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':' | '/'))
+            {
+                return Err(format!(
+                    "amqp.exchange `{}` is not a valid exchange name",
+                    a.exchange
+                ));
+            }
+            if let Some(t) = &a.exchange_type
+                && !["topic", "direct", "fanout", "headers"].contains(&t.as_str())
+            {
+                return Err(format!(
+                    "amqp.exchangeType `{t}` is not topic, direct, fanout or headers"
+                ));
+            }
+            if let Some(e) = &a.expiration
+                && (e.is_empty() || !e.chars().all(|c| c.is_ascii_digit()))
+            {
+                return Err("amqp.expiration must be a number of milliseconds".into());
             }
         }
         if self.messages.is_empty() || self.messages.len() > MAX_MESSAGES_PER_MOCK {
@@ -198,6 +317,8 @@ fn protocol_kind(p: &str) -> Option<AsyncProtocol> {
     match p.to_ascii_lowercase().as_str() {
         "kafka" | "kafka-secure" => Some(AsyncProtocol::Kafka),
         "ws" | "wss" => Some(AsyncProtocol::Ws),
+        "mqtt" | "mqtts" | "secure-mqtt" | "mqtt5" => Some(AsyncProtocol::Mqtt),
+        "amqp" | "amqps" => Some(AsyncProtocol::Amqp),
         _ => None,
     }
 }
@@ -211,6 +332,12 @@ fn binding_protocols(bindings: &[Option<&Value>]) -> BTreeSet<AsyncProtocol> {
             }
             if o.contains_key("ws") {
                 out.insert(AsyncProtocol::Ws);
+            }
+            if o.contains_key("mqtt") || o.contains_key("mqtt5") {
+                out.insert(AsyncProtocol::Mqtt);
+            }
+            if o.contains_key("amqp") {
+                out.insert(AsyncProtocol::Amqp);
             }
         }
     }
@@ -692,6 +819,18 @@ struct OpSpec {
     protocols: BTreeSet<AsyncProtocol>,
     messages: Vec<Value>,
     kafka_topic: Option<String>,
+    /// `bindings.mqtt` of the operation (qos, retain, messageExpiryInterval).
+    mqtt: Option<Value>,
+    /// `bindings.amqp` of the channel (is, exchange, queue).
+    amqp_channel: Option<Value>,
+    /// `bindings.amqp` of the operation (expiration, deliveryMode, priority, ...).
+    amqp_operation: Option<Value>,
+}
+
+fn binding(list: &[Option<&Value>], name: &str) -> Option<Value> {
+    list.iter()
+        .flatten()
+        .find_map(|b| b.get(name).filter(|v| v.is_object()).cloned())
 }
 
 pub fn parse_version(raw: &Value) -> anyhow::Result<u8> {
@@ -789,6 +928,9 @@ fn collect_v2(
                 .pointer("/bindings/kafka/topic")
                 .and_then(|t| t.as_str())
                 .map(String::from),
+            mqtt: binding(&[op.get("bindings"), ch.get("bindings")], "mqtt"),
+            amqp_channel: binding(&[ch.get("bindings")], "amqp"),
+            amqp_operation: binding(&[op.get("bindings")], "amqp"),
         });
     }
     Ok(out)
@@ -861,6 +1003,9 @@ fn collect_v3(
                 .pointer("/bindings/kafka/topic")
                 .and_then(|t| t.as_str())
                 .map(String::from),
+            mqtt: binding(&[op.get("bindings"), ch.get("bindings")], "mqtt"),
+            amqp_channel: binding(&[ch.get("bindings")], "amqp"),
+            amqp_operation: binding(&[op.get("bindings")], "amqp"),
         });
     }
     Ok(out)
@@ -876,6 +1021,30 @@ pub enum TopicNaming {
     Microcks,
 }
 
+/// The channel address with its parameters replaced by example values.
+fn resolved_address(spec: &OpSpec) -> String {
+    let mut a = spec.address.clone();
+    if let Some(Value::Object(ps)) = &spec.params {
+        for (name, p) in ps {
+            let v = param_value(p).unwrap_or_else(|| name.clone());
+            a = a.replace(&format!("{{{name}}}"), &v);
+        }
+    }
+    a
+}
+
+/// `<service without spaces and dashes>-<version without spaces>-<operation part>`, the destination name
+/// Microcks uses; the operation part keeps its `/` (MQTT topics, AMQP exchanges).
+fn microcks_name(title: &str, version: &str, doc_version: u8, spec: &OpSpec) -> String {
+    let service = title.replace([' ', '-'], "");
+    let part = if doc_version == 2 || spec.address.contains('{') {
+        resolved_address(spec)
+    } else {
+        spec.op_name.clone()
+    };
+    format!("{service}-{}-{part}", version.replace(' ', ""))
+}
+
 fn microcks_topic(
     title: &str,
     version: &str,
@@ -885,14 +1054,7 @@ fn microcks_topic(
 ) -> String {
     let service = title.replace([' ', '-'], "");
     let part = if doc_version == 2 || spec.address.contains('{') {
-        let mut a = spec.address.clone();
-        if let Some(Value::Object(ps)) = &spec.params {
-            for (name, p) in ps {
-                let v = param_value(p).unwrap_or_else(|| name.clone());
-                a = a.replace(&format!("{{{name}}}"), &v);
-            }
-        }
-        a.replace('/', "-")
+        resolved_address(spec).replace('/', "-")
     } else {
         spec.op_name.clone()
     };
@@ -914,6 +1076,90 @@ fn microcks_topic(
         ));
     }
     topic
+}
+
+fn mqtt_options(spec: &OpSpec) -> AsyncMqtt {
+    let b = spec.mqtt.as_ref();
+    AsyncMqtt {
+        qos: b
+            .and_then(|b| b.get("qos"))
+            .and_then(Value::as_u64)
+            .map(|q| q.min(2) as u8)
+            .unwrap_or(0),
+        retain: b
+            .and_then(|b| b.get("retain"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        message_expiry_seconds: b
+            .and_then(|b| b.get("messageExpiryInterval"))
+            .and_then(Value::as_u64)
+            .and_then(|v| u32::try_from(v).ok()),
+    }
+}
+
+/// The AMQP routing key of an operation: the queue name for `is: queue` (published through the default
+/// exchange), otherwise the channel address with its parameters replaced.
+fn amqp_routing_key(spec: &OpSpec) -> String {
+    let ch = spec.amqp_channel.as_ref();
+    if ch.and_then(|c| c.get("is")).and_then(Value::as_str) == Some("queue")
+        && let Some(q) = ch
+            .and_then(|c| c.pointer("/queue/name"))
+            .and_then(Value::as_str)
+            .filter(|q| !q.is_empty())
+    {
+        return q.to_string();
+    }
+    resolved_address(spec)
+}
+
+fn amqp_options(spec: &OpSpec, msg: &Value, warnings: &mut Vec<String>) -> AsyncAmqp {
+    let ch = spec.amqp_channel.as_ref();
+    let op = spec.amqp_operation.as_ref();
+    let is_queue = ch.and_then(|c| c.get("is")).and_then(Value::as_str) == Some("queue");
+    let exchange = if is_queue {
+        String::new()
+    } else {
+        ch.and_then(|c| c.pointer("/exchange/name"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    if !is_queue && exchange.is_empty() {
+        warnings.push(format!(
+            "{}: no amqp exchange binding; messages go to the default exchange with routing key `{}`",
+            spec.op_name,
+            amqp_routing_key(spec)
+        ));
+    }
+    let exchange_type = ch
+        .and_then(|c| c.pointer("/exchange/type"))
+        .and_then(Value::as_str)
+        .filter(|t| ["topic", "direct", "fanout", "headers"].contains(t))
+        .map(String::from);
+    let durable = ch
+        .and_then(|c| c.pointer("/exchange/durable"))
+        .and_then(Value::as_bool);
+    AsyncAmqp {
+        exchange,
+        exchange_type,
+        durable,
+        persistent: op
+            .and_then(|o| o.get("deliveryMode"))
+            .and_then(Value::as_u64)
+            == Some(2),
+        expiration: op
+            .and_then(|o| o.get("expiration"))
+            .and_then(Value::as_u64)
+            .map(|e| e.to_string()),
+        priority: op
+            .and_then(|o| o.get("priority"))
+            .and_then(Value::as_u64)
+            .map(|p| p.min(255) as u8),
+        message_type: msg
+            .pointer("/bindings/amqp/messageType")
+            .and_then(Value::as_str)
+            .map(String::from),
+    }
 }
 
 pub fn import(raw: &Value, opts: &AsyncImportOptions) -> anyhow::Result<AsyncImportResult> {
@@ -954,7 +1200,7 @@ pub fn import_named(
     for spec in specs {
         if spec.protocols.is_empty() {
             out.warnings.push(format!(
-                "{}: no Kafka or WebSocket binding or server; skipped",
+                "{}: no Kafka, MQTT, AMQP or WebSocket binding or server; skipped",
                 spec.op_name
             ));
             continue;
@@ -989,7 +1235,42 @@ pub fn import_named(
                         }
                     },
                     AsyncProtocol::Ws => ws_path(&opts.path_prefix, &spec.address),
+                    AsyncProtocol::Mqtt => match naming {
+                        TopicNaming::Microcks => {
+                            microcks_name(&out.title, &out.version, version, &spec)
+                        }
+                        TopicNaming::Channel => {
+                            let t = resolved_address(&spec);
+                            if t != spec.address {
+                                out.warnings.push(format!(
+                                    "channel `{}` was mapped to MQTT topic `{t}`",
+                                    spec.address
+                                ));
+                            }
+                            t
+                        }
+                    },
+                    AsyncProtocol::Amqp => amqp_routing_key(&spec),
                 };
+                let (mqtt, amqp) = match proto {
+                    AsyncProtocol::Mqtt => (Some(mqtt_options(&spec)), None),
+                    AsyncProtocol::Amqp => {
+                        let mut a = amqp_options(&spec, msg, &mut out.warnings);
+                        if naming == TopicNaming::Microcks {
+                            a.exchange = microcks_name(&out.title, &out.version, version, &spec);
+                            a.durable = Some(false);
+                            a.exchange_type.get_or_insert_with(|| "topic".into());
+                        }
+                        (None, Some(a))
+                    }
+                    _ => (None, None),
+                };
+                let mut examples = info.examples.clone();
+                if *proto != AsyncProtocol::Kafka {
+                    for e in &mut examples {
+                        e.key = None;
+                    }
+                }
                 let name = if multi {
                     format!("{} {}", spec.op_name, info.name)
                 } else {
@@ -1002,7 +1283,7 @@ pub fn import_named(
                     channel,
                     operation: Some(spec.op_name.clone()),
                     service: Some(service.clone()),
-                    messages: info.examples.clone(),
+                    messages: examples,
                     frequency_ms: frequency,
                     enabled: true,
                     templated: true,
@@ -1013,6 +1294,8 @@ pub fn import_named(
                         None
                     },
                     payload_schema: info.payload_schema.clone(),
+                    mqtt,
+                    amqp,
                     tags: if opts.tag.is_empty() {
                         vec![]
                     } else {
@@ -1342,7 +1625,7 @@ components:
         assert!(import(&json!({"openapi": "3.0.0"}), &opts()).is_err());
         assert!(import(&json!({"asyncapi": "1.2.0"}), &opts()).is_err());
         let none = import(
-            &json!({"asyncapi": "2.6.0", "info": {"title": "x", "version": "1"}, "servers": {"m": {"url": "x", "protocol": "mqtt"}},
+            &json!({"asyncapi": "2.6.0", "info": {"title": "x", "version": "1"}, "servers": {"m": {"url": "x", "protocol": "nats"}},
             "channels": {"a": {"subscribe": {"message": {"payload": {"type": "string"}}}}}}),
             &opts(),
         )
@@ -1351,8 +1634,185 @@ components:
         assert!(
             none.warnings
                 .iter()
-                .any(|w| w.contains("no Kafka or WebSocket"))
+                .any(|w| w.contains("no Kafka, MQTT, AMQP or WebSocket"))
         );
+    }
+
+    const MQTT_AMQP_V2: &str = r##"
+asyncapi: "2.6.0"
+info: {title: Smart Lights, version: "1.0.0"}
+defaultContentType: application/json
+servers:
+  mosquitto: {url: "mqtt://broker.example.com", protocol: mqtt}
+  rabbit: {url: "amqp://rabbit.example.com", protocol: amqp}
+channels:
+  lights/{lightId}/measured:
+    servers: [mosquitto]
+    parameters:
+      lightId: {schema: {type: string, examples: [l7]}}
+    subscribe:
+      operationId: lightMeasured
+      bindings: {mqtt: {qos: 1, retain: true, messageExpiryInterval: 60}}
+      message:
+        payload: {type: object, properties: {lumens: {type: integer, example: 12}}}
+  order.created:
+    bindings:
+      amqp:
+        is: routingKey
+        exchange: {name: orders, type: topic, durable: true}
+    subscribe:
+      operationId: orderCreated
+      bindings: {amqp: {deliveryMode: 2, expiration: 60000, priority: 3}}
+      message:
+        bindings: {amqp: {messageType: order.created}}
+        payload: {type: object, properties: {id: {type: string, example: o-1}}}
+  work:
+    bindings: {amqp: {is: queue, queue: {name: work.queue}}}
+    subscribe:
+      operationId: workQueued
+      message: {payload: {type: string, example: job}}
+"##;
+
+    #[test]
+    fn imports_mqtt_and_amqp_from_asyncapi_2() {
+        let doc = parse_document(MQTT_AMQP_V2).unwrap();
+        let r = import(&doc, &opts()).unwrap();
+        let by = |n: &str| r.mocks.iter().find(|m| m.name == n).unwrap();
+        let light = by("lightMeasured");
+        assert_eq!(light.protocol, AsyncProtocol::Mqtt);
+        assert_eq!(light.channel, "lights/l7/measured");
+        assert_eq!(
+            light.mqtt,
+            Some(AsyncMqtt {
+                qos: 1,
+                retain: true,
+                message_expiry_seconds: Some(60)
+            })
+        );
+        assert_eq!(light.messages[0].payload, json!({"lumens": 12}));
+        assert!(light.validate(|_| Ok(())).is_ok());
+        let order = by("orderCreated");
+        assert_eq!(order.protocol, AsyncProtocol::Amqp);
+        assert_eq!(order.channel, "order.created");
+        let a = order.amqp.as_ref().unwrap();
+        assert_eq!(a.exchange, "orders");
+        assert_eq!(a.exchange_type.as_deref(), Some("topic"));
+        assert_eq!(a.durable, Some(true));
+        assert!(a.persistent);
+        assert_eq!(a.expiration.as_deref(), Some("60000"));
+        assert_eq!(a.priority, Some(3));
+        assert_eq!(a.message_type.as_deref(), Some("order.created"));
+        let work = by("workQueued");
+        assert_eq!(work.protocol, AsyncProtocol::Amqp);
+        assert_eq!(work.channel, "work.queue");
+        assert_eq!(work.amqp.as_ref().unwrap().exchange, "");
+        assert!(
+            r.warnings
+                .iter()
+                .any(|w| w.contains("mapped to MQTT topic `lights/l7/measured`"))
+        );
+        assert!(!r.warnings.iter().any(|w| w.contains("skipped")));
+
+        let m = import_named(&doc, &opts(), TopicNaming::Microcks).unwrap();
+        let light = m.mocks.iter().find(|x| x.name == "lightMeasured").unwrap();
+        assert_eq!(light.channel, "SmartLights-1.0.0-lights/l7/measured");
+        let order = m.mocks.iter().find(|x| x.name == "orderCreated").unwrap();
+        let a = order.amqp.as_ref().unwrap();
+        assert_eq!(a.exchange, "SmartLights-1.0.0-order.created");
+        assert_eq!(a.durable, Some(false));
+        assert_eq!(a.exchange_type.as_deref(), Some("topic"));
+    }
+
+    #[test]
+    fn imports_mqtt_and_amqp_from_asyncapi_3() {
+        let doc = json!({"asyncapi": "3.0.0", "info": {"title": "Accounts", "version": "2"},
+        "servers": {"m": {"host": "broker.example.com", "protocol": "mqtt"}},
+        "channels": {
+            "signup": {"address": "user/signedup", "messages": {"m": {"payload": {"type": "object", "properties": {"id": {"type": "integer", "example": 1}}}}}},
+            "audit": {"address": "audit.user", "bindings": {"amqp": {"is": "routingKey", "exchange": {"name": "audit", "type": "fanout"}}},
+                "messages": {"a": {"payload": {"type": "string", "example": "x"}}}}
+        },
+        "operations": {
+            "sendSignup": {"action": "send", "channel": {"$ref": "#/channels/signup"}, "bindings": {"mqtt": {"qos": 2}}},
+            "sendAudit": {"action": "send", "channel": {"$ref": "#/channels/audit"}},
+            "onCommand": {"action": "receive", "channel": {"$ref": "#/channels/signup"}}
+        }});
+        let r = import(&doc, &opts()).unwrap();
+        assert_eq!(r.mocks.len(), 2, "{:?}", r.warnings);
+        let s = r.mocks.iter().find(|m| m.name == "sendSignup").unwrap();
+        assert_eq!(s.protocol, AsyncProtocol::Mqtt);
+        assert_eq!(s.channel, "user/signedup");
+        assert_eq!(s.mqtt.as_ref().unwrap().qos, 2);
+        let a = r.mocks.iter().find(|m| m.name == "sendAudit").unwrap();
+        assert_eq!(a.protocol, AsyncProtocol::Amqp);
+        assert_eq!(a.amqp.as_ref().unwrap().exchange, "audit");
+        assert_eq!(
+            a.amqp.as_ref().unwrap().exchange_type.as_deref(),
+            Some("fanout")
+        );
+        let m = import_named(&doc, &opts(), TopicNaming::Microcks).unwrap();
+        assert_eq!(
+            m.mocks
+                .iter()
+                .find(|m| m.name == "sendSignup")
+                .unwrap()
+                .channel,
+            "Accounts-2-sendSignup"
+        );
+    }
+
+    #[test]
+    fn broker_options_are_validated() {
+        let base = |p: AsyncProtocol, channel: &str| AsyncMock {
+            id: Uuid::now_v7(),
+            name: "x".into(),
+            protocol: p,
+            channel: channel.into(),
+            operation: None,
+            service: None,
+            messages: vec![AsyncMessage {
+                payload: json!(1),
+                ..Default::default()
+            }],
+            frequency_ms: 1000,
+            enabled: true,
+            templated: false,
+            content_type: None,
+            avro_schema: None,
+            payload_schema: None,
+            mqtt: None,
+            amqp: None,
+            tags: vec![],
+            updated_at: None,
+        };
+        let ok = |m: &AsyncMock| m.validate(|_| Ok(()));
+        assert!(ok(&base(AsyncProtocol::Mqtt, "a/b")).is_ok());
+        assert!(ok(&base(AsyncProtocol::Mqtt, "a/+")).is_err());
+        assert!(ok(&base(AsyncProtocol::Amqp, "")).is_ok());
+        let mut m = base(AsyncProtocol::Mqtt, "a");
+        m.mqtt = Some(AsyncMqtt {
+            qos: 3,
+            ..Default::default()
+        });
+        assert!(ok(&m).unwrap_err().contains("qos"));
+        let mut m = base(AsyncProtocol::Kafka, "a");
+        m.amqp = Some(AsyncAmqp::default());
+        assert!(ok(&m).unwrap_err().contains("protocol amqp"));
+        let mut m = base(AsyncProtocol::Amqp, "k");
+        m.amqp = Some(AsyncAmqp {
+            exchange: "bad name".into(),
+            ..Default::default()
+        });
+        assert!(ok(&m).is_err());
+        m.amqp = Some(AsyncAmqp {
+            exchange: "orders".into(),
+            expiration: Some("1m".into()),
+            ..Default::default()
+        });
+        assert!(ok(&m).unwrap_err().contains("expiration"));
+        let mut m = base(AsyncProtocol::Mqtt, "a");
+        m.avro_schema = Some(json!({"type": "string"}));
+        assert!(ok(&m).unwrap_err().contains("avroSchema"));
     }
 
     #[test]
@@ -1440,6 +1900,8 @@ components:
             content_type: None,
             avro_schema: None,
             payload_schema: None,
+            mqtt: None,
+            amqp: None,
             tags: vec![],
             updated_at: None,
         };

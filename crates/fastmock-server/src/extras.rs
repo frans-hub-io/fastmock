@@ -13,7 +13,6 @@ use fastmock_kafka::{KafkaPublisher, KafkaSettings, SchemaRegistry, confluent_fr
 use futures::stream;
 use serde_json::Value;
 use tokio::sync::{OnceCell, RwLock};
-use tracing::Instrument;
 
 use crate::state::AppState;
 
@@ -126,26 +125,14 @@ impl KafkaHub {
         }
     }
 
-    pub fn publish_in_background(self: &Arc<Self>, messages: Vec<RenderedMessage>) {
-        static INFLIGHT: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
-            std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(256)));
-        let Ok(permit) = INFLIGHT.clone().try_acquire_owned() else {
-            metrics::counter!("fastmock_messages_total", "result" => "dropped")
-                .increment(messages.len() as u64);
-            tracing::warn!(
-                messages = messages.len(),
-                "too many message publications in flight; dropped"
-            );
-            return;
-        };
-        let hub = self.clone();
-        tokio::spawn(
-            async move {
-                let _permit = permit;
-                hub.publish(&messages).await;
-            }
-            .in_current_span(),
-        );
+    /// The Schema Registry, when `FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL` is set.
+    pub fn registry(&self) -> Option<&SchemaRegistry> {
+        self.registry.as_ref()
+    }
+
+    /// The Kafka client settings, when `FASTMOCK_KAFKA_BOOTSTRAP` is set.
+    pub fn settings(&self) -> Option<&KafkaSettings> {
+        self.settings.as_ref()
     }
 
     pub fn topic_allowed(&self, topic: &str) -> bool {
@@ -157,11 +144,18 @@ impl KafkaHub {
             anyhow::bail!("topic is not in FASTMOCK_KAFKA_ALLOWED_TOPICS");
         }
         let value = self.encode(m).await?;
-        let headers: BTreeMap<String, Vec<u8>> = m
+        let mut headers: BTreeMap<String, Vec<u8>> = m
             .headers
             .iter()
             .map(|(k, v)| (k.clone(), v.clone().into_bytes()))
             .collect();
+        if let Some(ct) = &m.content_type
+            && !headers
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case("content-type"))
+        {
+            headers.insert("content-type".into(), ct.clone().into_bytes());
+        }
         self.publisher()
             .await?
             .publish(
@@ -171,22 +165,6 @@ impl KafkaHub {
                 headers,
             )
             .await
-    }
-
-    pub async fn publish(&self, messages: &[RenderedMessage]) {
-        for m in messages {
-            let r = self.publish_one(m).await;
-            match r {
-                Ok((partition, offset)) => {
-                    metrics::counter!("fastmock_messages_total", "result" => "sent").increment(1);
-                    tracing::info!(topic = %m.topic, partition, offset, "message published");
-                }
-                Err(e) => {
-                    metrics::counter!("fastmock_messages_total", "result" => "failed").increment(1);
-                    tracing::error!(topic = %m.topic, error = %format!("{e:#}"), "message publishing failed");
-                }
-            }
-        }
     }
 }
 

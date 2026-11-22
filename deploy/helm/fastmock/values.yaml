@@ -101,6 +101,43 @@ messaging:
       enabled: false
       partitions: 1
       replication: -1
+  mqtt:
+    url: ""
+    version: "5"
+    clientIdPrefix: fastmock
+    keepAlive: 30s
+    username: ""
+    existingSecret: ""
+    passwordKey: password
+    tls:
+      caSecret: ""
+      caKey: ca.crt
+      clientCertSecret: ""
+    allowedTopics: []
+  amqp:
+    url: ""
+    sasl:
+      mechanism: ""
+      username: ""
+      existingSecret: ""
+      passwordKey: password
+    tls:
+      caSecret: ""
+      caKey: ca.crt
+      clientCertSecret: ""
+    allowedExchanges: []
+    declareExchanges: false
+  capture:
+    enabled: false
+    sources: []
+    limits:
+      maxSources: 50
+      maxMessages: 1000
+      maxMessageBytes: 1048576
+      maxAge: 24h
+    allowedKafkaTopics: []
+    allowedMqttTopics: []
+    allowedAmqpExchanges: []
 
 mail:
   enabled: false

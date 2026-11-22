@@ -29,7 +29,8 @@ roles:
   - name: team-lead
     permissions: [stubs:read, stubs:write, imports:run, journal:read, journal:delete, files:read, files:write,
       callbacks:read, callbacks:delete, state:read, state:write, contracts:read, contracts:details,
-      contracts:write, tokens:read, tokens:write, mail:read, mail:write, mail:delete]
+      contracts:write, tokens:read, tokens:write, mail:read, mail:write, mail:delete,
+      messages:read, messages:write, messages:delete]
   - name: minter
     permissions: [stubs:read, tokens:write]
   - name: auditor
@@ -253,6 +254,7 @@ fn viewer_space_permissions() -> Vec<String> {
         "state:read",
         "contracts:read",
         "mail:read",
+        "messages:read",
     ]
     .into_iter()
     .map(String::from)
@@ -981,7 +983,7 @@ async fn access_view_without_an_access_file_is_admin_only() {
             ],
         })
     );
-    assert_eq!(v["roles"][2]["permissions"].as_array().unwrap().len(), 31);
+    assert_eq!(v["roles"][2]["permissions"].as_array().unwrap().len(), 34);
     for token in [VIEWER, EDITOR] {
         let (st, body) = h.call(Method::GET, "/access", token, None).await;
         assert_eq!(

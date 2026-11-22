@@ -2018,16 +2018,19 @@ pub struct VersionResponse {
     /// Commit the binary was built from, when the build set `FASTMOCK_GIT_SHA`.
     pub git_sha: Option<String>,
     /// Compiled-in optional features and capabilities; with the mail module enabled also `mail`, and
-    /// `mail.imap`, `mail.pop3` (when their listeners are on) and `mail.providers`.
+    /// `mail.imap`, `mail.pop3` (when their listeners are on) and `mail.providers`; with message capture
+    /// enabled also `capture`.
     pub features: Vec<String>,
 }
 
-pub fn version_info(mail: Option<&fastmock_mail::MailConfig>) -> VersionResponse {
+pub fn version_info(mail: Option<&fastmock_mail::MailConfig>, capture: bool) -> VersionResponse {
     let mut features: Vec<String> = Vec::new();
     features.extend(
         [
             "grpc",
             "kafka",
+            "mqtt",
+            "amqp",
             "sse",
             "chaos",
             "recording",
@@ -2043,6 +2046,9 @@ pub fn version_info(mail: Option<&fastmock_mail::MailConfig>) -> VersionResponse
     );
     if let Some(m) = mail {
         features.extend(m.features().into_iter().map(String::from));
+    }
+    if capture {
+        features.push("capture".into());
     }
     VersionResponse {
         version: env!("CARGO_PKG_VERSION").into(),
@@ -2063,7 +2069,7 @@ pub fn version_info(mail: Option<&fastmock_mail::MailConfig>) -> VersionResponse
     security(("bearer" = []))
 )]
 pub async fn version(State(app): State<AppState>) -> Json<VersionResponse> {
-    Json(version_info(app.cfg.mail.as_ref()))
+    Json(version_info(app.cfg.mail.as_ref(), app.capture.is_some()))
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
@@ -2968,6 +2974,7 @@ pub fn router(app: AppState, plugin_admin: Vec<(String, Router)>) -> Router {
         .merge(crate::admin_core::routes())
         .merge(crate::tokens::routes())
         .merge(crate::mail_api::routes())
+        .merge(crate::capture::api::routes())
         .merge(crate::mail_chaos_api::routes())
         .merge(crate::mail_webhooks_api::routes())
         .with_state(app.clone());

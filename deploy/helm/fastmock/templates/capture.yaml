@@ -1,0 +1,11 @@
+{{- if include "fastmock.captureSourcesEnabled" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fastmock.fullname" . }}-capture
+  labels:
+    {{- include "fastmock.labels" . | nindent 4 }}
+data:
+  sources.json: |
+    {{- include "fastmock.captureSourcesFile" . | nindent 4 }}
+{{- end }}

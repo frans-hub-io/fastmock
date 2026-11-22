@@ -94,6 +94,10 @@ section for what you do.
 
     Publishing JSON or Avro records from stubs, Schema Registry, topic allow-list.
 
+-   :material-access-point-network:{ .fm-card__icon } **[MQTT and AMQP messages](guide/mqtt-amqp.md)**
+
+    Publishing to MQTT 3.1.1/5 topics and AMQP 0-9-1 exchanges from stubs and async mocks, TLS, allow-lists.
+
 -   :material-message-arrow-right-outline:{ .fm-card__icon } **[AsyncAPI and async mocks](guide/asyncapi.md)**
 
     Mocks that keep publishing messages from AsyncAPI documents.
@@ -153,6 +157,10 @@ section for what you do.
 -   :material-email-outline:{ .fm-card__icon } **[Mail](guide/mail.md)**
 
     Capture email over SMTP and provider APIs (SES, SendGrid, Mailgun, Postmark, Resend, Brevo), wait for and verify it in tests, read links and codes, IMAP and POP3 mailboxes, mail chaos, provider webhooks.
+
+-   :material-inbox-arrow-down-outline:{ .fm-card__icon } **[Message capture](guide/message-capture.md)**
+
+    Store what the application publishes to Kafka, MQTT and AMQP, then find, wait for and verify it in tests.
 
 -   :material-code-tags:{ .fm-card__icon } **[Java client](guide/java-client.md)**
 

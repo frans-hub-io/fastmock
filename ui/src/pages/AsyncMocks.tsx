@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { client, unwrap } from '../api/client';
 import { confirmAction, useApiMutation } from '../api/mutations';
 import type { AsyncMock } from '../api/types';
+import type { components } from '../api/schema';
 import { useCan } from '../auth/useAuth';
 import { CodeEditor } from '../components/CodeEditor';
 import { DataTable, DensityToggle, PageHeader, Time } from '../components/common';
@@ -15,14 +16,38 @@ import { pretty } from '../lib/format';
 import { frequencyLabel } from '../lib/screens';
 import { useDensity } from '../lib/ui';
 
-/** Where an async mock sends: a Kafka topic, or a WebSocket/SSE path. */
+type TriggerResult = components['schemas']['TriggerResult'];
+
+const PROTOCOL_LABEL: Record<string, string> = { kafka: 'Kafka', mqtt: 'MQTT', amqp: 'AMQP', ws: 'WebSocket', websocket: 'WebSocket', sse: 'SSE' };
+const PROTOCOL_KIND: Record<string, string> = { kafka: 'event', mqtt: 'grpc', amqp: 'soap', ws: 'grpc', websocket: 'grpc' };
+
+/** How an async mock sends: Kafka, MQTT, AMQP, or WebSocket/SSE. */
 function Protocol({ protocol }: { protocol: string }) {
   const p = protocol.toLowerCase();
   return (
-    <span className="fm-kind" data-kind={p === 'kafka' ? 'event' : p === 'ws' || p === 'websocket' ? 'grpc' : 'generic'}>
-      {p === 'ws' ? 'WebSocket' : p === 'sse' ? 'SSE' : p === 'kafka' ? 'Kafka' : protocol}
+    <span className="fm-kind" data-kind={PROTOCOL_KIND[p] ?? 'generic'}>
+      {PROTOCOL_LABEL[p] ?? protocol}
     </span>
   );
+}
+
+/** Where an async mock sends: the topic or path, or for AMQP the exchange and the routing key (`channel`). */
+function destination(m: AsyncMock): string {
+  if (m.protocol !== 'amqp') return m.channel;
+  return `${m.amqp?.exchange || '(default)'} → ${m.channel}`;
+}
+
+/** The delivery options of MQTT and AMQP mocks, for the table and the drawer. */
+function deliveryText(m: AsyncMock): string | null {
+  if (m.protocol === 'mqtt') return `QoS ${String(m.mqtt?.qos ?? 0)}${m.mqtt?.retain ? ' · retained' : ''}`;
+  if (m.protocol === 'amqp') return m.amqp?.persistent ? 'persistent' : null;
+  return null;
+}
+
+function triggerText(d: TriggerResult): string {
+  if (d.protocol === 'amqp') return `Published to ${d.exchange || '(default)'} → ${d.topic}`;
+  if (d.protocol === 'kafka' && d.partition != null) return `Published to ${d.topic} [${String(d.partition)}] @ ${String(d.offset ?? '?')}`;
+  return `Published to ${d.topic}`;
 }
 
 function jsonProblem(text: string): string | null {
@@ -50,9 +75,9 @@ function AsyncInner() {
   });
   const put = useApiMutation<AsyncMock>({ fn: (m) => unwrap(client.PUT('/__admin/async-mocks/{id}', { params: { path: { id: m.id ?? '' } }, body: m })), invalidate: [['async-mocks']], success: (_d, m) => `Saved ${m.name}` });
   const del = useApiMutation<AsyncMock>({ fn: (m) => unwrap(client.DELETE('/__admin/async-mocks/{id}', { params: { path: { id: m.id ?? '' } } })), invalidate: [['async-mocks']], success: (_d, m) => `Deleted ${m.name}` });
-  const trigger = useApiMutation<AsyncMock, { topic: string; partition: number; offset: number }>({
+  const trigger = useApiMutation<AsyncMock, TriggerResult>({
     fn: (m) => unwrap(client.POST('/__admin/async-mocks/{id}/trigger', { params: { path: { id: m.id ?? '' } } })),
-    success: (d) => `Published to ${d.topic} [${d.partition}] @ ${d.offset}`,
+    success: triggerText,
   });
   const mocks = q.data?.asyncMocks ?? [];
   const on = mocks.filter((m) => m.enabled).length;
@@ -63,7 +88,7 @@ function AsyncInner() {
     <Stack gap="md">
       <PageHeader
         title="Async mocks"
-        description="Event-driven mocks imported from AsyncAPI: messages published periodically to Kafka topics or pushed over WebSocket/SSE."
+        description="Event-driven mocks imported from AsyncAPI: messages published periodically to Kafka topics, MQTT topics and AMQP exchanges, or pushed over WebSocket/SSE."
         meta={
           mocks.length > 0 && (
             <>
@@ -164,7 +189,14 @@ function AsyncInner() {
                   <Protocol protocol={m.protocol ?? 'kafka'} />
                 </Table.Td>
                 <Table.Td data-label="Channel">
-                  <span className="fm-path break-all">{m.channel}</span>
+                  <span className="fm-path break-all" data-testid="async-destination">
+                    {destination(m)}
+                  </span>
+                  {deliveryText(m) && (
+                    <Text size="xs" c="dimmed">
+                      {deliveryText(m)}
+                    </Text>
+                  )}
                 </Table.Td>
                 <Table.Td data-label="Schedule">
                   <span className="fm-chip">{frequencyLabel(m.frequencyMs)}</span>
@@ -216,7 +248,8 @@ function AsyncInner() {
           <Stack gap="sm">
             <Group gap={6} wrap="wrap">
               <Protocol protocol={edit.protocol ?? 'kafka'} />
-              <span className="fm-path">{edit.channel}</span>
+              <span className="fm-path">{destination(edit)}</span>
+              {deliveryText(edit) && <span className="fm-chip">{deliveryText(edit)}</span>}
               <span className="fm-chip">{frequencyLabel(edit.frequencyMs)}</span>
             </Group>
             <CodeEditor value={text} onChange={setText} readOnly={!canEdit} minHeight={400} label="Async mock JSON" />

@@ -979,6 +979,25 @@ impl CompiledBodies {
     pub fn matches_json(&self, v: &Value) -> bool {
         message_matches(&self.0, v)
     }
+
+    /// The indexes of the matchers that reject a body given as text, raw bytes and, when it is JSON, the
+    /// parsed value.
+    pub fn failures(&self, text: &str, raw: &[u8], json: Option<&Value>) -> Vec<usize> {
+        self.0
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| !b.matches(text, raw, json))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 fn grpc_messages(json: Option<&Value>) -> Vec<&Value> {
