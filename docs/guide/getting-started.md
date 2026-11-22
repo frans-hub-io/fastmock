@@ -28,8 +28,8 @@ and a cluster running Kubernetes 1.30 or newer.
 Pull the published image and tag it with the name used on this page:
 
 ```sh
-docker pull franshub/fastmock:0.1.0-dev12
-docker tag franshub/fastmock:0.1.0-dev12 fastmock:0.1.0
+docker pull franshub/fastmock:0.1.0-dev13
+docker tag franshub/fastmock:0.1.0-dev13 fastmock:0.1.0
 ```
 
 Or build it from the repository root:
@@ -111,7 +111,7 @@ Memory mode keeps everything in the process: ideal for a laptop or a CI job.
       --from-literal=delivery-hook=change-me-to-a-long-random-key
 
     helm upgrade --install fastmock deploy/helm/fastmock -n mocks \
-      --set image.repository=franshub/fastmock --set image.tag=0.1.0-dev12 \
+      --set image.repository=franshub/fastmock --set image.tag=0.1.0-dev13 \
       --set admin.tokensSecret.name=fastmock-admin-tokens \
       --set secrets.existingSecret=fastmock-secrets --set 'secrets.stubSecrets={delivery-hook}' \
       --set storage.mode=memory --set replicaCount=1 --set pdb.enabled=false
@@ -134,8 +134,8 @@ Memory mode keeps everything in the process: ideal for a laptop or a CI job.
 
     ```sh
     helm upgrade --install fastmock-operator deploy/helm/fastmock-operator -n fastmock-system --create-namespace \
-      --set image.repository=franshub/fastmock-operator --set image.tag=0.1.0-dev12 \
-      --set server.image.repository=franshub/fastmock --set server.image.tag=0.1.0-dev12
+      --set image.repository=franshub/fastmock-operator --set image.tag=0.1.0-dev13 \
+      --set server.image.repository=franshub/fastmock --set server.image.tag=0.1.0-dev13
     ```
 
     Put the token hash and the callback key into Secrets, label them so that the operator may mount them, and
@@ -426,7 +426,7 @@ any number of replicas share stubs, scenarios, the journal and the callback queu
     kubectl -n mocks create secret generic fastmock-valkey --from-literal=password="$(openssl rand -hex 24)"
 
     helm upgrade --install fastmock deploy/helm/fastmock -n mocks \
-      --set image.repository=franshub/fastmock --set image.tag=0.1.0-dev12 \
+      --set image.repository=franshub/fastmock --set image.tag=0.1.0-dev13 \
       --set admin.tokensSecret.name=fastmock-admin-tokens \
       --set secrets.existingSecret=fastmock-secrets --set 'secrets.stubSecrets={delivery-hook}' \
       --set postgresql.enabled=true \
