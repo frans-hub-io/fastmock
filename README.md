@@ -23,7 +23,7 @@ requires a token.
 | **Bring your existing mocks** | Imports WireMock mappings, MockServer expectations, OpenAPI, AsyncAPI, Postman, HAR, WSDL/SoapUI, GraphQL schemas and Microcks artifacts; records real traffic. [Importing](docs/guide/importing.md) |
 | **Kubernetes native** | Helm chart with NetworkPolicy, PDB, HPA, ServiceMonitor, PrometheusRule, Gateway API; operator with `FastMock` and `MockApi` resources and policies for images, Secrets and settings. [Helm](docs/operations/helm.md), [Operator](docs/operations/operator.md) |
 
-FastMock covers the features that test suites typically use in WireMock 3, MockServer 5 and Microcks 1:
+FastMock covers the features that test suites typically use in WireMock, MockServer and Microcks:
 
 | Coming from | FastMock equivalent |
 |---|---|

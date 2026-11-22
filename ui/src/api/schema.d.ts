@@ -2901,6 +2901,60 @@ export interface components {
             /** @description A password was set with `PUT /mail/mailboxes/{address}/password` (it is never returned). */
             hasPassword: boolean;
         };
+        /** @description How a stub appears in a mocked MCP server. */
+        McpDef: {
+            /** @description Display title of the tool or resource. */
+            title?: string | null;
+            /** @description Description shown to the agent in `tools/list` or `resources/list`. */
+            description?: string | null;
+            /** @description JSON Schema of the tool arguments (default `{"type": "object"}`). */
+            inputSchema?: Record<string, never> | null;
+            /** @description JSON Schema of the tool's `structuredContent`. */
+            outputSchema?: Record<string, never> | null;
+            /** @description Tool annotations, e.g. `{"readOnlyHint": true}`. */
+            annotations?: Record<string, never> | null;
+            /** @description Resource name in `resources/list` (default: the stub name, else the URI). */
+            name?: string | null;
+            /** @description MIME type of a resource (default `text/plain`). */
+            mimeType?: string | null;
+            error?: null | components["schemas"]["McpErrorDef"];
+        };
+        /** @description A JSON-RPC error answer. */
+        McpErrorDef: {
+            /**
+             * Format: int64
+             * @description JSON-RPC error code, e.g. -32602 (invalid params) or -32000 (server error).
+             * @example -32000
+             */
+            code: number;
+            /** @example quota exceeded */
+            message: string;
+            data?: Record<string, never> | null;
+        };
+        /** @description Matches an MCP call (a JSON-RPC request) in the request body. */
+        McpMatcher: {
+            /**
+             * @description JSON-RPC method, e.g. `prompts/get`. Defaults to `tools/call` with `tool` and to `resources/read`
+             *     with `resource`.
+             * @example tools/call
+             */
+            method?: string | null;
+            /**
+             * @description Tool name (`params.name` of `tools/call`); the stub is listed by `tools/list`.
+             * @example get_forecast
+             */
+            tool?: string | null;
+            /**
+             * @description Resource URI (`params.uri` of `resources/read`); the stub is listed by `resources/list`.
+             * @example file:///docs/readme.md
+             */
+            resource?: string | null;
+            /**
+             * @description Body matchers on `params.arguments`: a `jsonPath` starts at the arguments object (`$.city`), any
+             *     other matcher (`equalToJson`, `jsonSchema`, ...) applies to the whole arguments object.
+             */
+            arguments?: components["schemas"]["BodyMatcher"][];
+        };
         MessageDef: {
             topic: string;
             key?: string | null;
@@ -3182,6 +3236,7 @@ export interface components {
             };
             multipart?: components["schemas"]["MultipartMatcher"][];
             multipartMatchingType?: null | components["schemas"]["MultipartMatchingType"];
+            mcp?: null | components["schemas"]["McpMatcher"];
         };
         RequestRecord: {
             method: string;
@@ -3444,6 +3499,7 @@ export interface components {
             messages?: components["schemas"]["MessageDef"][];
             tags?: string[];
             metadata?: unknown;
+            mcp?: null | components["schemas"]["McpDef"];
             enabled?: boolean;
             /**
              * @description Space the stub belongs to (see access control); absent for the global area. Set on create and never
