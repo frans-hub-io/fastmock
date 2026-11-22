@@ -519,6 +519,87 @@ fn reset_response() -> Response {
     r
 }
 
+/// The response of a matched stub: messages, delay, faults, chunked dribble, status and headers.
+pub async fn stub_response(app: &AppState, r: fastmock_core::EngineResponse) -> Response {
+    if !r.messages.is_empty() {
+        app.kafka.publish_in_background(r.messages.clone());
+    }
+    let delay = Duration::from_millis(r.delay_ms).min(app.cfg.max_delay);
+    if !delay.is_zero() {
+        tokio::time::sleep(delay).await;
+    }
+    if r.callbacks > 0 {
+        metrics::counter!("fastmock_callbacks_scheduled_total", "source" => "stubs")
+            .increment(r.callbacks as u64);
+    }
+    let hit = StubHit {
+        id: r.stub_id,
+        name: r.stub_name.clone(),
+        space: r.space.clone(),
+    };
+    let mut resp = match r.fault {
+        Some(Fault::ConnectionReset) => reset_response(),
+        Some(
+            f @ (Fault::RandomDataThenClose | Fault::MalformedResponseChunk | Fault::EmptyResponse),
+        ) => raw_fault_response(f),
+        Some(Fault::MalformedJson) => {
+            let mut x = Response::new(Body::from("{\"fastmock\": [1, 2,"));
+            x.headers_mut()
+                .insert("content-type", HeaderValue::from_static("application/json"));
+            x
+        }
+        None => {
+            let mut x = match &r.chunked_dribble_delay {
+                Some(d) => {
+                    let mut x = Response::new(dribble_body(r.body.clone(), d, app.cfg.max_delay));
+                    x.extensions_mut().insert(crate::extras::Streaming);
+                    x
+                }
+                None => Response::new(Body::from(r.body)),
+            };
+            if let Some(m) = &r.status_message
+                && let Ok(p) = hyper::ext::ReasonPhrase::try_from(m.as_bytes().to_vec())
+            {
+                x.extensions_mut().insert(p);
+            }
+            for (k, v) in &r.headers {
+                match (
+                    HeaderName::from_bytes(k.as_bytes()),
+                    HeaderValue::from_str(v),
+                ) {
+                    (Ok(n), Ok(v)) => {
+                        x.headers_mut().append(n, v);
+                    }
+                    _ => {
+                        metrics::counter!("fastmock_invalid_response_headers_total").increment(1);
+                        tracing::warn!(header = %k, stub_id = %r.stub_id, "rendered response header is invalid and was dropped");
+                    }
+                }
+            }
+            x
+        }
+    };
+    if !matches!(
+        r.fault,
+        Some(
+            Fault::ConnectionReset
+                | Fault::RandomDataThenClose
+                | Fault::MalformedResponseChunk
+                | Fault::EmptyResponse
+        )
+    ) {
+        *resp.status_mut() = StatusCode::from_u16(r.status).unwrap_or(StatusCode::OK);
+    }
+    if let Some(f) = r.fault {
+        metrics::counter!("fastmock_faults_total", "fault" => format!("{f:?}")).increment(1);
+    }
+    resp.extensions_mut().insert(hit);
+    if let Some(c) = r.correlation {
+        resp.extensions_mut().insert(Correlation(c));
+    }
+    resp
+}
+
 pub async fn stub_handler(State(app): State<AppState>, req: Request) -> Response {
     let (mut parts, body) = req.into_parts();
     let bytes = to_bytes(body, usize::MAX).await.unwrap_or_default();
@@ -551,6 +632,9 @@ pub async fn stub_handler(State(app): State<AppState>, req: Request) -> Response
         parts.uri.authority().map(|a| a.as_str()),
         Some(app.cfg.listen.port()).filter(|p| *p != 0),
     );
+    if let Some(r) = crate::mcp_mock::handle(&app, &parts.method, &cr).await {
+        return r;
+    }
     match app.engine.handle(&cr).await {
         Ok(Some(r)) if crate::websocket::wants_upgrade(&app, &parts.headers, r.stub_id) => {
             crate::websocket::upgrade(&app, &mut parts, &cr, r).await
@@ -619,90 +703,7 @@ pub async fn stub_handler(State(app): State<AppState>, req: Request) -> Response
             });
             resp
         }
-        Ok(Some(r)) => {
-            if !r.messages.is_empty() {
-                app.kafka.publish_in_background(r.messages.clone());
-            }
-            let delay = Duration::from_millis(r.delay_ms).min(app.cfg.max_delay);
-            if !delay.is_zero() {
-                tokio::time::sleep(delay).await;
-            }
-            if r.callbacks > 0 {
-                metrics::counter!("fastmock_callbacks_scheduled_total", "source" => "stubs")
-                    .increment(r.callbacks as u64);
-            }
-            let hit = StubHit {
-                id: r.stub_id,
-                name: r.stub_name.clone(),
-                space: r.space.clone(),
-            };
-            let mut resp = match r.fault {
-                Some(Fault::ConnectionReset) => reset_response(),
-                Some(
-                    f @ (Fault::RandomDataThenClose
-                    | Fault::MalformedResponseChunk
-                    | Fault::EmptyResponse),
-                ) => raw_fault_response(f),
-                Some(Fault::MalformedJson) => {
-                    let mut x = Response::new(Body::from("{\"fastmock\": [1, 2,"));
-                    x.headers_mut()
-                        .insert("content-type", HeaderValue::from_static("application/json"));
-                    x
-                }
-                None => {
-                    let mut x = match &r.chunked_dribble_delay {
-                        Some(d) => {
-                            let mut x =
-                                Response::new(dribble_body(r.body.clone(), d, app.cfg.max_delay));
-                            x.extensions_mut().insert(crate::extras::Streaming);
-                            x
-                        }
-                        None => Response::new(Body::from(r.body)),
-                    };
-                    if let Some(m) = &r.status_message
-                        && let Ok(p) = hyper::ext::ReasonPhrase::try_from(m.as_bytes().to_vec())
-                    {
-                        x.extensions_mut().insert(p);
-                    }
-                    for (k, v) in &r.headers {
-                        match (
-                            HeaderName::from_bytes(k.as_bytes()),
-                            HeaderValue::from_str(v),
-                        ) {
-                            (Ok(n), Ok(v)) => {
-                                x.headers_mut().append(n, v);
-                            }
-                            _ => {
-                                metrics::counter!("fastmock_invalid_response_headers_total")
-                                    .increment(1);
-                                tracing::warn!(header = %k, stub_id = %r.stub_id, "rendered response header is invalid and was dropped");
-                            }
-                        }
-                    }
-                    x
-                }
-            };
-            if !matches!(
-                r.fault,
-                Some(
-                    Fault::ConnectionReset
-                        | Fault::RandomDataThenClose
-                        | Fault::MalformedResponseChunk
-                        | Fault::EmptyResponse
-                )
-            ) {
-                *resp.status_mut() = StatusCode::from_u16(r.status).unwrap_or(StatusCode::OK);
-            }
-            if let Some(f) = r.fault {
-                metrics::counter!("fastmock_faults_total", "fault" => format!("{f:?}"))
-                    .increment(1);
-            }
-            resp.extensions_mut().insert(hit);
-            if let Some(c) = r.correlation {
-                resp.extensions_mut().insert(Correlation(c));
-            }
-            resp
-        }
+        Ok(Some(r)) => stub_response(&app, r).await,
         Ok(None) if crate::proxy::active_recording(&app).await.is_some() => {
             let rec = crate::proxy::active_recording(&app).await.unwrap();
             let def = fastmock_core::ProxyDef {

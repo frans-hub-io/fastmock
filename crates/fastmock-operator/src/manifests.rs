@@ -114,6 +114,9 @@ pub fn env_map(name: &str, spec: &FastMockSpec) -> BTreeMap<String, String> {
     if let Some(mail) = spec.mail_on() {
         mail_env(&mut m, mail);
     }
+    if let Some(mcp) = &spec.mcp {
+        m.insert("FASTMOCK_MCP_ENABLED".into(), mcp.enabled.to_string());
+    }
     if spec.secrets_secret.is_some() {
         m.insert(
             "FASTMOCK_SECRETS_DIR".into(),
@@ -626,6 +629,16 @@ mod tests {
             env["FASTMOCK_OIDC_ISSUER"],
             "https://sso.example.com/realms/mocks"
         );
+    }
+
+    #[test]
+    fn mcp_can_be_switched_off() {
+        let plain = env_map("m", &FastMockSpec::default());
+        assert!(!plain.contains_key("FASTMOCK_MCP_ENABLED"));
+        let off: FastMockSpec = serde_json::from_value(json!({"mcp": {"enabled": false}})).unwrap();
+        assert_eq!(env_map("m", &off)["FASTMOCK_MCP_ENABLED"], "false");
+        let on: FastMockSpec = serde_json::from_value(json!({"mcp": {}})).unwrap();
+        assert_eq!(env_map("m", &on)["FASTMOCK_MCP_ENABLED"], "true");
     }
 
     fn mail_spec() -> FastMockSpec {

@@ -21,6 +21,8 @@ admin:
     key: tokens
   allowedOrigins: []
   uiDataPlaneUrls: []
+  mcp:
+    enabled: true
 
 access:
   roles: []

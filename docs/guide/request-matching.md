@@ -418,6 +418,13 @@ comparison beyond that; one comparison visits at most 500,000 elements, a bigger
 | `query` | String matcher on the query text. |
 | `rootField` | String matcher on the root fields of the selected operation (any root field may match; `includes`/`hasExactly` see all of them). |
 
+## MCP calls
+
+`mcp` matches Model Context Protocol calls (JSON-RPC over streamable HTTP) and turns the stub's path into a mock
+MCP server: `{"tool": "get_forecast", "arguments": [{"jsonPath": "$.city", "value": {"equalTo": "Kyiv"}}]}`
+matches `tools/call` of that tool with those arguments, `resource` matches `resources/read`, `method` any other
+JSON-RPC method. See [Mock MCP servers](mock-mcp-servers.md).
+
 ## Which stub wins
 
 1. Stubs that are disabled, expired (`expiresAt`, `ttlSeconds`) or used up (`times`) are skipped; see

@@ -65,6 +65,10 @@ pub struct Stub {
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    /// How the stub appears in a mocked MCP server (`tools/list`, `resources/list`) and an optional
+    /// JSON-RPC error answer; needs `request.mcp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<crate::mcp::McpDef>,
     #[serde(default = "yes")]
     pub enabled: bool,
     /// Space the stub belongs to (see access control); absent for the global area. Set on create and never
@@ -94,6 +98,7 @@ impl Default for Stub {
             messages: Vec::new(),
             tags: Vec::new(),
             metadata: None,
+            mcp: None,
             enabled: true,
             space: None,
             updated_at: None,
@@ -181,6 +186,10 @@ pub struct RequestPattern {
     pub multipart: Vec<MultipartMatcher>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multipart_matching_type: Option<MultipartMatchingType>,
+    /// Matches an MCP call (JSON-RPC `tools/call`, `resources/read` or another method) posted to this
+    /// path; the path then serves a mocked MCP server built from such stubs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<crate::mcp::McpMatcher>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]

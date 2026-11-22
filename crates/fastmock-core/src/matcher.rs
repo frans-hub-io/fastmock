@@ -948,6 +948,8 @@ pub struct CompiledStub {
     multipart_all: bool,
     body: Vec<CompiledBody>,
     graphql_root: Option<CompiledString>,
+    /// Body matchers of `request.mcp`, with the text near misses show.
+    mcp: Vec<(String, CompiledBody)>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1038,7 +1040,12 @@ impl CompiledStub {
             .iter()
             .map(|m| 1 + m.headers.len() + m.body.len() + usize::from(m.filename.is_some()))
             .sum();
-        let matcher_count = p.path_params.len()
+        let mcp_matchers = match &p.mcp {
+            Some(m) => crate::mcp::body_matchers(m).map_err(CompileError::Invalid)?,
+            None => Vec::new(),
+        };
+        let matcher_count = mcp_matchers.len()
+            + p.path_params.len()
             + p.query.len()
             + p.headers.len()
             + p.body.len()
@@ -1079,6 +1086,7 @@ impl CompiledStub {
             .method
             .as_ref()
             .map(|m| m.to_ascii_uppercase())
+            .or_else(|| p.mcp.as_ref().map(|_| "POST".to_string()))
             .filter(|m| m != "ANY");
         let uses_original_request = mentions_original(&stub.response)
             || mentions_original(&stub.responses)
@@ -1118,9 +1126,14 @@ impl CompiledStub {
                 });
             }
         }
+        let mcp = mcp_matchers
+            .into_iter()
+            .map(|(label, b)| Ok((label, compile_body(&b, 0, &mut budget)?)))
+            .collect::<Result<Vec<_>, CompileError>>()?;
         Ok(Self {
             stub: stub.clone(),
             uses_original_request,
+            mcp,
             method,
             path,
             path_params: compile_map(&p.path_params, false, &mut budget)?,
@@ -1169,6 +1182,11 @@ impl CompiledStub {
             PathMatch::Url(u) => (*u == req.url()).then(BTreeMap::new),
             PathMatch::UrlRegex(re) => re.is_match(&req.url()).then(BTreeMap::new),
         }
+    }
+
+    /// Whether the request reaches this stub's URL, host, port and scheme (method and body aside).
+    pub fn endpoint_matches(&self, req: &CapturedRequest) -> bool {
+        self.match_path(req).is_some() && !self.origin_ok(req)[..3].contains(&Some(false))
     }
 
     fn multipart_ok(&self, req: &CapturedRequest) -> bool {
@@ -1247,9 +1265,16 @@ impl CompiledStub {
         if !self.multipart_ok(req) {
             return None;
         }
-        if !self.body.is_empty() || self.graphql_root.is_some() {
+        if !self.body.is_empty() || self.graphql_root.is_some() || !self.mcp.is_empty() {
             let text = req.body_text();
             if !self.body.iter().all(|b| b.matches(&text, &req.body, json)) {
+                return None;
+            }
+            if !self
+                .mcp
+                .iter()
+                .all(|(_, b)| b.matches(&text, &req.body, json))
+            {
                 return None;
             }
             if let Some(m) = &self.graphql_root
@@ -1381,6 +1406,17 @@ impl CompiledStub {
                     b.matches(&text, &req.body, json),
                     1.0,
                     &|| format!("body matcher #{i} does not match"),
+                    &mut mismatches,
+                );
+            }
+        }
+        if !self.mcp.is_empty() {
+            let text = req.body_text();
+            for (label, b) in &self.mcp {
+                score(
+                    b.matches(&text, &req.body, json),
+                    1.0,
+                    &|| label.clone(),
                     &mut mismatches,
                 );
             }

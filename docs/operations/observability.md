@@ -67,6 +67,12 @@ avoid generating thousands of uniquely named stubs per run.
 | `fastmock_accept_errors_total` | counter | | Failed `accept()` calls (for example file descriptor exhaustion). |
 | `fastmock_panics_total` | counter | | Request handlers that panicked and were answered with 500. |
 
+### Mock MCP servers
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `fastmock_mcp_mock_requests_total` | counter | `method` (`initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, `resources/templates/list`, `prompts/list`, `prompts/get`, `other`), `outcome` (`stub`, `builtin`, `unmatched`, `notification`, `invalid`, `method_not_allowed`, `error`) | Messages to [mock MCP servers](../guide/mock-mcp-servers.md) on the data port. They also count in the data-plane metrics above. |
+
 ### Callbacks and messages
 
 | Metric | Type | Labels | Meaning |
@@ -139,6 +145,8 @@ Present only with `FASTMOCK_MAIL_ENABLED=true` ([Mail](../guide/mail.md)).
 | `fastmock_contract_test_requests_total` | counter | `verdict` (`passed`, `failed`, `error`) | Checked operations in contract test runs. |
 | `fastmock_contract_test_duration_seconds` | histogram | | Contract test run duration. |
 | `fastmock_ui_requests_total` | counter | `kind` (`index`, `asset`, `missing`) | Web UI requests. |
+| `fastmock_mcp_tool_calls_total` | counter | `tool`, `outcome` (`ok`, `invalid`, `denied`, `rejected`, `error`, `unknown_tool`) | Tool calls on the [MCP endpoint](../guide/mcp.md); `tool` is one of the fixed tool names, or `unknown` for refused names. |
+| `fastmock_mcp_tool_duration_seconds` | histogram | `tool` | MCP tool call duration. |
 | `fastmock_build_info` | gauge | `version` | Always 1; the version of the binary. |
 
 ### Operator

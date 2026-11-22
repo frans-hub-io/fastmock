@@ -42,7 +42,8 @@ metrics-exporter-prometheus.workspace = true
 miniz_oxide = "0.9"
 opentelemetry = "0.33"
 opentelemetry-appender-tracing = "0.33"
-opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "reqwest-blocking-client", "reqwest-rustls", "trace", "logs", "metrics"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace", "logs", "metrics"] }
+otlp-reqwest = { package = "reqwest", version = "0.13", default-features = false, features = ["blocking", "rustls-no-provider"] }
 opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"] }
 rand.workspace = true
 ring = "0.17"
@@ -66,6 +67,8 @@ uuid.workspace = true
 utoipa.workspace = true
 serde_json_path.workspace = true
 serde_yaml_ng.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
 
 [dev-dependencies]
 hmac.workspace = true
@@ -80,3 +83,4 @@ reqwest = { workspace = true, features = ["http2"] }
 tokio = { workspace = true, features = ["test-util"] }
 sqlx.workspace = true
 tokio-tungstenite = "0.29"
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }

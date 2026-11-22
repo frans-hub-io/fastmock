@@ -366,6 +366,21 @@ The [mail module](../guide/mail.md) is off until `FASTMOCK_MAIL_ENABLED=true`. W
   idle time, MIME depth and parts, search, wait and stream concurrency are bounded; see
   [Mail: limits](../guide/mail.md#limits-and-retention) and [Configuration](configuration.md#mail).
 
+## MCP endpoint
+
+`/mcp` on the admin port lets coding agents use FastMock through the Model Context Protocol
+([MCP for coding agents](../guide/mcp.md)). It follows the admin API's rules rather than adding its own:
+
+- the same authentication (static and managed tokens, OIDC bearer JWTs, SSO sessions with the CSRF header) and
+  the same origin check;
+- every tool performs admin API requests with the caller's credentials, so it needs exactly the permission of
+  that route, in the same spaces, and returns the same masked data;
+- changes are audited like REST changes and marked with `via: mcp`;
+- results are bounded in size, and the request body is limited to 8 MiB.
+
+Give agents their own short-lived tokens with the smallest role, bound to spaces where possible, and keep the
+endpoint as reachable as the admin API and no more. `FASTMOCK_MCP_ENABLED=false` removes it.
+
 ## Audit log
 
 Every change through the admin API is recorded:
@@ -376,7 +391,8 @@ Every change through the admin API is recorded:
   system.
 
 Events carry `principalKind` (`token`, `apiToken`, `user`, `anonymous`) and, for changes inside a space, `space`; `role` lists the role
-names of the principal's bindings.
+names of the principal's bindings. Changes made through the [MCP endpoint](../guide/mcp.md) carry `"via": "mcp"` and
+the tool name (`mcpTool`) in `detail`.
 
 ```json
 {"events":[{"id":15,"at":"2026-11-19T05:49:27.026723055Z","principal":"me","role":"admin","principalKind":"token","action":"reset","detail":{"requests":19,"callbacks":7,"scenarios":0}}]}

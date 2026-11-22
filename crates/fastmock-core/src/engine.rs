@@ -144,6 +144,8 @@ pub struct Engine {
     files: std::sync::Mutex<FileCache>,
     settings: RwLock<(Instant, Arc<GlobalSettings>)>,
     ownership: RwLock<Arc<crate::ownership::Ownership>>,
+    /// Some loaded stub matches MCP calls (`request.mcp`), so paths may serve mocked MCP servers.
+    has_mcp: std::sync::atomic::AtomicBool,
 }
 
 pub const SCENARIO_PREFIX: &str = "scenario:";
@@ -186,6 +188,7 @@ impl Engine {
                 Arc::new(GlobalSettings::default()),
             )),
             ownership: RwLock::new(Arc::default()),
+            has_mcp: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -322,6 +325,7 @@ impl Engine {
             return Err("NUL characters are not supported in stubs".into());
         }
         CompiledStub::compile(stub).map_err(|e| e.to_string())?;
+        crate::mcp::validate(stub)?;
         let t = &self.templates;
         if stub.responses.is_empty() {
             if stub.response_mode.is_some() {
@@ -427,7 +431,9 @@ impl Engine {
         if loaded != i64::MIN && revision < loaded {
             return Ok(self.snapshot().len());
         }
+        let has_mcp = compiled.iter().any(|c| c.stub.request.mcp.is_some());
         *self.cache.write().unwrap() = Arc::new(compiled);
+        self.has_mcp.store(has_mcp, Ordering::SeqCst);
         self.revision.store(revision, Ordering::SeqCst);
         Ok(n)
     }
@@ -593,7 +599,41 @@ impl Engine {
         )
     }
 
+    /// The enabled MCP stubs (`request.mcp`) whose URL and origin rules cover the request, in matching
+    /// order, or `None` when the request's path serves no mocked MCP server. Costs one atomic load while
+    /// no MCP stub is loaded.
+    pub fn mcp_endpoint(&self, req: &CapturedRequest) -> Option<Vec<Stub>> {
+        if !self.has_mcp.load(Ordering::Relaxed) {
+            return None;
+        }
+        let stubs = self.snapshot();
+        let now = Utc::now();
+        let ownership = self.ownership.read().unwrap().clone();
+        let owners = ownership.owners(&req.path, req.host.as_deref(), req.port);
+        let list: Vec<Stub> = stubs
+            .iter()
+            .filter(|cs| {
+                cs.stub.request.mcp.is_some()
+                    && cs.stub.enabled
+                    && !cs.stub.is_expired(now)
+                    && crate::ownership::Ownership::admits(&owners, cs.stub.space.as_deref())
+                    && cs.endpoint_matches(req)
+            })
+            .map(|cs| cs.stub.clone())
+            .collect();
+        (!list.is_empty()).then_some(list)
+    }
+
     pub async fn handle(&self, req: &CapturedRequest) -> anyhow::Result<Option<EngineResponse>> {
+        self.handle_where(req, |_| true).await
+    }
+
+    /// Like [`Engine::handle`], considering only the stubs `keep` accepts.
+    pub async fn handle_where(
+        &self,
+        req: &CapturedRequest,
+        keep: impl Fn(&CompiledStub) -> bool,
+    ) -> anyhow::Result<Option<EngineResponse>> {
         let json = req.json();
         let stubs = self.snapshot();
         let now = Utc::now();
@@ -602,6 +642,7 @@ impl Engine {
         'attempt: for _ in 0..8 {
             for cs in stubs.iter() {
                 if !cs.stub.enabled
+                    || !keep(cs)
                     || cs.stub.is_expired(now)
                     || !crate::ownership::Ownership::admits(&owners, cs.stub.space.as_deref())
                 {

@@ -1007,6 +1007,7 @@ pub fn route_rule(method: &Method, full_path: &str) -> Option<(Permission, Scope
         ("PUT" | "DELETE", ["mail", "chaos" | "webhooks"]) => natural(MailWrite),
         ("PUT" | "DELETE", ["mail", "mailboxes", _, "password"]) => natural(MailWrite),
         ("POST", ["mail", "inbound"]) => natural(MailWrite),
+        ("GET" | "POST" | "DELETE", ["mcp"]) if path == full_path => global(InfoRead),
         ("GET", ["plugins", _, ..]) => global(StubsRead),
         (_, ["plugins", _, ..]) => global(StubsWrite),
         _ => None,

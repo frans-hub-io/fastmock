@@ -162,6 +162,7 @@ data:
   {{- with .Values.admin.uiDataPlaneUrls }}
   FASTMOCK_UI_DATA_PLANE_URL: {{ join "," . | quote }}
   {{- end }}
+  FASTMOCK_MCP_ENABLED: {{ dig "mcp" "enabled" true .Values.admin | toString | quote }}
   FASTMOCK_DB_MAX_CONNECTIONS: {{ .Values.storage.database.maxConnections | int64 | quote }}
   FASTMOCK_VALKEY_PREFIX: {{ .Values.storage.valkey.prefix | quote }}
   {{- if eq .Values.storage.mode "postgres" }}

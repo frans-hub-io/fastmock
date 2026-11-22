@@ -265,6 +265,14 @@ spec:
                     - name
                     type: object
                 type: object
+              mcp:
+                description: The MCP endpoint `/mcp` on the admin port (on unless disabled here).
+                nullable: true
+                properties:
+                  enabled:
+                    default: true
+                    type: boolean
+                type: object
               oidc:
                 description: SSO sign-in (OIDC) for the UI and bearer JWTs for the admin API.
                 nullable: true

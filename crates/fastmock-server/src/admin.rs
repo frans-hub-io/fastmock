@@ -156,6 +156,7 @@ pub async fn audit_event_in(
     action: &str,
     detail: Value,
 ) {
+    let detail = crate::mcp::audit_detail(detail);
     metrics::counter!("fastmock_admin_changes_total", "action" => action.to_string()).increment(1);
     tracing::info!(target: "audit", principal = %p.name, kind = p.kind.as_str(), role = %p.role_label, space, action, detail = %detail, "admin change");
     let e = fastmock_core::AuditEvent {
@@ -2973,14 +2974,15 @@ pub fn router(app: AppState, plugin_admin: Vec<(String, Router)>) -> Router {
     for (name, r) in plugin_admin {
         api = api.nest(&format!("/plugins/{name}"), r);
     }
-    Router::<AppState>::new()
-        .nest_service(
-            "/__admin",
-            api.layer(middleware::from_fn_with_state(app.clone(), admin_auth))
-                .layer(middleware::from_fn(json_errors))
-                .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024)),
-        )
-        .merge(crate::ui::router())
+    let api = api
+        .layer(middleware::from_fn_with_state(app.clone(), admin_auth))
+        .layer(middleware::from_fn(json_errors))
+        .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024));
+    let mut root = Router::<AppState>::new().nest_service("/__admin", api.clone());
+    if app.cfg.mcp_enabled {
+        root = root.merge(crate::mcp::router(app.clone(), api));
+    }
+    root.merge(crate::ui::router())
         .merge(crate::oidc::routes::routes())
         .route("/healthz", get(crate::dataplane::health))
         .route("/readyz", get(crate::dataplane::ready))

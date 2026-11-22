@@ -176,6 +176,7 @@ helm uninstall fastmock -n mocks
 | `admin.tokensSecret.key` | `tokens` | Key inside the Secret. |
 | `admin.allowedOrigins` | `[]` | `FASTMOCK_ADMIN_ALLOWED_ORIGINS`: browser origins allowed besides the same origin. |
 | `admin.uiDataPlaneUrls` | `[]` | `FASTMOCK_UI_DATA_PLANE_URL`: exact public origins of the data plane that the web UI may call (its `connect-src`). |
+| `admin.mcp.enabled` | `true` | `FASTMOCK_MCP_ENABLED`: the [MCP endpoint](../guide/mcp.md) `/mcp` on the admin port for coding agents. |
 | `access.roles`, `access.spaces`, `access.bindings` | `[]` | Custom roles, spaces and bindings, see [Access control](#access-control). |
 | `oidc.*` | off | SSO sign-in and bearer JWTs, see [OIDC sign-in](#oidc-sign-in). |
 
