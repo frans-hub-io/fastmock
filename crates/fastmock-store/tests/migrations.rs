@@ -221,6 +221,7 @@ fn journal_entry() -> JournalEntry {
         duration_ms: 1,
         trace_id: None,
         space: None,
+        grpc: None,
     }
 }
 

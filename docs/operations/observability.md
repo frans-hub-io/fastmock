@@ -59,6 +59,10 @@ avoid generating thousands of uniquely named stubs per run.
 | `fastmock_proxy_errors_total` | counter | | Proxy stubs and recording that could not reach the upstream (502). |
 | `fastmock_proxy_pass_through_blocked_total` | counter | | Proxy stubs not forwarded because `proxyPassThrough` is off. |
 | `fastmock_grpc_calls_total` | counter | `method` | gRPC calls per method. |
+| `fastmock_grpc_stream_messages_total` | counter | `direction` (`in`, `out`), `kind` (`unary`, `server_streaming`, `client_streaming`, `bidi_streaming`) | gRPC messages received and sent. |
+| `fastmock_grpc_streams_active` | gauge | | gRPC calls sending their response. |
+| `fastmock_grpc_stream_limits_total` | counter | `limit` (`message_bytes`, `messages`, `stream_bytes`, `idle`, `duration`) | gRPC calls ended by a limit. |
+| `fastmock_grpc_reflection_calls_total` | counter | | gRPC server reflection streams. |
 | `fastmock_ws_connections` | gauge | | Open WebSocket sessions. |
 | `fastmock_ws_sessions_total` | counter | `stub` | WebSocket sessions started. |
 | `fastmock_ws_messages_total` | counter | `direction` (`in`, `out`), `result` (`received`, `sent`, `template_error`) | WebSocket messages. |

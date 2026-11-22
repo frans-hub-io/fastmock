@@ -180,7 +180,7 @@ pub fn compile_pattern(p: &RequestPattern) -> ApiResult<CompiledStub> {
 }
 
 pub fn captured(e: &JournalEntry) -> CapturedRequest {
-    CapturedRequest::new(
+    let mut req = CapturedRequest::new(
         &e.method,
         &e.path,
         Some(&e.query),
@@ -189,7 +189,13 @@ pub fn captured(e: &JournalEntry) -> CapturedRequest {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect(),
         bytes::Bytes::from(e.body.clone()),
-    )
+    );
+    if let Some(g) = &e.grpc
+        && g.request_truncated
+    {
+        req.grpc_message_count = Some(g.request_messages);
+    }
+    req
 }
 
 pub fn entry_matches(c: &CompiledStub, e: &JournalEntry) -> bool {

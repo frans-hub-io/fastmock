@@ -29,6 +29,8 @@ import { useCan, useSpace, useSpaceQuery } from '../auth/useAuth';
 import { SpaceBadge } from '../components/spaces';
 import { BodyView, Copy, DataTable, DensityToggle, KeyValueTable, MethodBadge, PageHeader, PathText, StatusBadge, Time, ToneBadge } from '../components/common';
 import { EmptyState, ErrorState, LoadingState } from '../components/States';
+import { GrpcCallView } from '../components/GrpcView';
+import { grpcCodeName } from '../lib/grpc';
 import { toCurl } from '../lib/curl';
 import { formatAbsolute, headerValue } from '../lib/format';
 import { docsUrl } from '../lib/docs';
@@ -64,6 +66,11 @@ export function EntryDetail({ entry }: { entry: JournalEntry }) {
           <Badge variant="outline" color="gray" tt="none">
             {entry.source}
           </Badge>
+          {entry.grpc && (
+            <ToneBadge tone={entry.grpc.status === 0 ? 'success' : 'danger'} testId="grpc-status-head">
+              gRPC {grpcCodeName(entry.grpc.status)}
+            </ToneBadge>
+          )}
         </Group>
       </Paper>
       <Table fz="sm" verticalSpacing={4} withTableBorder>
@@ -152,9 +159,9 @@ export function EntryDetail({ entry }: { entry: JournalEntry }) {
             </Text>
             <KeyValueTable data={entry.headers} />
             <Text size="sm" fw={600}>
-              Body
+              {entry.grpc ? 'Messages' : 'Body'}
             </Text>
-            <BodyView body={entry.body} contentType={headerValue(entry.headers, 'content-type')} />
+            {entry.grpc ? <GrpcCallView entry={entry} side="request" /> : <BodyView body={entry.body} contentType={headerValue(entry.headers, 'content-type')} />}
           </Stack>
         </Tabs.Panel>
         <Tabs.Panel value="response" pt="sm">
@@ -166,9 +173,9 @@ export function EntryDetail({ entry }: { entry: JournalEntry }) {
               <StatusBadge status={entry.status} />
             </Group>
             <Text size="sm" fw={600}>
-              Body
+              {entry.grpc ? 'Messages' : 'Body'}
             </Text>
-            <BodyView body={entry.responseBody} contentType={undefined} />
+            {entry.grpc ? <GrpcCallView entry={entry} side="response" /> : <BodyView body={entry.responseBody} contentType={undefined} />}
           </Stack>
         </Tabs.Panel>
       </Tabs>

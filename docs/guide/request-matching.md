@@ -418,6 +418,20 @@ comparison beyond that; one comparison visits at most 500,000 elements, a bigger
 | `query` | String matcher on the query text. |
 | `rootField` | String matcher on the root fields of the selected operation (any root field may match; `includes`/`hasExactly` see all of them). |
 
+## gRPC messages
+
+A gRPC call is matched as `POST /<package>.<Service>/<Method>` with its request message as a JSON body; for
+client-streaming and bidirectional calls the body is the JSON array of the messages. `grpc` adds matchers over the
+messages: `messageCount` (`equalTo`, `min`, `max`), `everyMessage`, `anyMessage` and `lastMessage` (body matchers
+applied to one message):
+
+```json
+{"urlPath": "/shop.v1.OrderService/UploadItems",
+ "grpc": {"messageCount": {"min": 1}, "lastMessage": [{"jsonPath": "$.sku", "value": {"equalTo": "END"}}]}}
+```
+
+See [gRPC](grpc.md#4-client-streaming).
+
 ## MCP calls
 
 `mcp` matches Model Context Protocol calls (JSON-RPC over streamable HTTP) and turns the stub's path into a mock

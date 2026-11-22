@@ -18,6 +18,10 @@ pub struct CapturedRequest {
     pub scheme: String,
     pub host: Option<String>,
     pub port: Option<u16>,
+    /// The number of messages of a gRPC call when the body holds fewer (a journaled stream cut short).
+    pub grpc_message_count: Option<u64>,
+    /// A gRPC call: a match also returns the raw gRPC plan (messages are rendered while they are sent).
+    pub grpc_call: bool,
     query_string: String,
     parsed: std::sync::OnceLock<Option<Value>>,
     form: std::sync::OnceLock<Vec<(String, String)>>,
@@ -207,6 +211,8 @@ impl CapturedRequest {
             scheme: "http".into(),
             host,
             port,
+            grpc_message_count: None,
+            grpc_call: false,
             query_string: raw_query.unwrap_or("").to_string(),
             parsed: std::sync::OnceLock::new(),
             form: std::sync::OnceLock::new(),

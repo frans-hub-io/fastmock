@@ -950,6 +950,64 @@ pub struct CompiledStub {
     graphql_root: Option<CompiledString>,
     /// Body matchers of `request.mcp`, with the text near misses show.
     mcp: Vec<(String, CompiledBody)>,
+    grpc: Option<CompiledGrpc>,
+}
+
+#[derive(Debug, Clone)]
+struct CompiledGrpc {
+    count: Option<crate::grpc_model::CountMatcher>,
+    every: Vec<CompiledBody>,
+    any: Vec<CompiledBody>,
+    last: Vec<CompiledBody>,
+}
+
+/// Body matchers applied to one JSON value (the reply rules of a gRPC stream).
+#[derive(Debug, Clone)]
+pub struct CompiledBodies(Vec<CompiledBody>);
+
+impl CompiledBodies {
+    pub fn compile(list: &[BodyMatcher]) -> Result<Self, CompileError> {
+        let mut budget = Budget::new();
+        Ok(Self(
+            list.iter()
+                .map(|b| compile_body(b, 0, &mut budget))
+                .collect::<Result<_, _>>()?,
+        ))
+    }
+
+    /// Whether every matcher accepts `v`; an empty list accepts everything.
+    pub fn matches_json(&self, v: &Value) -> bool {
+        message_matches(&self.0, v)
+    }
+}
+
+fn grpc_messages(json: Option<&Value>) -> Vec<&Value> {
+    match json {
+        Some(Value::Array(a)) => a.iter().collect(),
+        Some(v @ Value::Object(_)) => vec![v],
+        _ => Vec::new(),
+    }
+}
+
+fn message_matches(list: &[CompiledBody], m: &Value) -> bool {
+    let text = m.to_string();
+    list.iter()
+        .all(|b| b.matches(&text, text.as_bytes(), Some(m)))
+}
+
+impl CompiledGrpc {
+    /// `[count, every, any, last]`, `None` where the stub sets no such matcher.
+    fn results(&self, req: &CapturedRequest, json: Option<&Value>) -> [Option<bool>; 4] {
+        let msgs = grpc_messages(json);
+        let n = req.grpc_message_count.unwrap_or(msgs.len() as u64);
+        [
+            self.count.as_ref().map(|c| c.matches(n)),
+            (!self.every.is_empty()).then(|| msgs.iter().all(|m| message_matches(&self.every, m))),
+            (!self.any.is_empty()).then(|| msgs.iter().any(|m| message_matches(&self.any, m))),
+            (!self.last.is_empty())
+                .then(|| msgs.last().is_some_and(|m| message_matches(&self.last, m))),
+        ]
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1054,7 +1112,8 @@ impl CompiledStub {
             + part_matchers
             + usize::from(p.host.is_some())
             + usize::from(p.graphql.as_ref().is_some_and(|g| g.root_field.is_some()))
-            + usize::from(p.basic_auth.is_some());
+            + usize::from(p.basic_auth.is_some())
+            + p.grpc.as_ref().map_or(0, |g| g.matcher_count());
         if matcher_count > MAX_MATCHERS_PER_STUB {
             return Err(CompileError::Invalid(format!(
                 "a stub may have at most {MAX_MATCHERS_PER_STUB} matchers, found {matcher_count}"
@@ -1126,6 +1185,21 @@ impl CompiledStub {
                 });
             }
         }
+        let grpc = match &p.grpc {
+            None => None,
+            Some(g) => {
+                g.validate().map_err(CompileError::Invalid)?;
+                let mut list = |v: &[BodyMatcher]| -> Result<Vec<CompiledBody>, CompileError> {
+                    v.iter().map(|b| compile_body(b, 1, &mut budget)).collect()
+                };
+                Some(CompiledGrpc {
+                    count: g.message_count.clone(),
+                    every: list(&g.every_message)?,
+                    any: list(&g.any_message)?,
+                    last: list(&g.last_message)?,
+                })
+            }
+        };
         let mcp = mcp_matchers
             .into_iter()
             .map(|(label, b)| Ok((label, compile_body(&b, 0, &mut budget)?)))
@@ -1134,6 +1208,7 @@ impl CompiledStub {
             stub: stub.clone(),
             uses_original_request,
             mcp,
+            grpc,
             method,
             path,
             path_params: compile_map(&p.path_params, false, &mut budget)?,
@@ -1283,6 +1358,11 @@ impl CompiledStub {
                 return None;
             }
         }
+        if let Some(g) = &self.grpc
+            && g.results(req, json).contains(&Some(false))
+        {
+            return None;
+        }
         Some(params)
     }
 
@@ -1429,6 +1509,19 @@ impl CompiledStub {
                 &|| "GraphQL root field does not match".to_string(),
                 &mut mismatches,
             );
+        }
+        if let Some(g) = &self.grpc {
+            let names = [
+                "gRPC message count does not match",
+                "not every gRPC message matches request.grpc.everyMessage",
+                "no gRPC message matches request.grpc.anyMessage",
+                "the last gRPC message does not match request.grpc.lastMessage",
+            ];
+            for (i, r) in g.results(req, json).iter().enumerate() {
+                if let Some(hit) = r {
+                    score(*hit, 1.0, &|| names[i].to_string(), &mut mismatches);
+                }
+            }
         }
         NearMiss {
             stub_id: self.stub.id,
@@ -1968,5 +2061,56 @@ mod tests {
         let nm = s.near_miss(&get("/a", None), None);
         assert!(nm.score > 0.5 && nm.score < 1.0);
         assert_eq!(nm.mismatches.len(), 1);
+    }
+
+    #[test]
+    fn grpc_message_matchers() {
+        let s = stub(json!({
+            "urlPath": "/shop.v1.S/Upload",
+            "grpc": {
+                "messageCount": {"min": 2, "max": 3},
+                "everyMessage": [{"jsonPath": "$.qty", "value": {"matches": "[1-9]"}}],
+                "anyMessage": [{"equalToJson": {"sku": "B"}, "ignoreExtraElements": true}],
+                "lastMessage": [{"jsonPath": "$.sku", "value": {"equalTo": "C"}}]
+            }
+        }));
+        let req = |v: serde_json::Value| {
+            CapturedRequest::new(
+                "POST",
+                "/shop.v1.S/Upload",
+                None,
+                vec![],
+                Bytes::from(v.to_string()),
+            )
+        };
+        let ok =
+            req(json!([{"sku": "A", "qty": 1}, {"sku": "B", "qty": 2}, {"sku": "C", "qty": 3}]));
+        assert!(s.match_request(&ok, ok.json()).is_some());
+        let zero = req(json!([{"sku": "B", "qty": 0}, {"sku": "C", "qty": 3}]));
+        assert!(s.match_request(&zero, zero.json()).is_none());
+        let nm = s.near_miss(&zero, zero.json());
+        assert_eq!(
+            nm.mismatches,
+            ["not every gRPC message matches request.grpc.everyMessage"]
+        );
+        let many = req(
+            json!([{"sku": "B", "qty": 1}, {"sku": "B", "qty": 1}, {"sku": "B", "qty": 1}, {"sku": "C", "qty": 1}]),
+        );
+        assert!(s.match_request(&many, many.json()).is_none());
+        let mut cut = req(json!([{"sku": "B", "qty": 1}, {"sku": "C", "qty": 1}]));
+        cut.grpc_message_count = Some(9);
+        let nm = s.near_miss(&cut, cut.json());
+        assert_eq!(nm.mismatches, ["gRPC message count does not match"]);
+        let single = stub(json!({"grpc": {"messageCount": {"equalTo": 1},
+                                          "lastMessage": [{"jsonPath": "$.id"}]}}));
+        let unary = req(json!({"id": "1"}));
+        assert!(single.match_request(&unary, unary.json()).is_some());
+        assert!(
+            CompiledStub::compile(
+                &serde_json::from_value(json!({"request": {"grpc": {"messageCount": {}}}}))
+                    .unwrap()
+            )
+            .is_err()
+        );
     }
 }

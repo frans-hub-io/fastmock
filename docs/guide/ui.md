@@ -275,7 +275,9 @@ to every response (fixed, uniform or log-normal), and whether proxy stubs forwar
 
 The uploaded protobuf descriptor sets and the services they define, plus the services currently loaded. Editors
 upload a `FileDescriptorSet` (`protoc --include_imports --descriptor_set_out=api.pb ...`, up to 16 MiB) under a
-name, or remove one.
+name, or remove one. In the journal a gRPC call shows its kind, final status and the request and response messages
+as numbered lists (with a note when the journal kept only the first ones); the stub editor summarises the stream
+messages, status, trailers and reply rules of a gRPC stub, which are edited in the JSON tab.
 
 ### Async mocks
 

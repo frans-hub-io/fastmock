@@ -222,6 +222,18 @@ pub struct Config {
     pub mail: Option<fastmock_mail::MailConfig>,
     /// The MCP endpoint `/mcp` on the admin listener (`FASTMOCK_MCP_ENABLED`, default true).
     pub mcp_enabled: bool,
+    /// gRPC server reflection on the data plane (`FASTMOCK_GRPC_REFLECTION`, default true).
+    pub grpc_reflection: bool,
+    /// Messages a client may send on one gRPC call (`FASTMOCK_GRPC_MAX_STREAM_MESSAGES`).
+    pub grpc_max_stream_messages: u64,
+    /// Decompressed bytes a client may send on one gRPC call (`FASTMOCK_GRPC_MAX_STREAM_BYTES`).
+    pub grpc_max_stream_bytes: usize,
+    /// Longest wait for the next request message of a gRPC call (`FASTMOCK_GRPC_STREAM_IDLE_TIMEOUT`).
+    pub grpc_stream_idle_timeout: Duration,
+    /// Longest duration of a gRPC call (`FASTMOCK_GRPC_MAX_STREAM_DURATION`).
+    pub grpc_max_stream_duration: Duration,
+    /// Concurrent HTTP/2 streams per connection on the data port (`FASTMOCK_HTTP2_MAX_CONCURRENT_STREAMS`).
+    pub http2_max_concurrent_streams: u32,
 }
 
 pub const DEFAULT_TOKEN_DAYS: u32 = 90;
@@ -626,6 +638,12 @@ impl Config {
             oidc: None,
             mail: None,
             mcp_enabled: true,
+            grpc_reflection: true,
+            grpc_max_stream_messages: 10_000,
+            grpc_max_stream_bytes: 64 * 1024 * 1024,
+            grpc_stream_idle_timeout: Duration::from_secs(60),
+            grpc_max_stream_duration: Duration::from_secs(3600),
+            http2_max_concurrent_streams: 200,
         }
     }
 
@@ -757,7 +775,21 @@ impl Config {
             oidc: crate::oidc::settings::from_env(&oidc_env)?,
             mail: None,
             mcp_enabled: bool_env("MCP_ENABLED", true)?,
+            grpc_reflection: bool_env("GRPC_REFLECTION", true)?,
+            grpc_max_stream_messages: parse("GRPC_MAX_STREAM_MESSAGES", 10_000u64)?.max(1),
+            grpc_max_stream_bytes: parse("GRPC_MAX_STREAM_BYTES", 64 * 1024 * 1024usize)?.max(1),
+            grpc_stream_idle_timeout: dur("GRPC_STREAM_IDLE_TIMEOUT", "60s")?,
+            grpc_max_stream_duration: dur("GRPC_MAX_STREAM_DURATION", "1h")?,
+            http2_max_concurrent_streams: parse("HTTP2_MAX_CONCURRENT_STREAMS", 200u32)?,
         };
+        if cfg.grpc_stream_idle_timeout.is_zero() || cfg.grpc_max_stream_duration.is_zero() {
+            bail!(
+                "FASTMOCK_GRPC_STREAM_IDLE_TIMEOUT and FASTMOCK_GRPC_MAX_STREAM_DURATION must be positive"
+            );
+        }
+        if !(1..=10_000).contains(&cfg.http2_max_concurrent_streams) {
+            bail!("FASTMOCK_HTTP2_MAX_CONCURRENT_STREAMS must be between 1 and 10000");
+        }
         if cfg.max_inflight_body_bytes < cfg.max_body_bytes {
             bail!("FASTMOCK_MAX_INFLIGHT_BODY_BYTES must be at least FASTMOCK_MAX_BODY_BYTES");
         }

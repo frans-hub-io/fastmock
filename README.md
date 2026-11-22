@@ -1,7 +1,7 @@
 # FastMock
 
-FastMock is an API mock server for test environments. It mocks HTTP/1.1, HTTP/2 and HTTPS with mTLS, gRPC,
-GraphQL, SOAP, WebSocket and Server-Sent Events, publishes Kafka messages (JSON or Confluent Avro), runs AsyncAPI
+FastMock is an API mock server for test environments. It mocks HTTP/1.1, HTTP/2 and HTTPS with mTLS, gRPC
+(unary and streaming calls, gRPC-Web, server reflection), GraphQL, SOAP, WebSocket and Server-Sent Events, publishes Kafka messages (JSON or Confluent Avro), runs AsyncAPI
 mocks, and sends durable, signed callbacks with retries. State lives in PostgreSQL and Valkey, so any number of
 replicas share stubs, scenarios, the request journal and the callback queue. It runs as a single binary or
 container, as a Helm release, or through a Kubernetes operator.

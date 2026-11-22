@@ -3,6 +3,7 @@ pub mod datetime;
 pub mod engine;
 pub mod fakedata;
 pub mod graphql;
+pub mod grpc_model;
 pub mod har;
 pub mod jsonpath;
 pub mod mail;

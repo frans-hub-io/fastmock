@@ -8,7 +8,8 @@ FastMock turns real traffic into stubs in two ways:
   de-duplication and optional scenarios for repeated requests.
 
 Traffic captures from browsers and API clients (HAR files, Postman collections) are covered in
-[Importing](importing.md).
+[Importing](importing.md). gRPC calls (unary and streaming) are not proxied or recorded yet; write gRPC stubs
+from the [descriptor sets](grpc.md).
 
 - [Live recording](#live-recording)
 - [Snapshots](#snapshots)

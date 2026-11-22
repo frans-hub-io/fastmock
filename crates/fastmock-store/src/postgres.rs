@@ -628,7 +628,7 @@ fn journal_where<'a>(qb: &mut QueryBuilder<'a, Postgres>, f: &'a JournalFilter) 
 /// Columns read back for journal entries. Queries never select `*`: a replica of an earlier release keeps
 /// its prepared statements while a newer one adds columns, and PostgreSQL rejects a cached plan whose
 /// result type changed.
-const JOURNAL_COLUMNS: &str = "id, at, source, method, path, query, headers, body, status, response_body, stub_id, correlation, matched, duration_ms, trace_id, space";
+const JOURNAL_COLUMNS: &str = "id, at, source, method, path, query, headers, body, status, response_body, stub_id, correlation, matched, duration_ms, trace_id, space, grpc";
 
 /// Columns read back for callback jobs; see [`JOURNAL_COLUMNS`].
 const OUTBOX_COLUMNS: &str = "id, source, correlation, url, method, headers, body, due_at, attempts, max_attempts, status, last_error, last_status, created_at, sent_at, traceparent, space";
@@ -652,6 +652,9 @@ fn row_to_entry(r: &PgRow) -> StoreResult<JournalEntry> {
         duration_ms: r.try_get::<i64, _>("duration_ms")? as u64,
         trace_id: r.try_get("trace_id")?,
         space: r.try_get("space")?,
+        grpc: r
+            .try_get::<Option<Value>, _>("grpc")?
+            .and_then(|v| serde_json::from_value(v).ok()),
     })
 }
 
@@ -660,13 +663,14 @@ impl JournalStore for PgStore {
     async fn append_many(&self, entries: &[JournalEntry]) -> StoreResult<()> {
         for chunk in entries.chunks(500) {
             let mut qb = QueryBuilder::<Postgres>::new(
-                "insert into fm_journal (at, source, method, path, query, headers, body, status, response_body, stub_id, correlation, matched, duration_ms, trace_id, space) ",
+                "insert into fm_journal (at, source, method, path, query, headers, body, status, response_body, stub_id, correlation, matched, duration_ms, trace_id, space, grpc) ",
             );
             let mut rows = Vec::with_capacity(chunk.len());
             for e in chunk {
-                rows.push((e, serde_json::to_value(&e.headers)?));
+                let grpc = e.grpc.as_ref().map(serde_json::to_value).transpose()?;
+                rows.push((e, serde_json::to_value(&e.headers)?, grpc));
             }
-            qb.push_values(rows, |mut b, (e, headers)| {
+            qb.push_values(rows, |mut b, (e, headers, grpc)| {
                 b.push_bind(e.at)
                     .push_bind(e.source.clone())
                     .push_bind(e.method.clone())
@@ -681,7 +685,8 @@ impl JournalStore for PgStore {
                     .push_bind(e.matched)
                     .push_bind(e.duration_ms as i64)
                     .push_bind(e.trace_id.clone())
-                    .push_bind(e.space.clone());
+                    .push_bind(e.space.clone())
+                    .push_bind(grpc);
             });
             qb.build().execute(&self.pool).await?;
         }
@@ -690,8 +695,8 @@ impl JournalStore for PgStore {
 
     async fn append(&self, e: &JournalEntry) -> StoreResult<i64> {
         let id: i64 = sqlx::query_scalar(
-            "insert into fm_journal (at, source, method, path, query, headers, body, status, response_body, stub_id, correlation, matched, duration_ms, trace_id, space)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) returning id",
+            "insert into fm_journal (at, source, method, path, query, headers, body, status, response_body, stub_id, correlation, matched, duration_ms, trace_id, space, grpc)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) returning id",
         )
         .bind(e.at)
         .bind(&e.source)
@@ -708,6 +713,7 @@ impl JournalStore for PgStore {
         .bind(e.duration_ms as i64)
         .bind(&e.trace_id)
         .bind(&e.space)
+        .bind(e.grpc.as_ref().map(serde_json::to_value).transpose()?)
         .fetch_one(&self.pool)
         .await?;
         Ok(id)

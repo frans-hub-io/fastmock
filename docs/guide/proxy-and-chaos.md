@@ -24,6 +24,7 @@ are described in [Responses: proxying](responses.md#proxying). Operational behav
 | Egress | The [egress policy](../operations/security.md#egress-policy): allowed hosts, denied address ranges, no redirects. |
 | Failure | `502 {"error":"proxy failed","detail":"upstream unavailable"}` (or `blocked by egress policy`, `upstream body too large`), `fastmock_proxy_errors_total`, warning log `proxying failed`. |
 | Journal | The request, the upstream's status and body (redacted) and the proxy stub's id. |
+| gRPC | Not forwarded: a proxy stub matched by a gRPC call answers it like a stub without a body ([gRPC](grpc.md#other-features)). |
 
 Typical uses:
 

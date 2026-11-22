@@ -138,6 +138,7 @@ fn entry(source: &str, path: &str, corr: Option<&str>, matched: bool) -> Journal
         duration_ms: 3,
         trace_id: Some("0af7651916cd43dd8448eb211c80319c".into()),
         space: None,
+        grpc: None,
     }
 }
 
@@ -892,4 +893,45 @@ async fn the_space_of_a_stub_comes_from_its_column() {
         StubStore::list(&pg).await.unwrap()[0].space.as_deref(),
         Some("pay")
     );
+}
+
+#[tokio::test]
+async fn journal_keeps_grpc_call_details() {
+    for (name, s) in all_backends().await {
+        let mut e = entry("stubs", "/shop.v1.OrderService/UploadItems", None, true);
+        e.body = r#"[{"sku":"A"},{"sku":"B"}]"#.into();
+        e.grpc = Some(fastmock_core::GrpcCallInfo {
+            kind: "clientStreaming".into(),
+            status: 3,
+            message: Some("bad sku".into()),
+            request_messages: 40,
+            response_messages: 0,
+            request_truncated: true,
+            response_truncated: false,
+            protocol: Some("grpc-web".into()),
+        });
+        let id = s.journal.append(&e).await.unwrap();
+        let back = s.journal.get(id).await.unwrap().unwrap();
+        assert_eq!(back.grpc, e.grpc, "{name}");
+        s.journal.append_many(&[e.clone()]).await.unwrap();
+        let all = s
+            .journal
+            .query(&JournalFilter {
+                path_prefix: Some("/shop.v1.OrderService/".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(all.iter().all(|x| x.grpc == e.grpc), "{name}");
+        let plain = s
+            .journal
+            .append(&entry("sms", "/sms/v1/x", None, true))
+            .await
+            .unwrap();
+        assert_eq!(
+            s.journal.get(plain).await.unwrap().unwrap().grpc,
+            None,
+            "{name}"
+        );
+    }
 }

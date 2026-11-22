@@ -190,6 +190,9 @@ pub struct RequestPattern {
     /// path; the path then serves a mocked MCP server built from such stubs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<crate::mcp::McpMatcher>,
+    /// Matchers over the messages of a gRPC call: their count, every message, any message, the last one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grpc: Option<crate::grpc_model::GrpcMatcher>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
@@ -471,6 +474,9 @@ pub struct ResponseDef {
     pub sse: Option<Vec<SseEvent>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub websocket: Option<crate::ws_model::WebSocketDef>,
+    /// gRPC answer: stream messages, final status with details, trailers, replies of a bidirectional stream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grpc: Option<crate::grpc_model::GrpcResponseDef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_file_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -601,6 +607,7 @@ impl Default for ResponseDef {
             proxy: None,
             sse: None,
             websocket: None,
+            grpc: None,
             body_file_name: None,
             status_message: None,
             chunked_dribble_delay: None,
@@ -834,6 +841,36 @@ pub struct JournalEntry {
     /// Space of the stub that matched; absent for unmatched requests and global stubs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space: Option<String>,
+    /// gRPC call details: kind, final status and message counts. For gRPC calls `body` holds the request
+    /// message as JSON (a JSON array of messages for client-streaming and bidirectional calls) and
+    /// `responseBody` the response message (a JSON array for server-streaming and bidirectional calls).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grpc: Option<GrpcCallInfo>,
+}
+
+/// The gRPC part of a journal entry.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GrpcCallInfo {
+    /// `unary`, `serverStreaming`, `clientStreaming` or `bidiStreaming`.
+    pub kind: String,
+    /// Final gRPC status code (0 is OK).
+    pub status: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Messages received from the client.
+    pub request_messages: u64,
+    /// Messages sent to the client.
+    pub response_messages: u64,
+    /// The journaled request messages are cut short (journal body limit); `requestMessages` is the full count.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub request_truncated: bool,
+    /// The journaled response messages are cut short.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub response_truncated: bool,
+    /// `grpc-web` or `grpc-web-text` for gRPC-Web calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
 }
 
 /// Which spaces a query or bulk change covers.

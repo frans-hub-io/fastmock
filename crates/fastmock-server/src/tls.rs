@@ -109,13 +109,38 @@ async fn stopped(rx: &mut watch::Receiver<bool>) {
     let _ = rx.wait_for(|v| *v).await.map(|_| ());
 }
 
+/// Default of `FASTMOCK_HTTP2_MAX_CONCURRENT_STREAMS`, the same as hyper's.
+pub const DEFAULT_HTTP2_MAX_CONCURRENT_STREAMS: u32 = 200;
+
 pub async fn serve(
+    listener: TcpListener,
+    router: Router,
+    tls: Option<Arc<rustls::ServerConfig>>,
+    shutdown: watch::Receiver<bool>,
+    header_read_timeout: Duration,
+    drain: Duration,
+) {
+    serve_with_streams(
+        listener,
+        router,
+        tls,
+        shutdown,
+        header_read_timeout,
+        drain,
+        DEFAULT_HTTP2_MAX_CONCURRENT_STREAMS,
+    )
+    .await
+}
+
+/// [`serve`] with an explicit limit of concurrent HTTP/2 streams per connection.
+pub async fn serve_with_streams(
     listener: TcpListener,
     router: Router,
     tls: Option<Arc<rustls::ServerConfig>>,
     mut shutdown: watch::Receiver<bool>,
     header_read_timeout: Duration,
     drain: Duration,
+    max_concurrent_streams: u32,
 ) {
     let acceptor = tls.map(tokio_rustls::TlsAcceptor::from);
     let graceful = hyper_util::server::graceful::GracefulShutdown::new();
@@ -124,7 +149,10 @@ pub async fn serve(
         .http1()
         .timer(TokioTimer::new())
         .header_read_timeout(header_read_timeout);
-    builder.http2().timer(TokioTimer::new());
+    builder
+        .http2()
+        .timer(TokioTimer::new())
+        .max_concurrent_streams(max_concurrent_streams);
     loop {
         let (stream, peer) = tokio::select! {
             _ = stopped(&mut shutdown) => break,

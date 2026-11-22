@@ -11317,6 +11317,36 @@
           }
         }
       },
+      "CountMatcher": {
+        "type": "object",
+        "properties": {
+          "equalTo": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "min": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "max": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "CountResult": {
         "type": "object",
         "required": [
@@ -11852,6 +11882,81 @@
         },
         "additionalProperties": false
       },
+      "GrpcCallInfo": {
+        "type": "object",
+        "description": "The gRPC part of a journal entry.",
+        "required": [
+          "kind",
+          "status",
+          "requestMessages",
+          "responseMessages"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "`unary`, `serverStreaming`, `clientStreaming` or `bidiStreaming`."
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Final gRPC status code (0 is OK).",
+            "minimum": 0
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requestMessages": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Messages received from the client.",
+            "minimum": 0
+          },
+          "responseMessages": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Messages sent to the client.",
+            "minimum": 0
+          },
+          "requestTruncated": {
+            "type": "boolean",
+            "description": "The journaled request messages are cut short (journal body limit); `requestMessages` is the full count."
+          },
+          "responseTruncated": {
+            "type": "boolean",
+            "description": "The journaled response messages are cut short."
+          },
+          "protocol": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`grpc-web` or `grpc-web-text` for gRPC-Web calls."
+          }
+        }
+      },
+      "GrpcCode": {
+        "oneOf": [
+          {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          {
+            "type": "string"
+          }
+        ],
+        "description": "A status code as a number or a canonical name."
+      },
+      "GrpcCompression": {
+        "type": "string",
+        "enum": [
+          "gzip",
+          "identity"
+        ]
+      },
       "GrpcDescriptor": {
         "type": "object",
         "required": [
@@ -11891,6 +11996,186 @@
             }
           }
         }
+      },
+      "GrpcMatcher": {
+        "type": "object",
+        "description": "Matchers over the messages of a gRPC call. The request body of a client-streaming or bidirectional\ncall is the JSON array of its messages; for unary and server-streaming calls it is the one message.",
+        "properties": {
+          "messageCount": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CountMatcher",
+                "description": "The number of request messages."
+              }
+            ]
+          },
+          "everyMessage": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BodyMatcher"
+            },
+            "description": "Every request message must match all of these body matchers (an empty stream matches)."
+          },
+          "anyMessage": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BodyMatcher"
+            },
+            "description": "At least one request message must match all of these body matchers."
+          },
+          "lastMessage": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BodyMatcher"
+            },
+            "description": "The last request message must match all of these body matchers."
+          }
+        },
+        "additionalProperties": false
+      },
+      "GrpcMessage": {
+        "type": "object",
+        "description": "One response message: the output message in the proto3 JSON mapping (a template) and the pause before it.",
+        "properties": {
+          "jsonBody": {},
+          "delayMs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Pause before this message, 0..3600000 ms, capped by `FASTMOCK_MAX_DELAY`.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "GrpcReplyRule": {
+        "type": "object",
+        "description": "A reply rule of a bidirectional stream.",
+        "properties": {
+          "match": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BodyMatcher"
+            },
+            "description": "Body matchers applied to the incoming message as JSON; all must match. An empty list accepts\nevery message."
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GrpcMessage"
+            },
+            "description": "Messages sent in answer, in order (templates that see `message.json` and `message.index`)."
+          },
+          "status": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GrpcStatus",
+                "description": "End the call with this status after the messages."
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "GrpcResponseDef": {
+        "type": "object",
+        "description": "The gRPC part of a stub response: messages of a server stream, the final status (with\n`google.rpc.Status` details), trailers, and replies to the messages of a bidirectional stream.",
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GrpcMessage"
+            },
+            "description": "Response messages in order. Server streaming sends all of them; unary and client-streaming calls send\nthe first one; bidirectional calls send them as an initial burst while incoming messages are answered."
+          },
+          "repeat": {
+            "type": "boolean",
+            "description": "Start `messages` again from the first after the last one (streams only). Needs a message with\n`delayMs > 0`; the call ends at `maxMessages` or `closeAfterMs`."
+          },
+          "maxMessages": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "End the call (with `status`) after this many messages were sent, 1..100000 (default 10000).",
+            "minimum": 0
+          },
+          "closeAfterMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "End the call (with `status`) after this time, 1..86400000 ms; capped by the server's stream duration.",
+            "minimum": 0
+          },
+          "status": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GrpcStatus",
+                "description": "The status that ends the call; `OK` when absent."
+              }
+            ]
+          },
+          "trailers": {
+            "type": "object",
+            "description": "Trailing metadata sent with the status (values are templates; keys ending in `-bin` take base64).",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "onMessage": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GrpcReplyRule"
+            },
+            "description": "Replies to the incoming messages of a bidirectional stream: the first rule whose `match` accepts\na message applies."
+          },
+          "compression": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GrpcCompression",
+                "description": "`gzip` or `identity`: compression of the response messages. By default the response uses the\nrequest's `grpc-encoding` when the client accepts it."
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "GrpcStatus": {
+        "type": "object",
+        "description": "A gRPC status: `code` as a number (0..16) or a name (`NOT_FOUND`), a templated `message`, and\n`google.rpc.Status` details as JSON objects with `@type` (sent in `grpc-status-details-bin`).",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/GrpcCode"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "details": {
+            "type": "array",
+            "items": {}
+          }
+        },
+        "additionalProperties": false
       },
       "HarImport": {
         "type": "object",
@@ -12374,6 +12659,17 @@
               "null"
             ],
             "description": "Space of the stub that matched; absent for unmatched requests and global stubs."
+          },
+          "grpc": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GrpcCallInfo",
+                "description": "gRPC call details: kind, final status and message counts. For gRPC calls `body` holds the request\nmessage as JSON (a JSON array of messages for client-streaming and bidirectional calls) and\n`responseBody` the response message (a JSON array for server-streaming and bidirectional calls)."
+              }
+            ]
           }
         }
       },
@@ -14770,6 +15066,17 @@
                 "description": "Matches an MCP call (JSON-RPC `tools/call`, `resources/read` or another method) posted to this\npath; the path then serves a mocked MCP server built from such stubs."
               }
             ]
+          },
+          "grpc": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GrpcMatcher",
+                "description": "Matchers over the messages of a gRPC call: their count, every message, any message, the last one."
+              }
+            ]
           }
         },
         "additionalProperties": false
@@ -14923,6 +15230,17 @@
               },
               {
                 "$ref": "#/components/schemas/WebSocketDef"
+              }
+            ]
+          },
+          "grpc": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GrpcResponseDef",
+                "description": "gRPC answer: stream messages, final status with details, trailers, replies of a bidirectional stream."
               }
             ]
           },

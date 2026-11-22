@@ -123,6 +123,19 @@ pub struct EngineResponse {
     pub chunked_dribble_delay: Option<ChunkedDribbleDelay>,
     pub response_index: usize,
     pub space: Option<String>,
+    /// For gRPC calls: the unrendered gRPC answer and the template context it is rendered in.
+    pub grpc: Option<Box<GrpcPlan>>,
+}
+
+/// What a gRPC call needs to render its messages while they are sent.
+#[derive(Debug, Clone)]
+pub struct GrpcPlan {
+    pub def: Option<crate::grpc_model::GrpcResponseDef>,
+    /// The response's `jsonBody`, unrendered.
+    pub json_body: Option<Value>,
+    pub templated: bool,
+    /// The template context of the match (`request`, `state`, ...).
+    pub context: Value,
 }
 
 #[derive(Debug, Clone)]
@@ -220,6 +233,31 @@ impl Engine {
             }
             ws.validate(|tpl| t.validate(tpl).map_err(|e| e.to_string()))
                 .map_err(|e| format!("{at}{e}"))?;
+        }
+        if let Some(g) = &r.grpc {
+            if r.proxy.is_some() || r.sse.is_some() || r.websocket.is_some() {
+                return Err(format!(
+                    "{at}a gRPC response must not define proxy, sse or websocket"
+                ));
+            }
+            let templated = r.templated;
+            g.validate(
+                &|tpl| {
+                    if templated {
+                        t.validate(tpl).map_err(|e| e.to_string())
+                    } else {
+                        Ok(())
+                    }
+                },
+                &|v| {
+                    if templated {
+                        t.validate_json(v).map_err(|e| e.to_string())
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .map_err(|e| format!("{at}{e}"))?;
         }
         if let Some(events) = &r.sse {
             if set > 0 || r.proxy.is_some() {
@@ -711,7 +749,10 @@ impl Engine {
                 let index = self.pick_response(&cs.stub).await?;
                 return Ok(Some(
                     crate::plugin::SPACE
-                        .scope(cs.stub.space.clone(), self.respond(cs, index, &ctx))
+                        .scope(
+                            cs.stub.space.clone(),
+                            self.respond(cs, index, &ctx, req.grpc_call),
+                        )
                         .await?,
                 ));
             }
@@ -725,6 +766,7 @@ impl Engine {
         cs: &CompiledStub,
         index: usize,
         ctx: &crate::template::TemplateContext,
+        grpc_call: bool,
     ) -> anyhow::Result<EngineResponse> {
         let stub = &cs.stub;
         let r = stub.response_at(index);
@@ -742,7 +784,9 @@ impl Engine {
                 ));
             }
         }
-        let body = if let Some(b) = &r.base64_body {
+        let body = if grpc_call {
+            Bytes::new()
+        } else if let Some(b) = &r.base64_body {
             Bytes::from(B64.decode(b)?)
         } else if let Some(j) = &r.json_body {
             if !headers
@@ -878,6 +922,14 @@ impl Engine {
             chunked_dribble_delay: r.chunked_dribble_delay.clone(),
             response_index: index,
             space: stub.space.clone(),
+            grpc: (grpc_call || r.grpc.is_some()).then(|| {
+                Box::new(GrpcPlan {
+                    def: r.grpc.clone(),
+                    json_body: r.json_body.clone(),
+                    templated: r.templated,
+                    context: ctx.data().clone(),
+                })
+            }),
         })
     }
 
@@ -1084,6 +1136,50 @@ mod tests {
 
     fn post(path: &str, body: Value) -> CapturedRequest {
         CapturedRequest::new("POST", path, None, vec![], Bytes::from(body.to_string()))
+    }
+
+    #[tokio::test]
+    async fn grpc_answers_are_validated_and_returned_unrendered() {
+        let (e, s) = engine();
+        let bad = |v: Value| {
+            let stub: Stub =
+                serde_json::from_value(json!({"request": {"urlPath": "/x.Y/Z"}, "response": v}))
+                    .unwrap();
+            e.validate(&stub).is_err()
+        };
+        assert!(bad(
+            json!({"grpc": {"messages": [{"jsonBody": {"a": "{{> p}}"}}]}})
+        ));
+        assert!(bad(json!({"grpc": {"status": {"code": "NOPE"}}})));
+        assert!(bad(json!({"grpc": {}, "sse": [{"data": "x"}]})));
+        assert!(bad(
+            json!({"grpc": {"onMessage": [{"match": [{"matches": "("}], "status": {"code": 1}}]}})
+        ));
+        add(
+            &e,
+            &s,
+            json!({"request": {"urlPath": "/shop.v1.S/M", "grpc": {"messageCount": {"min": 2}}},
+                   "response": {"jsonBody": {"n": "{{size request.json}}"},
+                                "grpc": {"messages": [{"jsonBody": {"i": "{{stream.index}}"}}]}}}),
+        )
+        .await;
+        let mut one = post("/shop.v1.S/M", json!([{"a": 1}]));
+        one.grpc_call = true;
+        assert!(
+            e.handle(&one).await.unwrap().is_none(),
+            "messageCount min 2"
+        );
+        let mut two = post("/shop.v1.S/M", json!([{"a": 1}, {"a": 2}]));
+        two.grpc_call = true;
+        let r = e.handle(&two).await.unwrap().unwrap();
+        assert!(
+            r.body.is_empty(),
+            "gRPC bodies are rendered while they are sent"
+        );
+        let plan = r.grpc.unwrap();
+        assert_eq!(plan.json_body.unwrap()["n"], "{{size request.json}}");
+        assert_eq!(plan.context["request"]["json"][1]["a"], 2);
+        assert_eq!(plan.def.unwrap().messages.len(), 1);
     }
 
     #[tokio::test]

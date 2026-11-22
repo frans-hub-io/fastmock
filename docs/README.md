@@ -80,7 +80,7 @@ section for what you do.
 
 -   :material-lan-connect:{ .fm-card__icon } **[gRPC](guide/grpc.md)**
 
-    Unary gRPC from uploaded descriptor sets.
+    Unary and streaming gRPC and gRPC-Web from uploaded descriptor sets, with server reflection.
 
 -   :material-graphql:{ .fm-card__icon } **[GraphQL](guide/graphql.md)**
 

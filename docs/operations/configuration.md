@@ -148,12 +148,23 @@ ingress (see [Helm: TLS](helm.md#tls-and-mtls)).
 | `FASTMOCK_MAX_INFLIGHT_BODY_BYTES` | bytes | `268435456` (256 MiB) | Memory budget for request bodies being processed at the same time. Each request reserves three times its `Content-Length` (or three times `FASTMOCK_MAX_BODY_BYTES` when the length is unknown). A request that cannot get its share within 10 seconds gets `503 {"error":"server busy: too many large requests in flight"}` with `Retry-After: 1`. Must be at least `FASTMOCK_MAX_BODY_BYTES`. |
 | `FASTMOCK_MAX_DELAY` | duration | `15m` | Upper bound for response `delay`, chaos delays and SSE event delays. Callback delays have their own limit of 7 days. |
 | `FASTMOCK_HEADER_READ_TIMEOUT` | duration | `30s` | Time an HTTP/1.1 client has to send the complete request headers on either port. |
+| `FASTMOCK_HTTP2_MAX_CONCURRENT_STREAMS` | integer | `200` | Concurrent HTTP/2 streams (requests, gRPC calls) per client connection on the data port, 1 to 10,000. |
 | `FASTMOCK_SHUTDOWN_DELAY` | duration | `5s` | After SIGTERM or Ctrl-C: `/readyz` starts returning 503 at once, the listeners stay open for this long so load balancers can stop sending traffic, then open connections get up to 20 seconds to finish. |
 | `FASTMOCK_RECORDING_MAX_STUBS` | integer | `1000` | Number of stubs one recording session may create; further new exchanges are proxied but not stored (`fastmock_recording_skipped_total{reason="limit"}`). |
 | `FASTMOCK_JOURNAL_SCAN_TIMEOUT` | duration | `10s` | Deadline of one journal scan (`POST /__admin/requests/find`, `/requests/remove`, `/verify`, `/verify/sequence`, `/requests/count`, `/requests/near-misses`). A scan that runs longer is stopped and answers `503`. Scans run on the blocking thread pool, never on the request-handling threads, and stop as soon as the client disconnects. |
 | `FASTMOCK_JOURNAL_SCAN_MAX_WORK` | integer | `4294967296` | Work budget of one scan: the sum, over scanned journal entries, of the entry size in bytes (body, path, query and headers plus 64) times the weight of the pattern (number of matchers plus 1 per KiB of pattern JSON). A scan that would exceed it stops and answers `422`. |
 | `FASTMOCK_JOURNAL_SCAN_CONCURRENCY` | integer | `2` | Scans that run at the same time per replica (minimum 1). A scan that does not get a slot within 5 seconds answers `503`. |
 | `FASTMOCK_UNMATCHED_DETAILS` | boolean | `false` | Adds `nearMisses` (the three closest stubs and why they did not match) to the 404 body of unmatched data-plane requests. Off by default because it reveals stub definitions to callers of the data port; the same information is always available to viewers through `POST /__admin/requests/near-misses`. |
+
+## gRPC
+
+| Variable | Type | Default | Effect |
+|---|---|---|---|
+| `FASTMOCK_GRPC_REFLECTION` | boolean | `true` | Serves [gRPC server reflection](../guide/grpc.md#server-reflection) (`grpc.reflection.v1` and `v1alpha`) on the data port from the uploaded descriptor sets, so grpcurl, Postman and Kreya work without `.proto` files. `false` answers the reflection methods with `UNIMPLEMENTED`. |
+| `FASTMOCK_GRPC_MAX_STREAM_MESSAGES` | integer | `10000` | Request messages one gRPC call may send; the next one ends the call with `RESOURCE_EXHAUSTED`. |
+| `FASTMOCK_GRPC_MAX_STREAM_BYTES` | bytes | `67108864` (64 MiB) | Decompressed request bytes one gRPC call may send; more end the call with `RESOURCE_EXHAUSTED`. Each message is also limited to `FASTMOCK_MAX_BODY_BYTES`, compressed and decompressed. |
+| `FASTMOCK_GRPC_STREAM_IDLE_TIMEOUT` | duration | `60s` | Longest wait for the next request message (or the end of the request stream); then the call ends with `DEADLINE_EXCEEDED`. |
+| `FASTMOCK_GRPC_MAX_STREAM_DURATION` | duration | `1h` | Longest duration of a gRPC call, reading and sending; also caps `grpc.closeAfterMs` of stubs. Reading stops with `DEADLINE_EXCEEDED`; a stream that is still sending ends with the stub's status. |
 
 ## Request journal
 

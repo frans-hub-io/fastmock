@@ -255,7 +255,7 @@ How an example becomes a stub (priority 3, so it wins over the examples of the m
 | REST | `'GET /pastry/{name}'` | `parameters` that appear as `{name}` in the path become `pathParams`, the others `query`; `headers` become header matchers (except `accept`, `content-type`, `user-agent`); `body` becomes `equalToJson` with `ignoreExtraElements` | `status` (or `code`), `headers`, `mediaType`, `body` (YAML objects and arrays become `jsonBody`) |
 | GRAPHQL | the query or mutation field, for example `film` | `request.body.variables` must be contained in the request variables | `response.body`; a body without `data` is wrapped as `{"data": {<field>: body}}` |
 | SOAP | the operation name, for example `sayHello` | up to 16 leaf elements of the request body become XPath matchers (`/Envelope/Body/sayHello/name` = `Andrew`) | `response.body` as XML |
-| GRPC | `<package.Service>/<Method>` | `request.body` contained in the decoded request | `response.body` |
+| GRPC | `<package.Service>/<Method>` | `request.body` contained in the decoded request | `response.body`; for a server-streaming method the one message of the stream. Examples of client-streaming and bidirectional methods are skipped with a warning ([gRPC](grpc.md#other-features)). |
 
 The base request pattern (method, path, SOAP action, GraphQL root field) is taken from the stubs of the operation in
 the main import. Example stubs carry the tag `<service tag>:examples`; importing the same `APIExamples` again

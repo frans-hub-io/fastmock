@@ -3,7 +3,9 @@
 Tests usually need to assert what the system under test sent: "the order service called `POST /payments`
 exactly once", "nobody called `DELETE /users`", "login happened before checkout". FastMock answers these questions
 from its request journal, with the same request patterns stubs use, so anything a stub can match on (method,
-path, query, headers, JSON/XML body matchers, JSONPath, JSON Schema, GraphQL) can be verified.
+path, query, headers, JSON/XML body matchers, JSONPath, JSON Schema, GraphQL, gRPC messages) can be verified.
+A gRPC call, streaming or not, is one journal entry with its request and response messages; see
+[gRPC: journal and verification](grpc.md#journal-verification-and-metrics).
 
 - [The request journal](#the-request-journal)
 - [Find requests](#find-requests)

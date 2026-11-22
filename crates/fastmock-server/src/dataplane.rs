@@ -63,12 +63,13 @@ pub async fn data_plane_middleware(
             .insert(HeaderName::from_static(crate::tls::CLIENT_CERT_HEADER), v);
     }
     let source = app.source_for(parts.uri.path());
+    let grpc = crate::grpc::is_grpc(&parts.headers);
     let declared = parts
         .headers
         .get("content-length")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<usize>().ok());
-    if declared.is_some_and(|n| n > app.cfg.max_body_bytes) {
+    if !grpc && declared.is_some_and(|n| n > app.cfg.max_body_bytes) {
         metrics::counter!("fastmock_requests_rejected_total", "reason" => "body_too_large")
             .increment(1);
         return (
@@ -82,13 +83,20 @@ pub async fn data_plane_middleware(
         .min(app.cfg.max_body_bytes);
     let permits = (reserve.saturating_mul(3) / 1024)
         .clamp(1, (app.cfg.max_inflight_body_bytes / 1024).max(1)) as u32;
-    let _budget = match tokio::time::timeout(
-        Duration::from_secs(10),
-        app.body_budget.clone().acquire_many_owned(permits),
-    )
-    .await
-    {
-        Ok(Ok(p)) => p,
+    let budget = if grpc {
+        None
+    } else {
+        Some(
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                app.body_budget.clone().acquire_many_owned(permits),
+            )
+            .await,
+        )
+    };
+    let _budget = match budget {
+        None => None,
+        Some(Ok(Ok(p))) => Some(p),
         _ => {
             metrics::counter!("fastmock_requests_rejected_total", "reason" => "busy").increment(1);
             let mut r = (
@@ -101,17 +109,20 @@ pub async fn data_plane_middleware(
             return r;
         }
     };
-    let bytes = match to_bytes(body, app.cfg.max_body_bytes).await {
-        Ok(b) => b,
-        Err(_) => {
-            metrics::counter!("fastmock_requests_rejected_total", "reason" => "body_too_large")
-                .increment(1);
-            return (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                axum::Json(json!({"error": "request body too large"})),
-            )
-                .into_response();
-        }
+    let (bytes, grpc_body) = match grpc {
+        true => (Bytes::new(), Some(body)),
+        false => match to_bytes(body, app.cfg.max_body_bytes).await {
+            Ok(b) => (b, None),
+            Err(_) => {
+                metrics::counter!("fastmock_requests_rejected_total", "reason" => "body_too_large")
+                    .increment(1);
+                return (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    axum::Json(json!({"error": "request body too large"})),
+                )
+                    .into_response();
+            }
+        },
     };
     let incoming_tp = parts
         .headers
@@ -151,7 +162,13 @@ pub async fn data_plane_middleware(
         .and_then(|v| v.to_str().ok())
         .map(String::from);
     let chaos = crate::extras::chaos(&app, &source, parts.method.as_str(), parts.uri.path()).await;
-    let req = Request::from_parts(parts, Body::from(bytes.clone()));
+    let req = Request::from_parts(
+        parts,
+        match grpc_body {
+            Some(b) => b,
+            None => Body::from(bytes.clone()),
+        },
+    );
     let tp = Some(ids.traceparent());
     let (host, port) = match req
         .headers()
@@ -213,10 +230,14 @@ pub async fn data_plane_middleware(
             .extensions()
             .get::<crate::extras::Streaming>()
             .is_some();
-    let decoded_body = resp
+    let grpc_log = resp
         .extensions()
-        .get::<crate::grpc::DecodedBody>()
-        .map(|d| d.0.clone());
+        .get::<crate::grpc_call::GrpcCallLog>()
+        .cloned();
+    let skip_journal = resp
+        .extensions()
+        .get::<crate::grpc_call::SkipJournal>()
+        .is_some();
     if let Ok(v) = HeaderValue::from_str(&ids.trace_id) {
         resp.headers_mut()
             .insert(HeaderName::from_static(TRACE_HEADER), v);
@@ -254,6 +275,36 @@ pub async fn data_plane_middleware(
         let label = s.name.clone().unwrap_or_else(|| s.id.to_string());
         metrics::counter!("fastmock_stub_hits_total", "stub" => label).increment(1);
     }
+    if !app.cfg.journal_enabled || skip_journal {
+        return resp;
+    }
+    if let Some(log) = grpc_log {
+        let entry = JournalEntry {
+            id: 0,
+            at: Utc::now(),
+            source,
+            method,
+            path,
+            query: app.redactor.query(&raw_query),
+            headers: app.redactor.headers(
+                journal_headers
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str())),
+            ),
+            body: String::new(),
+            status,
+            response_body: String::new(),
+            stub_id: stub.as_ref().map(|s| s.id),
+            space: stub.and_then(|s| s.space).or(mail_space),
+            correlation,
+            matched,
+            duration_ms: 0,
+            trace_id: Some(ids.trace_id),
+            grpc: None,
+        };
+        tokio::spawn(finish_grpc_journal(app.clone(), log, entry, start));
+        return resp;
+    }
     let slot = if app.cfg.journal_enabled {
         match app.journal_tx.clone().try_reserve_owned() {
             Ok(p) => Some(p),
@@ -283,14 +334,7 @@ pub async fn data_plane_middleware(
                     .iter()
                     .map(|(k, v)| (k.as_str(), v.as_str())),
             ),
-            body: match &decoded_body {
-                Some(d) => r.body(
-                    d.as_bytes(),
-                    Some("application/json"),
-                    app.cfg.journal_max_body,
-                ),
-                None => r.body(&bytes, content_type.as_deref(), app.cfg.journal_max_body),
-            },
+            body: r.body(&bytes, content_type.as_deref(), app.cfg.journal_max_body),
             status,
             response_body: r.body(&response_body, resp_ct, app.cfg.journal_max_body),
             stub_id: stub.as_ref().map(|s| s.id),
@@ -299,10 +343,42 @@ pub async fn data_plane_middleware(
             matched,
             duration_ms: elapsed.as_millis() as u64,
             trace_id: Some(ids.trace_id),
+            grpc: None,
         };
         slot.send(entry);
     }
     resp
+}
+
+/// Writes the journal entry of a gRPC call once the call is over: the request and response messages as
+/// JSON and the final status.
+async fn finish_grpc_journal(
+    app: AppState,
+    log: crate::grpc_call::GrpcCallLog,
+    mut entry: JournalEntry,
+    start: Instant,
+) {
+    log.0.finished().await;
+    let (body, response_body, info) = log.0.with(|r| (r.body(), r.response_body(), r.info()));
+    let r = &app.redactor;
+    entry.body = r.body(
+        body.as_bytes(),
+        Some("application/json"),
+        app.cfg.journal_max_body,
+    );
+    entry.response_body = r.body(
+        response_body.as_bytes(),
+        Some("application/json"),
+        app.cfg.journal_max_body,
+    );
+    entry.grpc = Some(info);
+    entry.duration_ms = start.elapsed().as_millis() as u64;
+    match app.journal_tx.clone().try_reserve_owned() {
+        Ok(slot) => {
+            slot.send(entry);
+        }
+        Err(_) => metrics::counter!("fastmock_journal_dropped_total").increment(1),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -602,6 +678,9 @@ pub async fn stub_response(app: &AppState, r: fastmock_core::EngineResponse) -> 
 
 pub async fn stub_handler(State(app): State<AppState>, req: Request) -> Response {
     let (mut parts, body) = req.into_parts();
+    if crate::grpc::is_grpc(&parts.headers) {
+        return crate::grpc_call::handle(&app, parts, body).await;
+    }
     let bytes = to_bytes(body, usize::MAX).await.unwrap_or_default();
     let headers = parts
         .headers
@@ -613,9 +692,6 @@ pub async fn stub_handler(State(app): State<AppState>, req: Request) -> Response
             )
         })
         .collect();
-    if crate::grpc::is_grpc(&parts.headers) {
-        return grpc_handler(&app, parts.uri.path(), headers, &bytes).await;
-    }
     let cr = CapturedRequest::new(
         parts.method.as_str(),
         parts.uri.path(),
@@ -842,89 +918,6 @@ pub async fn stub_handler(State(app): State<AppState>, req: Request) -> Response
                 .into_response()
         }
     }
-}
-
-async fn grpc_handler(
-    app: &AppState,
-    path: &str,
-    headers: Vec<(String, String)>,
-    body: &Bytes,
-) -> Response {
-    let Some(method) = app.grpc.method(path).await else {
-        let mut r = crate::grpc::response(
-            None,
-            12,
-            &format!("unknown gRPC method {path}: upload its descriptor set first"),
-        );
-        r.extensions_mut().insert(Unmatched);
-        return r;
-    };
-    let json = match crate::grpc::decode_request(&method, body) {
-        Ok(j) => j,
-        Err((code, msg)) => return crate::grpc::response(None, code, &msg),
-    };
-    let decoded = json.to_string();
-    if decoded.len() > app.cfg.max_body_bytes.saturating_mul(2) {
-        return crate::grpc::response(None, 8, "decoded request is too large");
-    }
-    let mut hdrs = headers;
-    hdrs.retain(|(k, _)| !k.eq_ignore_ascii_case("content-type"));
-    hdrs.push(("content-type".into(), "application/json".into()));
-    let cr = CapturedRequest::new("POST", path, None, hdrs, Bytes::from(decoded.clone()));
-    let mut resp = match app.engine.handle(&cr).await {
-        Ok(Some(r)) => {
-            if !r.messages.is_empty() {
-                app.kafka.publish_in_background(r.messages.clone());
-            }
-            let delay = Duration::from_millis(r.delay_ms).min(app.cfg.max_delay);
-            if !delay.is_zero() {
-                tokio::time::sleep(delay).await;
-            }
-            let code = r
-                .headers
-                .iter()
-                .find(|(k, _)| k.eq_ignore_ascii_case("grpc-status"))
-                .and_then(|(_, v)| v.parse::<u32>().ok())
-                .map(|c| if c > 16 { 2 } else { c })
-                .unwrap_or(0);
-            let message = r
-                .headers
-                .iter()
-                .find(|(k, _)| k.eq_ignore_ascii_case("grpc-message"))
-                .map(|(_, v)| v.clone())
-                .unwrap_or_default();
-            let mut out = if code != 0 {
-                crate::grpc::response(None, code, &message)
-            } else {
-                match serde_json::from_slice::<serde_json::Value>(&r.body)
-                    .map_err(|e| e.to_string())
-                    .and_then(|j| crate::grpc::encode_response(&method, &j))
-                {
-                    Ok(frame) => crate::grpc::response(Some(frame), 0, ""),
-                    Err(e) => crate::grpc::response(None, 13, &e),
-                }
-            };
-            out.extensions_mut().insert(StubHit {
-                id: r.stub_id,
-                name: r.stub_name.clone(),
-                space: r.space.clone(),
-            });
-            if let Some(c) = r.correlation {
-                out.extensions_mut().insert(Correlation(c));
-            }
-            out
-        }
-        Ok(None) => {
-            let mut out = crate::grpc::response(None, 12, &format!("no stub matched {path}"));
-            out.extensions_mut().insert(Unmatched);
-            out
-        }
-        Err(e) => crate::grpc::response(None, 13, &format!("stub evaluation failed: {e}")),
-    };
-    metrics::counter!("fastmock_grpc_calls_total", "method" => path.to_string()).increment(1);
-    resp.extensions_mut()
-        .insert(crate::grpc::DecodedBody(decoded));
-    resp
 }
 
 pub async fn health() -> impl IntoResponse {

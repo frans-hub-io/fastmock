@@ -2151,6 +2151,14 @@ export interface components {
             kind: string;
             operations: number;
         };
+        CountMatcher: {
+            /** Format: int64 */
+            equalTo?: number | null;
+            /** Format: int64 */
+            min?: number | null;
+            /** Format: int64 */
+            max?: number | null;
+        };
         CountResult: {
             /** Format: int64 */
             count: number;
@@ -2325,6 +2333,37 @@ export interface components {
             query?: null | components["schemas"]["StringMatcher"];
             rootField?: null | components["schemas"]["StringMatcher"];
         };
+        /** @description The gRPC part of a journal entry. */
+        GrpcCallInfo: {
+            /** @description `unary`, `serverStreaming`, `clientStreaming` or `bidiStreaming`. */
+            kind: string;
+            /**
+             * Format: int32
+             * @description Final gRPC status code (0 is OK).
+             */
+            status: number;
+            message?: string | null;
+            /**
+             * Format: int64
+             * @description Messages received from the client.
+             */
+            requestMessages: number;
+            /**
+             * Format: int64
+             * @description Messages sent to the client.
+             */
+            responseMessages: number;
+            /** @description The journaled request messages are cut short (journal body limit); `requestMessages` is the full count. */
+            requestTruncated?: boolean;
+            /** @description The journaled response messages are cut short. */
+            responseTruncated?: boolean;
+            /** @description `grpc-web` or `grpc-web-text` for gRPC-Web calls. */
+            protocol?: string | null;
+        };
+        /** @description A status code as a number or a canonical name. */
+        GrpcCode: number | string;
+        /** @enum {string} */
+        GrpcCompression: "gzip" | "identity";
         GrpcDescriptor: {
             name: string;
             /** @description Fully qualified service names. */
@@ -2333,6 +2372,85 @@ export interface components {
         GrpcDescriptorList: {
             descriptors: components["schemas"]["GrpcDescriptor"][];
             loadedServices: string[];
+        };
+        /**
+         * @description Matchers over the messages of a gRPC call. The request body of a client-streaming or bidirectional
+         *     call is the JSON array of its messages; for unary and server-streaming calls it is the one message.
+         */
+        GrpcMatcher: {
+            messageCount?: null | components["schemas"]["CountMatcher"];
+            /** @description Every request message must match all of these body matchers (an empty stream matches). */
+            everyMessage?: components["schemas"]["BodyMatcher"][];
+            /** @description At least one request message must match all of these body matchers. */
+            anyMessage?: components["schemas"]["BodyMatcher"][];
+            /** @description The last request message must match all of these body matchers. */
+            lastMessage?: components["schemas"]["BodyMatcher"][];
+        };
+        /** @description One response message: the output message in the proto3 JSON mapping (a template) and the pause before it. */
+        GrpcMessage: {
+            jsonBody?: unknown;
+            /**
+             * Format: int64
+             * @description Pause before this message, 0..3600000 ms, capped by `FASTMOCK_MAX_DELAY`.
+             */
+            delayMs?: number;
+        };
+        /** @description A reply rule of a bidirectional stream. */
+        GrpcReplyRule: {
+            /**
+             * @description Body matchers applied to the incoming message as JSON; all must match. An empty list accepts
+             *     every message.
+             */
+            match?: components["schemas"]["BodyMatcher"][];
+            /** @description Messages sent in answer, in order (templates that see `message.json` and `message.index`). */
+            messages?: components["schemas"]["GrpcMessage"][];
+            status?: null | components["schemas"]["GrpcStatus"];
+        };
+        /**
+         * @description The gRPC part of a stub response: messages of a server stream, the final status (with
+         *     `google.rpc.Status` details), trailers, and replies to the messages of a bidirectional stream.
+         */
+        GrpcResponseDef: {
+            /**
+             * @description Response messages in order. Server streaming sends all of them; unary and client-streaming calls send
+             *     the first one; bidirectional calls send them as an initial burst while incoming messages are answered.
+             */
+            messages?: components["schemas"]["GrpcMessage"][];
+            /**
+             * @description Start `messages` again from the first after the last one (streams only). Needs a message with
+             *     `delayMs > 0`; the call ends at `maxMessages` or `closeAfterMs`.
+             */
+            repeat?: boolean;
+            /**
+             * Format: int32
+             * @description End the call (with `status`) after this many messages were sent, 1..100000 (default 10000).
+             */
+            maxMessages?: number | null;
+            /**
+             * Format: int64
+             * @description End the call (with `status`) after this time, 1..86400000 ms; capped by the server's stream duration.
+             */
+            closeAfterMs?: number | null;
+            status?: null | components["schemas"]["GrpcStatus"];
+            /** @description Trailing metadata sent with the status (values are templates; keys ending in `-bin` take base64). */
+            trailers?: {
+                [key: string]: string;
+            };
+            /**
+             * @description Replies to the incoming messages of a bidirectional stream: the first rule whose `match` accepts
+             *     a message applies.
+             */
+            onMessage?: components["schemas"]["GrpcReplyRule"][];
+            compression?: null | components["schemas"]["GrpcCompression"];
+        };
+        /**
+         * @description A gRPC status: `code` as a number (0..16) or a name (`NOT_FOUND`), a templated `message`, and
+         *     `google.rpc.Status` details as JSON objects with `@type` (sent in `grpc-status-details-bin`).
+         */
+        GrpcStatus: {
+            code?: components["schemas"]["GrpcCode"];
+            message?: string | null;
+            details?: unknown[];
         };
         HarImport: {
             /** @description HAR 1.2 document as a JSON object or JSON text. */
@@ -2482,6 +2600,7 @@ export interface components {
             traceId?: string | null;
             /** @description Space of the stub that matched; absent for unmatched requests and global stubs. */
             space?: string | null;
+            grpc?: null | components["schemas"]["GrpcCallInfo"];
         };
         JournalFilter: {
             source?: string | null;
@@ -3237,6 +3356,7 @@ export interface components {
             multipart?: components["schemas"]["MultipartMatcher"][];
             multipartMatchingType?: null | components["schemas"]["MultipartMatchingType"];
             mcp?: null | components["schemas"]["McpMatcher"];
+            grpc?: null | components["schemas"]["GrpcMatcher"];
         };
         RequestRecord: {
             method: string;
@@ -3274,6 +3394,7 @@ export interface components {
             proxy?: null | components["schemas"]["ProxyDef"];
             sse?: components["schemas"]["SseEvent"][] | null;
             websocket?: null | components["schemas"]["WebSocketDef"];
+            grpc?: null | components["schemas"]["GrpcResponseDef"];
             bodyFileName?: string | null;
             statusMessage?: string | null;
             chunkedDribbleDelay?: null | components["schemas"]["ChunkedDribbleDelay"];

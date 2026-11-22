@@ -311,6 +311,9 @@ Templates are Handlebars with a fixed set of helpers:
 | request body | 10 MiB | `FASTMOCK_MAX_BODY_BYTES` |
 | bodies in flight | 256 MiB (128 MiB in the chart) | `FASTMOCK_MAX_INFLIGHT_BODY_BYTES` |
 | time to send headers | 30 s | `FASTMOCK_HEADER_READ_TIMEOUT` |
+| HTTP/2 streams per connection | 200 | `FASTMOCK_HTTP2_MAX_CONCURRENT_STREAMS` |
+| gRPC request messages / bytes per call | 10,000 / 64 MiB (each message at most the request body limit, also after gzip) | `FASTMOCK_GRPC_MAX_STREAM_MESSAGES`, `FASTMOCK_GRPC_MAX_STREAM_BYTES` |
+| gRPC idle time / call duration | 60 s / 1 hour | `FASTMOCK_GRPC_STREAM_IDLE_TIMEOUT`, `FASTMOCK_GRPC_MAX_STREAM_DURATION` |
 | response and chaos delay | 15 min | `FASTMOCK_MAX_DELAY` |
 | journal write queue | 2,048 entries | `FASTMOCK_JOURNAL_QUEUE` |
 | matchers per stub | 64 | fixed |

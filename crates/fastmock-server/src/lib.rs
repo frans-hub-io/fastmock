@@ -10,6 +10,8 @@ pub mod dataplane;
 pub mod extras;
 pub mod files;
 pub mod grpc;
+pub mod grpc_call;
+pub mod grpc_reflection;
 pub mod imports;
 pub mod journal_api;
 pub mod mail_api;
@@ -416,7 +418,15 @@ pub async fn serve() -> anyhow::Result<()> {
     let drain = Duration::from_secs(20);
     let mail_listeners = mail_listeners::start(&app, rx.clone()).await?;
     tokio::join!(
-        tls::serve(data_listener, data, tls_cfg, rx.clone(), hrt, drain),
+        tls::serve_with_streams(
+            data_listener,
+            data,
+            tls_cfg,
+            rx.clone(),
+            hrt,
+            drain,
+            app.cfg.http2_max_concurrent_streams,
+        ),
         tls::serve(admin_listener, admin, None, rx.clone(), hrt, drain),
         async {
             if let Some(m) = mail_listeners {

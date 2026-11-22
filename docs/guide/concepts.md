@@ -185,7 +185,7 @@ client ──► data port
             │ server span, trace id (continues an incoming traceparent)
             │ chaos rules (may delay, fail or reset)
             │ plugin route?  ── yes ──► plugin handler
-            │ gRPC?          ── yes ──► decode with descriptors, then match as JSON
+            │ gRPC?          ── yes ──► read and decode messages with descriptors, then match as JSON
             │ match stubs (priority, specificity, recency, scenario state)
             │   ├─ no match ─► 404, or proxy to the recording target while recording
             │   └─ match ───► scenario transition (compare-and-set)

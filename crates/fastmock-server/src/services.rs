@@ -1036,6 +1036,17 @@ async fn apply_examples(
             ));
             continue;
         }
+        if svc.kind == ApiKind::Grpc
+            && let Some(path) = &op.path
+            && let Some(m) = app.grpc.method(path).await
+            && m.is_client_streaming()
+        {
+            warnings.push(format!(
+                "`{key}`: examples of client-streaming and bidirectional methods are not imported; \
+                 write stubs with request.grpc and response.grpc (see the gRPC guide)"
+            ));
+            continue;
+        }
         let target = ExampleTarget {
             kind: svc.kind,
             operation: &op.name,

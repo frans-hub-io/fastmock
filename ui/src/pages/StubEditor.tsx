@@ -45,6 +45,7 @@ import { useCan, useSpace, useSpaceChoice } from '../auth/useAuth';
 import { SpaceBadge, SpaceField } from '../components/spaces';
 import { CodeEditor } from '../components/CodeEditor';
 import { MethodBadge, PageHeader, PathText, SectionCard, ToneBadge } from '../components/common';
+import { GrpcStubSummary } from '../components/GrpcView';
 import { KeyValueEditor, MatcherList } from '../components/MatcherList';
 import { ErrorState, LoadingState } from '../components/States';
 import { TestRequestPanel } from '../components/TestRequestPanel';
@@ -582,6 +583,7 @@ export default function StubEditor() {
                         Templates use Handlebars, e.g. {'{{request.pathParams.id}}'}, {'{{uuid}}'}, {'{{now}}'}, {'{{jsonPath request.body "$.id"}}'}.
                       </Text>
                     </div>
+                    <GrpcStubSummary request={draft.request} response={draft.response} />
                   </Stack>
                 </Fieldset>
               </SectionCard>
