@@ -31,10 +31,25 @@ thread_local! {
     static DEADLINE: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Tests that check the step or memory limits with large inputs raise the time limit, so
+    /// that a slow debug build cannot hit it first.
+    static TEST_TIME_LIMIT: std::cell::Cell<Option<std::time::Duration>> = const { std::cell::Cell::new(None) };
+}
+
+fn time_limit() -> std::time::Duration {
+    #[cfg(test)]
+    if let Some(t) = TEST_TIME_LIMIT.with(|t| t.get()) {
+        return t;
+    }
+    MAX_RENDER_TIME
+}
+
 fn reset_limits() {
     BUDGET.with(|b| b.set(MAX_INTERMEDIATE_BYTES));
     STEPS.with(|s| s.set(MAX_RENDER_STEPS));
-    DEADLINE.with(|d| d.set(Some(std::time::Instant::now() + MAX_RENDER_TIME)));
+    DEADLINE.with(|d| d.set(Some(std::time::Instant::now() + time_limit())));
 }
 
 fn tick(n: usize) -> Result<(), RenderError> {
@@ -1932,6 +1947,7 @@ mod tests {
         let e = t.render_in_capped("{{x}}", &ctx, 255).unwrap_err();
         assert!(matches!(e, TemplateError::ValueTooLong(255)), "{e}");
         assert_eq!(t.render_in_capped("{{x}}", &ctx, 1000).unwrap().len(), 1000);
+        TEST_TIME_LIMIT.with(|t| t.set(Some(std::time::Duration::from_secs(300))));
         let items: Vec<u32> = (0..300_000).collect();
         let ctx = context(json!({ "items": items }));
         let tpl = "{{#each items}}{{this}}{{/each}}";
