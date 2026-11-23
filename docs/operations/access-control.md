@@ -621,6 +621,7 @@ A space is a named partition, named like a Kubernetes namespace (`[a-z0-9]([a-z0
 | `pathPrefixes` | Optional data-plane path prefixes that the space's stubs must stay under ([ownership](#ownership-of-the-data-plane)). Each must be a plain path starting with `/`: no query, fragment, `.` or `..` segment, encoded slash or backslash (`%2F`, `%5C`) or backslash. |
 | `hosts` | Optional `Host` values the space's stubs must match. |
 | `mailDomains` | Optional mail domains whose captured messages go to the space (lowercase; `*.example.com` covers the subdomains of `example.com`, not `example.com` itself). A domain belongs to one space: overlaps between spaces stop the start, like overlapping path prefixes. The IMAP and POP3 mailboxes of these domains live in the space. See [Mail: spaces](../guide/mail.md#spaces). |
+| `capture` | Optional allow-lists of [message capture](../guide/message-capture.md#allow-lists-per-space) for the space: `kafkaTopics`, `mqttTopics` and `amqpExchanges`, each a list of names, `prefix*` or `*` (at most 100 entries). Each list narrows the server-wide list of its protocol: a capture source of the space may read a destination only when both lists allow it. |
 
 What belongs to a space:
 
@@ -645,6 +646,8 @@ What belongs to a space:
 - **Captured mail** goes to the space that claims the recipients' domains in `mailDomains`, else to the space named
   like the SMTP AUTH user, else to the global area; mail chaos rules, provider webhooks and mailbox passwords are
   set per space ([Mail](../guide/mail.md#spaces)).
+- **Capture sources and captured broker messages** belong to the space they were created in; what the sources of a
+  space may read is limited by the space's `capture` lists ([Message capture](../guide/message-capture.md#spaces-and-permissions)).
 
 Messages published to Kafka, gRPC descriptors, chaos rules, global settings, recordings, async mocks and the
 service catalog are not scoped. On the data plane every enabled stub competes for a request, except inside the

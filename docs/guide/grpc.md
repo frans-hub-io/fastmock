@@ -21,6 +21,7 @@ compilation inside FastMock.
 - [Limits](#limits)
 - [Status codes FastMock returns itself](#status-codes-fastmock-returns-itself)
 - [Journal, verification and metrics](#journal-verification-and-metrics)
+- [Proxying and recording](#proxying-and-recording)
 - [Other features](#other-features)
 
 The examples use `FASTMOCK_TOKEN` for an editor or admin token, the admin API on `localhost:9090` and the data
@@ -447,7 +448,7 @@ the proto3 JSON mapping accepts strings for numeric fields.
 At most 32 matchers in `request.grpc`; they count towards the 64 matchers of a stub. For unary and
 server-streaming calls the list of messages is the one request message.
 
-`response.grpc` cannot be combined with `proxy`, `sse` or `websocket`. `response.status` (the HTTP status) does
+`response.grpc` cannot be combined with `proxy` ([proxying](#proxying-and-recording)), `sse` or `websocket`. `response.status` (the HTTP status) does
 not apply to gRPC calls, which always answer HTTP 200.
 
 ## Limits
@@ -532,6 +533,34 @@ and the stub editor summarises `request.grpc` and `response.grpc` (edit them in 
 
 The usual request metrics (`fastmock_requests_total`, `fastmock_stub_hits_total`, ...) count gRPC calls too.
 
+## Proxying and recording
+
+A stub with `response.proxy` forwards the gRPC calls it matches to a real gRPC server, and while a
+[recording](recording.md#grpc-calls) runs, calls that match no stub go to its `grpcTargetBaseUrl` and become stubs.
+A low-priority catch-all proxy stub sends everything that no specific stub answers to the real service (partial
+mocking); put it in a [space](../operations/access-control.md#spaces) to give that space its own upstream:
+
+```json
+{"name": "orders upstream", "priority": 100,
+ "request": {"method": "POST", "urlPathPattern": "/shop\\.v1\\.OrderService/.*"},
+ "response": {"proxy": {"baseUrl": "https://orders.example.com", "additionalHeaders": {"x-env": "test"}}}}
+```
+
+| Aspect | Behaviour |
+|---|---|
+| Upstream | `baseUrl` + the method path (`/shop.v1.OrderService/GetOrder`, minus `stripPrefix` when set). `http://` speaks HTTP/2 without TLS (h2c), `https://` HTTP/2 over TLS (ALPN `h2`), verified against the public roots and `FASTMOCK_OUTBOUND_CA_FILE`. |
+| mTLS | `FASTMOCK_GRPC_PROXY_CLIENT_CERT_FILE` and `_KEY_FILE` are presented to the hosts in `FASTMOCK_GRPC_PROXY_CLIENT_CERT_HOSTS` only, so stubs cannot send FastMock's certificate to other servers. |
+| Egress | The [egress policy](../operations/security.md#egress-policy): the host must be in `FASTMOCK_CALLBACK_ALLOWED_HOSTS` (when set), and the upstream is reached only on addresses outside `FASTMOCK_CALLBACK_DENIED_CIDRS`. |
+| Calls | Unary, server-streaming, client-streaming and bidirectional calls, from gRPC and gRPC-Web clients (the upstream is always spoken to with gRPC). Messages are passed on as they are, in both directions; the request messages read for matching are sent first, then the rest of a bidirectional stream as it arrives. |
+| Metadata | Request metadata is forwarded except `content-type`, `grpc-encoding`, hop-by-hop and routing headers (as for [HTTP proxying](proxy-and-chaos.md#proxy-stubs)) and `removeHeaders`; `additionalHeaders` are added. Response metadata, the status with its message and rich details, and trailers come back unchanged. |
+| Limits | The upstream's messages have the [limits](#limits) of request messages (size, count, bytes, idle time, call duration); `FASTMOCK_GRPC_PROXY_MAX_CALLS` (default 256) proxied calls run at once per replica, more end with `RESOURCE_EXHAUSTED`. Each call has its own upstream connection. |
+| Failure | An upstream that cannot be reached, is blocked or sends no response headers within `FASTMOCK_GRPC_STREAM_IDLE_TIMEOUT` ends the call with `UNAVAILABLE` and `proxy failed: upstream unavailable` (or `blocked by egress policy`); the log has the reason, `fastmock_proxy_errors_total` counts it. A non-200 HTTP answer becomes the status gRPC clients derive from it (`404` is `UNIMPLEMENTED`, `503` is `UNAVAILABLE`, ...). |
+| Switch | `proxyPassThrough: false` in the [settings](responses.md#proxying) answers proxied gRPC calls with `UNIMPLEMENTED` and `proxy pass-through is disabled` instead. |
+| Journal | One entry per call with the messages in both directions decoded with the descriptors, the status and the proxy stub's id. |
+
+The descriptor set of the service must be uploaded, also for proxying: FastMock decodes the messages for matching
+and the journal. `fastmock_grpc_proxied_calls_total{target="stub"|"recording"}` counts proxied calls.
+
 ## Other features
 
 - `response.delay`, scenarios, [callbacks](callbacks.md) and [Kafka messages](kafka.md) work on gRPC stubs; they
@@ -542,6 +571,5 @@ The usual request metrics (`fastmock_requests_total`, `fastmock_stub_hits_total`
   server-streaming methods (the example response is the one message of the stream). Examples of client-streaming
   and bidirectional methods are skipped with a warning; write those stubs with `request.grpc` and
   `response.grpc`.
-- **Not supported yet:** `proxy` stubs and [recording](recording.md) do not apply to gRPC calls (unary or
-  streaming); a proxy stub matched by a gRPC call answers as if it had no proxy. Record gRPC traffic outside
-  FastMock and write the stubs from it.
+- `proxy` stubs and [recording](recording.md) work for gRPC calls of every kind, see
+  [Proxying and recording](#proxying-and-recording).

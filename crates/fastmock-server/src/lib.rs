@@ -14,6 +14,7 @@ pub mod extras;
 pub mod files;
 pub mod grpc;
 pub mod grpc_call;
+pub mod grpc_proxy;
 pub mod grpc_reflection;
 pub mod imports;
 pub mod journal_api;
@@ -258,6 +259,7 @@ pub async fn build(
         brokers: Arc::new(brokers::Brokers::new(&cfg, kafka)),
         capture,
         grpc: Arc::new(grpc::Registry::default()),
+        grpc_proxy: Arc::new(grpc_proxy::GrpcProxy::new(&cfg)?),
         body_budget: Arc::new(tokio::sync::Semaphore::new(
             (cfg.max_inflight_body_bytes / 1024).max(1),
         )),

@@ -812,69 +812,20 @@ pub async fn stub_handler(State(app): State<AppState>, req: Request) -> Response
                         &bytes,
                         &u,
                     );
-                    let key = format!(
-                        "recording:seen:{}",
-                        fastmock_core::template::hmac_bytes(
-                            "sha256",
-                            b"rec",
-                            format!(
-                                "{}|{}|{}|{}",
-                                cr.method,
-                                cr.path,
-                                cr.raw_query(),
-                                cr.body_text()
-                            )
-                            .as_bytes()
-                        )
-                        .map(hex::encode)
-                        .unwrap_or_default()
+                    let identity = format!(
+                        "{}|{}|{}|{}",
+                        cr.method,
+                        cr.path,
+                        cr.raw_query(),
+                        cr.body_text()
                     );
-                    let mut hit = None;
-                    let fresh = app.stores.hot.get(&key).await.ok().flatten().is_none();
-                    let within_limit = fresh
-                        && app
-                            .stores
-                            .hot
-                            .incr("recording:count", Some(Duration::from_secs(86_400)))
-                            .await
-                            .map(|n| n <= app.cfg.recording_max_stubs)
-                            .unwrap_or(false);
-                    if fresh && !within_limit {
-                        metrics::counter!("fastmock_recording_skipped_total", "reason" => "limit")
-                            .increment(1);
-                    }
-                    if within_limit {
-                        let saved = match app.engine.validate(&stub) {
-                            Err(e) => Err(anyhow::anyhow!(e)),
-                            Ok(()) => app.stores.stubs.upsert(&stub).await,
-                        };
-                        match saved {
-                            Ok(()) => {
-                                let _ = app
-                                    .stores
-                                    .hot
-                                    .set(
-                                        &key,
-                                        &stub.id.to_string(),
-                                        Some(Duration::from_secs(86_400)),
-                                    )
-                                    .await;
-                                metrics::counter!("fastmock_recorded_stubs_total").increment(1);
-                                if let Err(e) = app.engine.refresh_if_changed().await {
-                                    tracing::warn!(error = %e, "stub refresh after recording failed");
-                                }
-                                hit = Some(StubHit {
-                                    id: stub.id,
-                                    name: stub.name.clone(),
-                                    space: None,
-                                });
-                            }
-                            Err(e) => {
-                                metrics::counter!("fastmock_recording_skipped_total", "reason" => "invalid").increment(1);
-                                tracing::warn!(error = %e, path = %cr.path, "recorded exchange could not be stored");
-                            }
-                        }
-                    }
+                    let hit = crate::proxy::store_recorded(&app, &identity, stub)
+                        .await
+                        .map(|stub| StubHit {
+                            id: stub.id,
+                            name: stub.name.clone(),
+                            space: None,
+                        });
                     let mut resp = crate::proxy::to_response(u);
                     if let Some(h) = hit {
                         resp.extensions_mut().insert(h);

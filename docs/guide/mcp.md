@@ -138,6 +138,8 @@ only when [mail capture](mail.md) is on.
 | `get_chaos` | Active chaos rules | `chaos:read` (global) | `GET /__admin/chaos` |
 | `wait_for_mail` | Wait for emails matching a matcher (at most 30 s) | `mail:read` | `POST /__admin/mail/messages/wait` |
 | `read_mail` | One email with its links and one-time codes | `mail:read` | `GET /__admin/mail/messages/{id}`, `/links`, `/codes` |
+| `list_capture_sources` | Capture sources with their state, and the allow-lists sources may use in each area | `messages:read` | `GET /__admin/capture/sources` |
+| `put_capture_source` | Create or replace a capture source, within the allow-lists of its space | `messages:write` | `PUT /__admin/capture/sources/{id}` |
 | `find_messages` | Captured Kafka, MQTT and AMQP messages matching a matcher, newest first, optionally with decoded bodies | `messages:read` | `POST /__admin/capture/messages/find`, `GET /__admin/capture/messages/{id}` |
 | `wait_for_message` | Wait for captured broker messages (at most 30 s), with their decoded bodies | `messages:read` | `POST /__admin/capture/messages/wait` |
 | `verify_messages` | Check a count of captured broker messages, with near misses | `messages:read` | `POST /__admin/capture/verify` |

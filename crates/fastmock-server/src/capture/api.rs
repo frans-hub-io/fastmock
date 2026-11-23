@@ -104,6 +104,47 @@ pub struct SourceList {
     pub max_sources: usize,
     /// `FASTMOCK_CAPTURE_MAX_MESSAGES`: messages kept per source at most.
     pub max_messages: usize,
+    /// What sources created through the API may read in each area the caller may read: the server-wide
+    /// allow-lists narrowed by the space's lists.
+    pub allow_lists: Vec<AreaAllowLists>,
+}
+
+/// The allow-lists that apply to sources created through the API in one area (`null`: that protocol is
+/// refused because the server-wide list is not set).
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AreaAllowLists {
+    /// The space; absent for the global area.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
+    #[schema(example = json!(["orders.*"]))]
+    pub kafka_topics: Option<Vec<String>>,
+    pub mqtt_topics: Option<Vec<String>>,
+    pub amqp_exchanges: Option<Vec<String>>,
+}
+
+fn allow_lists(
+    app: &AppState,
+    c: &crate::broker_settings::CaptureConfig,
+    spaces: &SpaceFilter,
+) -> Vec<AreaAllowLists> {
+    let access = app.auth.access();
+    let area = |space: Option<&crate::access::SpaceDef>| AreaAllowLists {
+        space: space.map(|s| s.name.clone()),
+        kafka_topics: super::effective_list(c, space, MessageProtocol::Kafka),
+        mqtt_topics: super::effective_list(c, space, MessageProtocol::Mqtt),
+        amqp_exchanges: super::effective_list(c, space, MessageProtocol::Amqp),
+    };
+    let mut out = Vec::new();
+    if spaces.matches(None) {
+        out.push(area(None));
+    }
+    for s in access.spaces() {
+        if spaces.matches(Some(&s.name)) {
+            out.push(area(Some(s)));
+        }
+    }
+    out
 }
 
 async fn views(app: &AppState, svc: &CaptureService, list: Vec<CaptureSource>) -> Vec<SourceView> {
@@ -127,7 +168,7 @@ async fn views(app: &AppState, svc: &CaptureService, list: Vec<CaptureSource>) -
 #[utoipa::path(
     get, path = "/__admin/capture/sources", tag = "capture", operation_id = "listCaptureSources",
     summary = "List capture sources",
-    description = "The sources of the areas the caller may read (`messages:read`), from the configuration and the API, with the state of their consumer and the number of stored messages.",
+    description = "The sources of the areas the caller may read (`messages:read`), from the configuration and the API, with the state of their consumer and the number of stored messages, and the allow-lists that sources created through the API get in each of those areas.",
     params(SpaceQuery),
     responses(
         (status = 200, description = "Sources", body = SourceList),
@@ -152,6 +193,7 @@ pub async fn list_sources(
         sources: views(&app, &svc, list).await,
         max_sources: svc.config.max_sources,
         max_messages: svc.config.max_messages,
+        allow_lists: allow_lists(&app, &svc.config, &spaces),
     }))
 }
 
@@ -231,7 +273,7 @@ pub async fn put_source(
     if let Some(setting) = super::missing_setting(&app.cfg, s.protocol) {
         return Err(bad(format!("{setting} is not configured")));
     }
-    super::allowed(&svc.config, &s).map_err(bad)?;
+    super::allowed_in(&app, &svc.config, &s).map_err(bad)?;
     if let Some(m) = s.max_messages
         && m > svc.config.max_messages
     {

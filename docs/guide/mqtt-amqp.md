@@ -220,6 +220,39 @@ systems the socket is a file in a private temporary directory (mode `0700`, remo
 
 The same settings are used by [message capture](message-capture.md).
 
+### SASL EXTERNAL with RabbitMQ
+
+With `EXTERNAL`, RabbitMQ takes FastMock's user name from its client certificate, so no password is stored
+anywhere. Publishing and capture both work this way (CI tests both against RabbitMQ 4.3). On the broker:
+
+```ini
+listeners.ssl.default = 5671
+ssl_options.cacertfile = /etc/rabbitmq/tls/ca.pem
+ssl_options.certfile = /etc/rabbitmq/tls/server.pem
+ssl_options.keyfile = /etc/rabbitmq/tls/server.key
+ssl_options.verify = verify_peer
+auth_mechanisms.1 = PLAIN
+auth_mechanisms.2 = EXTERNAL
+ssl_cert_login_from = common_name
+```
+
+Enable the plugin (`rabbitmq-plugins enable rabbitmq_auth_mechanism_ssl`) and create a user named like the
+certificate's common name, with the permissions of [capture](message-capture.md#how-each-broker-is-read) and
+publishing; its password is never used. FastMock:
+
+```sh
+FASTMOCK_AMQP_URL=amqps://rabbitmq.example.com:5671/%2f
+FASTMOCK_AMQP_SASL_MECHANISM=EXTERNAL
+FASTMOCK_AMQP_TLS_CA_FILE=/etc/fastmock/amqp/ca.pem
+FASTMOCK_AMQP_TLS_CERT_FILE=/etc/fastmock/amqp/client.pem
+FASTMOCK_AMQP_TLS_KEY_FILE=/etc/fastmock/amqp/client.key
+```
+
+A certificate RabbitMQ does not trust shows `TLS handshake failed: the broker refused FastMock's client certificate`
+in the `lastError` of capture sources; a certificate whose name is not a RabbitMQ user shows
+`the broker refused the credentials`. With Helm, set `messaging.amqp.sasl.mechanism: EXTERNAL` and
+`messaging.amqp.tls.clientCertSecret`.
+
 ## Observability
 
 | Signal | Content |

@@ -323,7 +323,7 @@ fn blocker(app: &AppState, svc: &CaptureService, s: &CaptureSource) -> Option<St
     if let Some(setting) = super::missing_setting(&app.cfg, s.protocol) {
         return Some(format!("{setting} is not configured"));
     }
-    if let Err(e) = super::allowed(&svc.config, s) {
+    if let Err(e) = super::allowed_in(app, &svc.config, s) {
         return Some(e);
     }
     s.validate().err()

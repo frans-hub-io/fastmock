@@ -1613,7 +1613,7 @@
           "capture"
         ],
         "summary": "List capture sources",
-        "description": "The sources of the areas the caller may read (`messages:read`), from the configuration and the API, with the state of their consumer and the number of stored messages.",
+        "description": "The sources of the areas the caller may read (`messages:read`), from the configuration and the API, with the state of their consumer and the number of stored messages, and the allow-lists that sources created through the API get in each of those areas.",
         "operationId": "listCaptureSources",
         "parameters": [
           {
@@ -7278,6 +7278,7 @@
           "recordings"
         ],
         "summary": "Proxy unmatched requests to a target and record them as stubs",
+        "description": "While recording, a request that no stub matches is forwarded to `targetBaseUrl` and the exchange is saved as a stub; gRPC calls (unary and streaming) go to `grpcTargetBaseUrl`, or `targetBaseUrl` without it, and need the descriptor set of their service.",
         "operationId": "startRecording",
         "requestBody": {
           "content": {
@@ -11236,6 +11237,10 @@
             "example": [
               "billing.example.com"
             ]
+          },
+          "capture": {
+            "$ref": "#/components/schemas/SpaceCapture",
+            "description": "Capture allow-lists of the space, which narrow the server-wide ones (absent when the space sets none)."
           }
         }
       },
@@ -11291,6 +11296,49 @@
           "GRPC",
           "GENERIC"
         ]
+      },
+      "AreaAllowLists": {
+        "type": "object",
+        "description": "The allow-lists that apply to sources created through the API in one area (`null`: that protocol is\nrefused because the server-wide list is not set).",
+        "properties": {
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The space; absent for the global area."
+          },
+          "kafkaTopics": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "orders.*"
+            ]
+          },
+          "mqttTopics": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "amqpExchanges": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        }
       },
       "ArtifactImportResult": {
         "allOf": [
@@ -16646,6 +16694,13 @@
           "targetBaseUrl": {
             "type": "string"
           },
+          "grpcTargetBaseUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Upstream of gRPC calls when it differs from `targetBaseUrl`."
+          },
           "tag": {
             "type": "string"
           },
@@ -16683,6 +16738,14 @@
           "targetBaseUrl": {
             "type": "string",
             "example": "https://api.example.com"
+          },
+          "grpcTargetBaseUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Upstream of gRPC calls (`http://` for h2c, `https://` for TLS); default `targetBaseUrl`.",
+            "example": "https://grpc.example.com"
           },
           "tag": {
             "type": "string",
@@ -17672,7 +17735,8 @@
         "required": [
           "sources",
           "maxSources",
-          "maxMessages"
+          "maxMessages",
+          "allowLists"
         ],
         "properties": {
           "sources": {
@@ -17690,6 +17754,13 @@
             "type": "integer",
             "description": "`FASTMOCK_CAPTURE_MAX_MESSAGES`: messages kept per source at most.",
             "minimum": 0
+          },
+          "allowLists": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AreaAllowLists"
+            },
+            "description": "What sources created through the API may read in each area the caller may read: the server-wide\nallow-lists narrowed by the space's lists."
           }
         }
       },
@@ -17769,6 +17840,46 @@
         ],
         "description": "A source with what the consumer reports."
       },
+      "SpaceCapture": {
+        "type": "object",
+        "description": "Allow-lists of what capture sources of one space may read. Each list narrows the server-wide list of\nits protocol (a destination must be allowed by both); an absent list leaves the server-wide one as it\nis, an empty list allows nothing.",
+        "properties": {
+          "kafkaTopics": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Kafka topics: names, `prefix*`, or `*`.",
+            "example": [
+              "payments.*"
+            ]
+          },
+          "mqttTopics": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "MQTT topic filters: names, `prefix*`, or `*`."
+          },
+          "amqpExchanges": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "AMQP exchanges: names, `prefix*`, or `*`."
+          }
+        },
+        "additionalProperties": false
+      },
       "SpaceInfo": {
         "type": "object",
         "required": [
@@ -17812,6 +17923,10 @@
             "example": [
               "billing.example.com"
             ]
+          },
+          "capture": {
+            "$ref": "#/components/schemas/SpaceCapture",
+            "description": "The space's capture allow-lists, which narrow the server-wide ones (absent when the space sets none)."
           },
           "permissions": {
             "type": "array",

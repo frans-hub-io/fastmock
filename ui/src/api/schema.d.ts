@@ -312,7 +312,7 @@ export interface paths {
         };
         /**
          * List capture sources
-         * @description The sources of the areas the caller may read (`messages:read`), from the configuration and the API, with the state of their consumer and the number of stored messages.
+         * @description The sources of the areas the caller may read (`messages:read`), from the configuration and the API, with the state of their consumer and the number of stored messages, and the allow-lists that sources created through the API get in each of those areas.
          */
         get: operations["listCaptureSources"];
         put?: never;
@@ -1228,7 +1228,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Proxy unmatched requests to a target and record them as stubs */
+        /**
+         * Proxy unmatched requests to a target and record them as stubs
+         * @description While recording, a request that no stub matches is forwarded to `targetBaseUrl` and the exchange is saved as a stub; gRPC calls (unary and streaming) go to `grpcTargetBaseUrl`, or `targetBaseUrl` without it, and need the descriptor set of their service.
+         */
         post: operations["startRecording"];
         delete?: never;
         options?: never;
@@ -1950,6 +1953,8 @@ export interface components {
              *     ]
              */
             mailDomains: string[];
+            /** @description Capture allow-lists of the space, which narrow the server-wide ones (absent when the space sets none). */
+            capture?: components["schemas"]["SpaceCapture"];
         };
         /**
          * @description The access configuration, read-only: spaces and roles of the access file, its bindings and
@@ -1973,6 +1978,22 @@ export interface components {
         };
         /** @enum {string} */
         ApiKind: "REST" | "SOAP" | "GRAPHQL" | "EVENT" | "GRPC" | "GENERIC";
+        /**
+         * @description The allow-lists that apply to sources created through the API in one area (`null`: that protocol is
+         *     refused because the server-wide list is not set).
+         */
+        AreaAllowLists: {
+            /** @description The space; absent for the global area. */
+            space?: string | null;
+            /**
+             * @example [
+             *       "orders.*"
+             *     ]
+             */
+            kafkaTopics?: string[] | null;
+            mqttTopics?: string[] | null;
+            amqpExchanges?: string[] | null;
+        };
         ArtifactImportResult: components["schemas"]["ImportResult"] & {
             /** @description Catalog id of the imported or updated service (absent on a dry run). */
             serviceId?: string | null;
@@ -3707,6 +3728,8 @@ export interface components {
         };
         Recording: {
             targetBaseUrl: string;
+            /** @description Upstream of gRPC calls when it differs from `targetBaseUrl`. */
+            grpcTargetBaseUrl?: string | null;
             tag: string;
             captureHeaders?: string[];
             requestHeaders?: string[];
@@ -3717,6 +3740,11 @@ export interface components {
         RecordingStart: {
             /** @example https://api.example.com */
             targetBaseUrl: string;
+            /**
+             * @description Upstream of gRPC calls (`http://` for h2c, `https://` for TLS); default `targetBaseUrl`.
+             * @example https://grpc.example.com
+             */
+            grpcTargetBaseUrl?: string | null;
             /** @example recorded-api */
             tag: string;
             /** @description Response headers to keep in recorded stubs (content-type is always kept). */
@@ -3957,6 +3985,11 @@ export interface components {
             maxSources: number;
             /** @description `FASTMOCK_CAPTURE_MAX_MESSAGES`: messages kept per source at most. */
             maxMessages: number;
+            /**
+             * @description What sources created through the API may read in each area the caller may read: the server-wide
+             *     allow-lists narrowed by the space's lists.
+             */
+            allowLists: components["schemas"]["AreaAllowLists"][];
         };
         /** @description What the replica running a source's consumer reports about it. */
         SourceStatus: {
@@ -3995,6 +4028,24 @@ export interface components {
         SourceView: components["schemas"]["CaptureSource"] & {
             status: components["schemas"]["SourceStatus"];
         };
+        /**
+         * @description Allow-lists of what capture sources of one space may read. Each list narrows the server-wide list of
+         *     its protocol (a destination must be allowed by both); an absent list leaves the server-wide one as it
+         *     is, an empty list allows nothing.
+         */
+        SpaceCapture: {
+            /**
+             * @description Kafka topics: names, `prefix*`, or `*`.
+             * @example [
+             *       "payments.*"
+             *     ]
+             */
+            kafkaTopics?: string[] | null;
+            /** @description MQTT topic filters: names, `prefix*`, or `*`. */
+            mqttTopics?: string[] | null;
+            /** @description AMQP exchanges: names, `prefix*`, or `*`. */
+            amqpExchanges?: string[] | null;
+        };
         SpaceInfo: {
             /** @example payments */
             name: string;
@@ -4010,6 +4061,8 @@ export interface components {
              *     ]
              */
             mailDomains: string[];
+            /** @description The space's capture allow-lists, which narrow the server-wide ones (absent when the space sets none). */
+            capture?: components["schemas"]["SpaceCapture"];
             /** @description The caller's effective permissions in the space. */
             permissions: string[];
         };

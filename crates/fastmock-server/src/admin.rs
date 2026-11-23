@@ -1967,6 +1967,9 @@ pub struct SpaceInfo {
     /// Mail domains whose captured messages go to the space (`*.domain` for subdomains).
     #[schema(example = json!(["billing.example.com"]))]
     pub mail_domains: Vec<String>,
+    /// The space's capture allow-lists, which narrow the server-wide ones (absent when the space sets none).
+    #[serde(skip_serializing_if = "crate::access::SpaceCapture::is_empty")]
+    pub capture: crate::access::SpaceCapture,
     /// The caller's effective permissions in the space.
     pub permissions: Vec<String>,
 }
@@ -2003,6 +2006,7 @@ pub async fn list_spaces(
                 path_prefixes: s.path_prefixes.clone(),
                 hosts: s.hosts.clone(),
                 mail_domains: s.mail_domains.clone(),
+                capture: s.capture.clone(),
                 permissions: perms.names().into_iter().map(String::from).collect(),
             })
         })
@@ -2497,6 +2501,10 @@ pub async fn export_stubs(
 pub struct RecordingStart {
     #[schema(example = "https://api.example.com")]
     target_base_url: String,
+    /// Upstream of gRPC calls (`http://` for h2c, `https://` for TLS); default `targetBaseUrl`.
+    #[serde(default)]
+    #[schema(example = "https://grpc.example.com")]
+    grpc_target_base_url: Option<String>,
     #[schema(example = "recorded-api")]
     tag: String,
     /// Response headers to keep in recorded stubs (content-type is always kept).
@@ -2515,6 +2523,7 @@ pub struct RecordingStatus {
 #[utoipa::path(
     post, path = "/__admin/recordings/start", tag = "recordings", operation_id = "startRecording",
     summary = "Proxy unmatched requests to a target and record them as stubs",
+    description = "While recording, a request that no stub matches is forwarded to `targetBaseUrl` and the exchange is saved as a stub; gRPC calls (unary and streaming) go to `grpcTargetBaseUrl`, or `targetBaseUrl` without it, and need the descriptor set of their service.",
     request_body = RecordingStart,
     responses(
         (status = 200, description = "Recording started", body = RecordingStatus),
@@ -2535,8 +2544,16 @@ pub async fn recording_start(
     app.policy
         .check_url(&url)
         .map_err(|e| bad(format!("targetBaseUrl is not allowed: {e}")))?;
+    if let Some(g) = &b.grpc_target_base_url {
+        let url =
+            reqwest::Url::parse(g).map_err(|e| bad(format!("invalid grpcTargetBaseUrl: {e}")))?;
+        app.policy
+            .check_url(&url)
+            .map_err(|e| bad(format!("grpcTargetBaseUrl is not allowed: {e}")))?;
+    }
     let rec = crate::proxy::Recording {
         target_base_url: b.target_base_url,
+        grpc_target_base_url: b.grpc_target_base_url,
         tag: b.tag,
         capture_headers: b.capture_headers,
         request_headers: b.request_headers,
@@ -2556,7 +2573,7 @@ pub async fn recording_start(
         &app,
         &p,
         "recording.start",
-        json!({"target": rec.target_base_url, "tag": rec.tag}),
+        json!({"target": rec.target_base_url, "grpcTarget": rec.grpc_target_base_url, "tag": rec.tag}),
     )
     .await;
     Ok(Json(RecordingStatus {

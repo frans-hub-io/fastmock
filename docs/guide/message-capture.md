@@ -11,6 +11,7 @@ POST /orders/A-1/ship ──► application ──► Kafka "orders.events" ─�
 ```
 
 - [Enabling capture](#enabling-capture)
+- [Allow-lists per space](#allow-lists-per-space)
 - [Capture sources](#capture-sources)
 - [How each broker is read](#how-each-broker-is-read)
 - [Reading captured messages](#reading-captured-messages)
@@ -49,9 +50,57 @@ The allow-lists limit what a token with `messages:write` can read through FastMo
 created through the API need the allow-list of their protocol: without `FASTMOCK_CAPTURE_KAFKA_TOPICS`, for example,
 `PUT /capture/sources/...` with a Kafka source answers `400` naming the variable. Set it to the topics your tests
 read, or to `*` on a broker that only test applications use. Sources from the configuration (`FASTMOCK_CAPTURE_SOURCES`,
-`FASTMOCK_CAPTURE_SOURCES_FILE`) need no allow-list, but must match one when it is set. The allow-lists apply to
-every space alike: a token with `messages:write` in any space may read every allowed destination, so keep them as
-narrow as your tests allow.
+`FASTMOCK_CAPTURE_SOURCES_FILE`) need no allow-list, but must match one when it is set. Without per-space lists the
+server-wide lists apply to every space alike: a token with `messages:write` in any space may read every allowed
+destination. Give each team's space its own lists ([below](#allow-lists-per-space)) and keep the server-wide lists
+as narrow as your tests allow.
+
+### Allow-lists per space
+
+A [space](../operations/access-control.md#spaces) of the access file can narrow the server-wide lists for its own
+sources with `capture`:
+
+```yaml
+spaces:
+  - name: payments
+    capture:
+      kafkaTopics: ["payments.*"]
+      amqpExchanges: [payments]
+  - name: billing
+    capture:
+      kafkaTopics: ["billing.*"]
+      mqttTopics: []
+```
+
+| Field | Narrows |
+|---|---|
+| `capture.kafkaTopics` | `FASTMOCK_CAPTURE_KAFKA_TOPICS` |
+| `capture.mqttTopics` | `FASTMOCK_CAPTURE_MQTT_TOPICS` |
+| `capture.amqpExchanges` | `FASTMOCK_CAPTURE_AMQP_EXCHANGES` |
+
+- A source of the space may read a destination only when the server-wide list **and** the space's list allow it:
+  the effective list is the intersection of the two, with the same `name`, `prefix*` and `*` entries. A space can
+  narrow, never widen: `kafkaTopics: ["*"]` in a space allows exactly what the server-wide list allows, and a space
+  list does not replace a missing server-wide list.
+- A list the space does not set leaves the server-wide list as it is; an empty list (`mqttTopics: []`) allows
+  nothing, so the space cannot capture that protocol.
+- The lists bind every caller, global admins too, and they also apply to sources from the configuration that name
+  the space (a start with one outside them stops with an error naming the space) and to stored sources: a source
+  outside the lists, for example after the access file was narrowed, does not run and shows
+  `state: error` with `... is not in the capture allow-list of space payments (spaces[].capture.kafkaTopics in the access file)`.
+- Sources of the global area use the server-wide lists.
+- `GET /__admin/capture/sources` returns `allowLists`, the effective lists of each area the caller may read
+  (`null` for a protocol whose server-wide list is not set); `GET /__admin/spaces` and `GET /__admin/access` show the
+  `capture` lists of the spaces as written. An entry that can never match the server-wide list is logged at start
+  (`... the entry has no effect`).
+
+```json
+{"sources": [...], "maxSources": 50, "maxMessages": 1000,
+ "allowLists": [{"space": "payments", "kafkaTopics": ["payments.*"], "mqttTopics": ["*"], "amqpExchanges": ["payments"]}]}
+```
+
+A source refused by a space list answers
+`400 {"error": "billing.invoices is not in the capture allow-list of space payments (spaces[].capture.kafkaTopics in the access file)"}`.
 
 Whatever the allow-lists say, sources never read broker internals: MQTT filters starting with `$` (`$SYS/#`, shared
 subscriptions `$share/<group>/...`, which would take messages away from the application's subscribers), Kafka topics
@@ -277,7 +326,8 @@ def test_shipping_publishes_an_event():
 ```
 
 AI assistants get the same through the [MCP tools](mcp.md) `find_messages`, `wait_for_message` and
-`verify_messages`.
+`verify_messages`, and manage sources with `list_capture_sources` and `put_capture_source`, which go through the
+same permissions and allow-lists.
 
 ## Matching messages
 
@@ -318,7 +368,8 @@ every area the caller may read; the global area only with the permission granted
 | `messages:delete` | deleting captured messages |
 
 All three can be granted per space. `viewer` has `messages:read`; `editor` has all three. A message or source the
-caller cannot read answers `404`.
+caller cannot read answers `404`, also when its id is used in `PUT` from another space. What the sources of a space
+may read is limited by the space's [allow-lists](#allow-lists-per-space).
 
 ## Replicas and storage
 
@@ -382,6 +433,7 @@ warnings when a consumer is interrupted (`... capture interrupted`, with `retry_
 | `state: error`, `Kafka topic ... does not exist` | Create the topic. |
 | `wait` answers `408` although the message is listed | It arrived before the wait started: pass `since` or `includeExisting: true`. |
 | `PUT /capture/sources/...` answers `400 capture sources created through the API need FASTMOCK_CAPTURE_..._TOPICS` | Set the allow-list of the protocol (`*` allows every name). |
+| `PUT /capture/sources/...` answers `400 ... is not in the capture allow-list of space ...` | The space's `capture` list in the access file does not allow the destination; `allowLists` in `GET /capture/sources` shows what it may read. |
 | find, wait or verify answers `422 the messages to check hold more than 64 MiB of bodies` | Add conditions on source, topic or headers, or `since`: only the bodies of messages that meet them are read. |
 | Old messages disappear before `FASTMOCK_CAPTURE_MAX_AGE` | The byte budgets are reached; raise `FASTMOCK_CAPTURE_MAX_BYTES` or `FASTMOCK_CAPTURE_MAX_SPACE_BYTES`, or delete messages between tests. |
 | A Kafka message published right after creating the source is missing | The source starts at the latest offsets once it runs (`state: running`, within about 5 s); wait for it, or use `startFrom: earliest`. |

@@ -62,7 +62,7 @@ impl Kind {
         }
     }
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Kind::Unary => "unary",
             Kind::ServerStreaming => "server_streaming",
@@ -71,7 +71,7 @@ impl Kind {
         }
     }
 
-    fn many_requests(self) -> bool {
+    pub(crate) fn many_requests(self) -> bool {
         matches!(self, Kind::ClientStreaming | Kind::Bidi)
     }
 
@@ -112,7 +112,7 @@ fn keep(list: &mut Vec<Value>, bytes: &mut usize, truncated: &mut bool, v: &Valu
 }
 
 impl CallRecord {
-    fn push_request(&mut self, v: &Value) {
+    pub(crate) fn push_request(&mut self, v: &Value) {
         self.request_count += 1;
         keep(
             &mut self.request,
@@ -234,15 +234,19 @@ pub struct Incoming {
     body: Body,
     buf: BytesMut,
     text: Option<Vec<u8>>,
-    encoding: Option<Encoding>,
+    pub(crate) encoding: Option<Encoding>,
     max_message: usize,
     max_messages: u64,
     max_bytes: usize,
     idle: Duration,
-    deadline: Instant,
+    pub(crate) deadline: Instant,
     count: u64,
     total: usize,
     ended: bool,
+    /// `request`, or `upstream response` for the answer of a proxied call; used in error messages.
+    what: &'static str,
+    /// The trailers that ended the stream, if any.
+    pub trailers: Option<axum::http::HeaderMap>,
 }
 
 fn decode_text(text: &mut Vec<u8>, out: &mut BytesMut) -> Result<(), ()> {
@@ -285,7 +289,21 @@ impl Incoming {
             count: 0,
             total: 0,
             ended: false,
+            what: "request",
+            trailers: None,
         }
+    }
+
+    /// Reads the answer of an upstream gRPC server with the same limits.
+    pub fn upstream(
+        app: &AppState,
+        body: Body,
+        encoding: Option<Encoding>,
+        deadline: Instant,
+    ) -> Self {
+        let mut i = Self::new(app, body, Protocol::Grpc, encoding, deadline);
+        i.what = "upstream response";
+        i
     }
 
     fn push(&mut self, d: Bytes) -> Result<(), Failure> {
@@ -314,8 +332,8 @@ impl Incoming {
                     return Err(limit_hit(
                         8,
                         format!(
-                            "request message of {len} bytes exceeds the limit of {} bytes",
-                            self.max_message
+                            "{} message of {len} bytes exceeds the limit of {} bytes",
+                            self.what, self.max_message
                         ),
                         "message_bytes",
                     ));
@@ -327,7 +345,10 @@ impl Incoming {
                         if self.encoding != Some(Encoding::Gzip) {
                             return Err(failure(
                                 13,
-                                "compressed request message without grpc-encoding: gzip",
+                                format!(
+                                    "compressed {} message without grpc-encoding: gzip",
+                                    self.what
+                                ),
                             ));
                         }
                         match crate::mail_providers::gunzip(&raw, self.max_message) {
@@ -336,14 +357,17 @@ impl Incoming {
                                 return Err(limit_hit(
                                     8,
                                     format!(
-                                        "decompressed request message exceeds the limit of {} bytes",
-                                        self.max_message
+                                        "decompressed {} message exceeds the limit of {} bytes",
+                                        self.what, self.max_message
                                     ),
                                     "message_bytes",
                                 ));
                             }
                             Err(_) => {
-                                return Err(failure(13, "request message is not valid gzip"));
+                                return Err(failure(
+                                    13,
+                                    format!("{} message is not valid gzip", self.what),
+                                ));
                             }
                         }
                     } else {
@@ -353,7 +377,7 @@ impl Incoming {
                     if self.count > self.max_messages {
                         return Err(limit_hit(
                             8,
-                            format!("more than {} request messages", self.max_messages),
+                            format!("more than {} {} messages", self.max_messages, self.what),
                             "messages",
                         ));
                     }
@@ -361,7 +385,10 @@ impl Incoming {
                     if self.total > self.max_bytes {
                         return Err(limit_hit(
                             8,
-                            format!("request messages exceed {} bytes in total", self.max_bytes),
+                            format!(
+                                "{} messages exceed {} bytes in total",
+                                self.what, self.max_bytes
+                            ),
                             "stream_bytes",
                         ));
                     }
@@ -398,42 +425,60 @@ impl Incoming {
                     return Err(limit_hit(
                         4,
                         format!(
-                            "no request message within the idle timeout of {} ms",
+                            "no {} message within the idle timeout of {} ms",
+                            self.what,
                             self.idle.as_millis()
                         ),
                         "idle",
                     ));
                 }
                 Ok(None) => self.ended = true,
-                Ok(Some(Err(_))) => return Err(failure(1, "the request stream was cancelled")),
-                Ok(Some(Ok(f))) => {
-                    if let Ok(d) = f.into_data() {
-                        self.push(d)?;
-                    }
+                Ok(Some(Err(_))) => {
+                    return Err(failure(
+                        1,
+                        format!("the {} stream was cancelled", self.what),
+                    ));
                 }
+                Ok(Some(Ok(f))) => match f.into_data() {
+                    Ok(d) => self.push(d)?,
+                    Err(f) => {
+                        if let Ok(t) = f.into_trailers() {
+                            self.trailers = Some(t);
+                        }
+                    }
+                },
             }
         }
     }
 }
 
-type FrameTx = mpsc::Sender<Result<Frame<Bytes>, std::io::Error>>;
+pub(crate) type FrameTx = mpsc::Sender<Result<Frame<Bytes>, std::io::Error>>;
 
 /// Pause before a stream reset so the frames sent before it reach the client (a reset discards frames
 /// still queued for sending).
 const FAULT_FLUSH: Duration = Duration::from_millis(50);
 
 /// Writes response frames and keeps the journal record.
-struct Out {
-    tx: FrameTx,
-    protocol: Protocol,
-    gzip: bool,
-    method: MethodDescriptor,
-    log: Arc<CallLog>,
-    kind: Kind,
-    sent: u32,
+pub(crate) struct Out {
+    pub(crate) tx: FrameTx,
+    pub(crate) protocol: Protocol,
+    pub(crate) gzip: bool,
+    pub(crate) method: MethodDescriptor,
+    pub(crate) log: Arc<CallLog>,
+    pub(crate) kind: Kind,
+    pub(crate) sent: u32,
 }
 
 impl Out {
+    /// Forwards a message as it came (a proxied answer); `json` is what the journal keeps.
+    pub(crate) async fn forward(&mut self, payload: &[u8], json: &Value) -> bool {
+        self.log.with(|r| r.push_response(json));
+        self.sent += 1;
+        metrics::counter!("fastmock_grpc_stream_messages_total", "direction" => "out", "kind" => self.kind.label())
+            .increment(1);
+        self.data(crate::grpc::frame(payload, self.gzip)).await
+    }
+
     async fn data(&self, bytes: Bytes) -> bool {
         let b = if self.protocol == Protocol::WebText {
             Bytes::from(B64.encode(&bytes))
@@ -453,7 +498,7 @@ impl Out {
         Ok(self.data(crate::grpc::frame(&payload, self.gzip)).await)
     }
 
-    async fn finish(self, outcome: Outcome) {
+    pub(crate) async fn finish(self, outcome: Outcome) {
         self.log.with(|r| {
             r.status = outcome.code;
             r.message = outcome.message.clone();
@@ -471,7 +516,7 @@ impl Out {
         }
     }
 
-    fn cancelled(&self) {
+    pub(crate) fn cancelled(&self) {
         self.log.with(|r| {
             r.status = 1;
             r.message = "cancelled by the client".into();
@@ -579,7 +624,11 @@ impl Renderer {
 }
 
 /// A gRPC answer before any message: status (and message) only.
-fn trailers_only(protocol: Protocol, req_ct: Option<&str>, outcome: Outcome) -> Response {
+pub(crate) fn trailers_only(
+    protocol: Protocol,
+    req_ct: Option<&str>,
+    outcome: Outcome,
+) -> Response {
     let mut r = match protocol {
         Protocol::Grpc => {
             let frames: Vec<Result<Frame<Bytes>, std::io::Error>> =
@@ -601,7 +650,7 @@ fn trailers_only(protocol: Protocol, req_ct: Option<&str>, outcome: Outcome) -> 
     r
 }
 
-fn finished_early(
+pub(crate) fn finished_early(
     protocol: Protocol,
     req_ct: Option<&str>,
     log: &Arc<CallLog>,
@@ -616,7 +665,7 @@ fn finished_early(
     r
 }
 
-const RESERVED_METADATA: [&str; 12] = [
+pub(crate) const RESERVED_METADATA: [&str; 12] = [
     "content-type",
     "content-length",
     "grpc-status",
@@ -722,6 +771,7 @@ async fn call(
             .increment(n);
     };
     let mut held: Vec<OwnedSemaphorePermit> = Vec::new();
+    let mut raw: Vec<Bytes> = Vec::new();
     let body = match kind {
         Kind::Unary | Kind::ServerStreaming => {
             let first = match incoming.next().await {
@@ -744,6 +794,7 @@ async fn call(
                 Ok(j) => j,
                 Err(e) => return early(Outcome::status(13, e)),
             };
+            raw.push(first);
             log.with(|r| r.push_request(&json));
             let text = json.to_string();
             if text.len() > app.cfg.max_body_bytes.saturating_mul(2) {
@@ -767,7 +818,7 @@ async fn call(
                 };
                 let n = serde_json::to_vec(&json).map_or(0, |v| v.len()) + 1;
                 size += n;
-                let permits = (n.saturating_mul(2) / 1024 + 1) as u32;
+                let permits = ((n.saturating_mul(2) + payload.len()) / 1024 + 1) as u32;
                 match app.body_budget.clone().try_acquire_many_owned(permits) {
                     Ok(p) => held.push(p),
                     Err(_) => {
@@ -781,6 +832,7 @@ async fn call(
                 }
                 log.with(|r| r.push_request(&json));
                 all.push(json);
+                raw.push(payload);
             }
             if size > app.cfg.grpc_max_stream_bytes.saturating_mul(2) {
                 return early(Outcome::status(8, "decoded request stream is too large"));
@@ -811,9 +863,61 @@ async fn call(
         Some(app.cfg.listen.port()).filter(|p| *p != 0),
     );
     cr.grpc_call = true;
+    let proxied =
+        |target: crate::grpc_proxy::Target,
+         parts: Parts,
+         log: Arc<CallLog>,
+         done: oneshot::Sender<()>,
+         incoming: Incoming,
+         raw: Vec<Bytes>,
+         held: Vec<OwnedSemaphorePermit>| crate::grpc_proxy::ProxyCall {
+            target,
+            parts,
+            protocol,
+            req_ct: req_ct.map(String::from),
+            method: method.clone(),
+            kind,
+            log,
+            done,
+            incoming,
+            raw,
+            held,
+            request_body: cr.body.clone(),
+        };
     let r = match app.engine.handle(&cr).await {
+        Ok(Some(r)) if r.proxy.is_some() => {
+            let hit = StubHit {
+                id: r.stub_id,
+                name: r.stub_name.clone(),
+                space: r.space.clone(),
+            };
+            if !app.engine.settings().await.proxy_pass_through {
+                metrics::counter!("fastmock_proxy_pass_through_blocked_total").increment(1);
+                let mut resp = early(Outcome::status(
+                    12,
+                    format!("proxy pass-through is disabled: {path} is not forwarded"),
+                ));
+                resp.extensions_mut().insert(hit);
+                return resp;
+            }
+            let delay = Duration::from_millis(r.delay_ms).min(app.cfg.max_delay);
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            let target = crate::grpc_proxy::Target::Stub {
+                def: r.proxy.clone().expect("a proxy stub"),
+                hit,
+            };
+            let call = proxied(target, parts, log, done, incoming, raw, held);
+            return crate::grpc_proxy::forward(app, call).await;
+        }
         Ok(Some(r)) => r,
         Ok(None) => {
+            if let Some(rec) = crate::proxy::active_recording(app).await {
+                let target = crate::grpc_proxy::Target::Recording(rec);
+                let call = proxied(target, parts, log, done, incoming, raw, held);
+                return crate::grpc_proxy::forward(app, call).await;
+            }
             let mut resp = early(Outcome::status(12, format!("no stub matched {path}")));
             resp.extensions_mut().insert(Unmatched);
             return resp;
@@ -825,6 +929,7 @@ async fn call(
         }
     };
     drop(held);
+    drop(raw);
     if !r.messages.is_empty() {
         app.brokers
             .publish_in_background(r.messages.clone(), Some(r.stub_id));

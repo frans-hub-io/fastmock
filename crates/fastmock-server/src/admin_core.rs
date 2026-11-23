@@ -39,6 +39,9 @@ pub struct AccessSpace {
     /// Mail domains whose captured messages go to the space (`*.domain` for subdomains).
     #[schema(example = json!(["billing.example.com"]))]
     pub mail_domains: Vec<String>,
+    /// Capture allow-lists of the space, which narrow the server-wide ones (absent when the space sets none).
+    #[serde(skip_serializing_if = "crate::access::SpaceCapture::is_empty")]
+    pub capture: crate::access::SpaceCapture,
 }
 
 /// A built-in role or a custom role of the access file.
@@ -116,6 +119,7 @@ impl AccessView {
                     path_prefixes: s.path_prefixes.clone(),
                     hosts: s.hosts.clone(),
                     mail_domains: s.mail_domains.clone(),
+                    capture: s.capture.clone(),
                 })
                 .collect(),
             roles: access
