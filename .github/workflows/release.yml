@@ -94,7 +94,7 @@ jobs:
           BINARY: ${{ matrix.binary }}
         run: |
           set -euo pipefail
-          reported=$(docker run --rm check:local version)
+          reported=$(docker run --rm check:local --version)
           container=$(docker create check:local)
           docker cp "$container:/usr/local/bin/$BINARY" "$RUNNER_TEMP/$BINARY"
           docker rm "$container" > /dev/null
@@ -183,7 +183,7 @@ jobs:
             jq -e --arg arch "$arch" '.manifests | any(.platform.os == "linux" and .platform.architecture == $arch)' <<< "$raw" > /dev/null \
               || { echo "::error::$IMAGE:$VERSION has no linux/$arch manifest"; exit 1; }
           done
-          out=$(docker run --rm --platform linux/amd64 "$IMAGE:$VERSION" version)
+          out=$(docker run --rm --platform linux/amd64 "$IMAGE:$VERSION" --version)
           if [ "$out" != "$BINARY $VERSION" ]; then
             echo "::error::$IMAGE:$VERSION reports '$out'"
             exit 1
