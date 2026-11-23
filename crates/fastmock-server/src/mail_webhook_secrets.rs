@@ -121,9 +121,11 @@ mod tests {
         assert_eq!(s.open("plain").as_deref(), Some("plain"));
         assert_eq!(s.seal_once(&a).unwrap(), a);
         assert!(Sealer::with_key(Some([8; 32])).open(&a).is_none());
-        let mut broken = a.clone();
-        broken.pop();
-        broken.push('A');
+        let mut bytes = a.clone().into_bytes();
+        let at = bytes.len() - 6;
+        bytes[at] = if bytes[at] == b'A' { b'B' } else { b'A' };
+        let broken = String::from_utf8(bytes).unwrap();
+        assert_ne!(broken, a);
         assert!(s.open(&broken).is_none() || s.open(&broken).as_deref() != Some("key-1"));
         let none = Sealer::with_key(None);
         assert!(!none.available());
