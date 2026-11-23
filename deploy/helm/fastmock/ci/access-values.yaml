@@ -19,7 +19,12 @@ access:
       description: Payment provider mocks
       pathPrefixes: [/payments/, /psp/]
       hosts: [psp.example.com]
+      capture:
+        kafkaTopics: ["payments.*"]
+        amqpExchanges: [payments]
     - name: billing
+      capture:
+        mqttTopics: []
   bindings:
     - subject: group:payments-dev
       role: editor

@@ -22,6 +22,7 @@ env:
   HELM_VERSION: v3.22.1
   HELM_UNITTEST_VERSION: v1.2.1
   MOSQUITTO_VERSION: 2.0.22
+  RABBITMQ_VERSION: 4.3.6
 
 jobs:
   ui:
@@ -99,18 +100,6 @@ jobs:
         image: apache/kafka:${{ matrix.kafka }}
         ports:
           - 9092:9092
-      rabbitmq:
-        image: rabbitmq:4.3.6
-        env:
-          RABBITMQ_DEFAULT_USER: fastmock
-          RABBITMQ_DEFAULT_PASS: fastmock
-        ports:
-          - 5672:5672
-        options: >-
-          --health-cmd "rabbitmq-diagnostics -q ping"
-          --health-interval 5s
-          --health-timeout 10s
-          --health-retries 30
     env:
       FASTMOCK_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
       FASTMOCK_TEST_VALKEY_URL: redis://localhost:6379/
@@ -119,6 +108,7 @@ jobs:
       FASTMOCK_TEST_AMQP: amqp://localhost:5672/%2f
       FASTMOCK_TEST_AMQP_USER: fastmock
       FASTMOCK_TEST_AMQP_PASSWORD: fastmock
+      FASTMOCK_TEST_AMQPS: amqps://localhost:5671/%2f
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -140,6 +130,27 @@ jobs:
             sleep 1
           done
           docker logs mosquitto
+          exit 1
+      - name: start rabbitmq
+        run: |
+          dir="$RUNNER_TEMP/rabbitmq"
+          bash .github/rabbitmq/prepare.sh "$dir" /etc/rabbitmq/fastmock
+          docker run -d --name rabbitmq -p 5672:5672 -p 5671:5671 \
+            -e RABBITMQ_DEFAULT_USER=fastmock -e RABBITMQ_DEFAULT_PASS=fastmock \
+            -v "$dir:/etc/rabbitmq/fastmock:ro" \
+            -v "$dir/rabbitmq.conf:/etc/rabbitmq/conf.d/90-fastmock.conf:ro" \
+            -v "$dir/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro" \
+            "rabbitmq:${RABBITMQ_VERSION}"
+          for i in $(seq 1 60); do
+            if docker exec rabbitmq rabbitmq-diagnostics -q check_port_connectivity >/dev/null 2>&1; then
+              docker exec rabbitmq rabbitmqctl -q add_user fastmock-capture "$(openssl rand -hex 16)"
+              docker exec rabbitmq rabbitmqctl -q set_permissions -p / fastmock-capture '.*' '.*' '.*'
+              echo "FASTMOCK_TEST_AMQPS_TLS_DIR=$dir" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs rabbitmq
           exit 1
       - if: matrix.lint
         run: cargo fmt --all -- --check

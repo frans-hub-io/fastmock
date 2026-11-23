@@ -263,7 +263,7 @@ helm uninstall fastmock -n mocks
 | `messaging.capture.sources` | `[]` | Sources from the configuration (`name`, `protocol`, `space`, `topics`, `exchange`, `bindingKeys`, `qos`, `startFrom`, `maxMessages`, `enabled`, `description`), rendered into the ConfigMap `<fullname>-capture` and read through `FASTMOCK_CAPTURE_SOURCES_FILE`; pods restart when they change. |
 | `messaging.capture.limits.maxSources`, `.maxMessages`, `.maxMessageBytes`, `.maxBytes`, `.maxAge` | `50`, `1000`, `1048576`, `268435456`, `24h` | `FASTMOCK_CAPTURE_MAX_*`. |
 | `messaging.capture.limits.maxSpaceBytes` | unset (a quarter of `maxBytes`) | `FASTMOCK_CAPTURE_MAX_SPACE_BYTES`: stored bytes per space. |
-| `messaging.capture.allowedKafkaTopics`, `.allowedMqttTopics`, `.allowedAmqpExchanges` | `[]` | `FASTMOCK_CAPTURE_KAFKA_TOPICS`, `_MQTT_TOPICS`, `_AMQP_EXCHANGES`: what capture sources may read (names, `prefix*` or `*`). Empty: only the sources in `messaging.capture.sources`; sources created through the API need the list of their protocol. |
+| `messaging.capture.allowedKafkaTopics`, `.allowedMqttTopics`, `.allowedAmqpExchanges` | `[]` | `FASTMOCK_CAPTURE_KAFKA_TOPICS`, `_MQTT_TOPICS`, `_AMQP_EXCHANGES`: what capture sources may read (names, `prefix*` or `*`). Empty: only the sources in `messaging.capture.sources`; sources created through the API need the list of their protocol. Spaces narrow them with `access.spaces[].capture` ([Access control](#access-control)). |
 | `kafka.enabled` | `false` | Install the CloudPirates `kafka` chart (one broker, KRaft) and connect FastMock to it with SASL/PLAIN. |
 | `kafka.auth.existingSecret` | `""` (the Kafka chart generates `<release>-kafka`) | Secret with `client-password`, `inter-broker-password` and `controller-password`. Without it the Kafka chart generates random passwords once, keeps them across upgrades and FastMock reads `client-password` from that Secret. |
 | `kafka.auth.clientUser` | `fastmock` | SASL user FastMock connects as. |
@@ -631,6 +631,8 @@ access:
     - name: payments
       pathPrefixes: [/payments/]
       hosts: [psp.example.com]
+      capture:
+        kafkaTopics: ["payments.*"]
     - name: billing
   bindings:
     - subject: token:ci-billing
@@ -641,7 +643,13 @@ access:
       global: true
 ```
 
-The values schema checks names, permission and subject formats; the server checks the rest at start-up (unknown
+`access.spaces[].capture` (`kafkaTopics`, `mqttTopics`, `amqpExchanges`) narrows the capture allow-lists of
+`messaging.capture.allowedKafkaTopics`, `.allowedMqttTopics` and `.allowedAmqpExchanges` for the sources of that
+space; a space can never read more than the server-wide lists allow
+([Message capture: allow-lists per space](../guide/message-capture.md#allow-lists-per-space)).
+
+The values schema checks names, permission and subject formats, and that capture list entries are names, `prefix*`
+or `*`; the server checks the rest at start-up (unknown
 permissions, roles and spaces, `token:` bindings without a matching entry in the tokens Secret). A token that
 should only get space bindings has an empty role in the Secret: `ci-billing::<sha256>`.
 

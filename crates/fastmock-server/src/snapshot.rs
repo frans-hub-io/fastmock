@@ -134,6 +134,7 @@ pub fn build_stubs(
 ) -> (Vec<Stub>, Vec<String>) {
     let rec = crate::proxy::Recording {
         target_base_url: String::new(),
+        grpc_target_base_url: None,
         tag: b.tag.clone(),
         capture_headers: vec![],
         request_headers: b.capture_headers.clone(),

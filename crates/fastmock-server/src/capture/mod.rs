@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::access::SpaceDef;
 use crate::broker_settings::CaptureConfig;
 use crate::state::AppState;
 
@@ -72,8 +73,24 @@ pub fn build(
         if let Some(setting) = missing_setting(cfg, s.protocol) {
             anyhow::bail!("capture source {} needs {setting}", s.name);
         }
-        if let Err(e) = allowed(c, s) {
+        let space = s.space.as_deref().and_then(|n| access.space(n));
+        if let Err(e) = allowed(c, space, s) {
             anyhow::bail!("capture source {}: {e}", s.name);
+        }
+    }
+    for space in access.spaces() {
+        for (field, list) in space.capture.lists() {
+            let server = server_list(c, field);
+            for e in list.unwrap_or_default() {
+                if server.is_none_or(|l| !l.iter().any(|x| meet(x, e).is_some())) {
+                    tracing::warn!(
+                        space = %space.name,
+                        entry = %e,
+                        "capture.{field} of the space allows nothing that the server-wide list {} allows; the entry has no effect",
+                        server_var(field)
+                    );
+                }
+            }
         }
     }
     let (store, poll): (Arc<dyn CaptureStore>, Option<Duration>) = match pg {
@@ -102,25 +119,119 @@ pub fn missing_setting(cfg: &crate::config::Config, p: MessageProtocol) -> Optio
     }
 }
 
-/// Checks a source against the capture allow-lists. Sources from the configuration are checked only when
-/// the protocol has an allow-list; sources created through the API need one (`*` allows every name).
-pub fn allowed(c: &CaptureConfig, s: &CaptureSource) -> Result<(), String> {
-    let (list, name) = match s.protocol {
-        MessageProtocol::Kafka => (&c.kafka_topics, "FASTMOCK_CAPTURE_KAFKA_TOPICS"),
-        MessageProtocol::Mqtt => (&c.mqtt_topics, "FASTMOCK_CAPTURE_MQTT_TOPICS"),
-        MessageProtocol::Amqp => (&c.amqp_exchanges, "FASTMOCK_CAPTURE_AMQP_EXCHANGES"),
+fn server_var(field: &str) -> &'static str {
+    match field {
+        "kafkaTopics" => "FASTMOCK_CAPTURE_KAFKA_TOPICS",
+        "mqttTopics" => "FASTMOCK_CAPTURE_MQTT_TOPICS",
+        _ => "FASTMOCK_CAPTURE_AMQP_EXCHANGES",
+    }
+}
+
+fn server_list<'a>(c: &'a CaptureConfig, field: &str) -> Option<&'a [String]> {
+    match field {
+        "kafkaTopics" => c.kafka_topics.as_deref(),
+        "mqttTopics" => c.mqtt_topics.as_deref(),
+        _ => c.amqp_exchanges.as_deref(),
+    }
+}
+
+fn field_of(p: MessageProtocol) -> &'static str {
+    match p {
+        MessageProtocol::Kafka => "kafkaTopics",
+        MessageProtocol::Mqtt => "mqttTopics",
+        MessageProtocol::Amqp => "amqpExchanges",
+    }
+}
+
+/// The entry that allows exactly the names both entries allow, if any (entries are names, `prefix*` or
+/// `*`).
+fn meet(a: &str, b: &str) -> Option<String> {
+    match (a.strip_suffix('*'), b.strip_suffix('*')) {
+        (None, None) => (a == b).then(|| a.to_string()),
+        (Some(p), None) => b.starts_with(p).then(|| b.to_string()),
+        (None, Some(q)) => a.starts_with(q).then(|| a.to_string()),
+        (Some(p), Some(q)) if p.starts_with(q) => Some(a.to_string()),
+        (Some(p), Some(q)) if q.starts_with(p) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+/// The allow-list sources created through the API in an area get for a protocol: the server-wide list,
+/// narrowed by the space's list. `None` while the server-wide list is not set (such sources are refused).
+pub fn effective_list(
+    c: &CaptureConfig,
+    space: Option<&SpaceDef>,
+    p: MessageProtocol,
+) -> Option<Vec<String>> {
+    let field = field_of(p);
+    let server = server_list(c, field)?;
+    let narrow = space.and_then(|s| {
+        s.capture
+            .lists()
+            .into_iter()
+            .find(|(f, _)| *f == field)
+            .and_then(|(_, l)| l)
+    });
+    let Some(narrow) = narrow else {
+        return Some(server.to_vec());
     };
+    let mut out: Vec<String> = Vec::new();
+    for b in narrow {
+        for a in server {
+            if let Some(m) = meet(a, b)
+                && !out.contains(&m)
+            {
+                out.push(m);
+            }
+        }
+    }
+    Some(out)
+}
+
+/// Checks a source against the capture allow-lists: the server-wide list of its protocol and, for a
+/// source in a space, the space's list (`spaces[].capture` in the access file), which can only narrow it.
+/// Sources from the configuration are checked only against the lists that are set; sources created
+/// through the API need the server-wide list (`*` allows every name).
+pub fn allowed(
+    c: &CaptureConfig,
+    space: Option<&SpaceDef>,
+    s: &CaptureSource,
+) -> Result<(), String> {
+    let field = field_of(s.protocol);
+    let name = server_var(field);
+    let list = server_list(c, field);
     if list.is_none() && !s.from_config {
         return Err(format!(
             "capture sources created through the API need {name}: set it to the names or prefix* this server may read ({name}=* allows every one)"
         ));
     }
+    let narrow = space.and_then(|sp| {
+        sp.capture
+            .lists()
+            .into_iter()
+            .find(|(f, _)| *f == field)
+            .and_then(|(_, l)| l)
+            .map(|l| (sp.name.as_str(), l))
+    });
     for d in s.destinations() {
-        if !fastmock_brokers::name_allowed(list.as_deref(), &d) {
+        if !fastmock_brokers::name_allowed(list, &d) {
             return Err(format!("{d} is not in {name}"));
+        }
+        if let Some((space, l)) = narrow
+            && !fastmock_brokers::name_allowed(Some(l), &d)
+        {
+            return Err(format!(
+                "{d} is not in the capture allow-list of space {space} (spaces[].capture.{field} in the access file)"
+            ));
         }
     }
     Ok(())
+}
+
+/// [`allowed`] with the space of the source from the access configuration.
+pub fn allowed_in(app: &AppState, c: &CaptureConfig, s: &CaptureSource) -> Result<(), String> {
+    let space = s.space.as_deref().and_then(|n| app.auth.access().space(n));
+    allowed(c, space, s)
 }
 
 /// The sources of the configuration and of the data store; stored ones with a configured name are
@@ -365,10 +476,11 @@ mod tests {
             ..Default::default()
         };
         let src = |v: Value| serde_json::from_value::<CaptureSource>(v).unwrap();
-        assert!(allowed(&c, &src(serde_json::json!({"name": "a", "protocol": "mqtt", "topics": ["devices/+/state"]}))).is_ok());
+        assert!(allowed(&c, None, &src(serde_json::json!({"name": "a", "protocol": "mqtt", "topics": ["devices/+/state"]}))).is_ok());
         assert!(
             allowed(
                 &c,
+                None,
                 &src(serde_json::json!({"name": "a", "protocol": "mqtt", "topics": ["#"]}))
             )
             .is_err()
@@ -376,6 +488,7 @@ mod tests {
         assert!(
             allowed(
                 &c,
+                None,
                 &src(serde_json::json!({"name": "a", "protocol": "amqp", "exchange": "orders"}))
             )
             .is_ok()
@@ -383,6 +496,7 @@ mod tests {
         assert!(
             allowed(
                 &c,
+                None,
                 &src(serde_json::json!({"name": "a", "protocol": "kafka", "topics": ["x"]}))
             )
             .is_err(),
@@ -392,6 +506,7 @@ mod tests {
         assert!(
             allowed(
                 &c,
+                None,
                 &src(serde_json::json!({"name": "a", "protocol": "kafka", "topics": ["x"]}))
             )
             .is_err()
@@ -405,11 +520,11 @@ mod tests {
             serde_json::json!({"name": "a", "protocol": "kafka", "topics": ["orders"]}),
         )
         .unwrap();
-        let e = allowed(&c, &s).unwrap_err();
+        let e = allowed(&c, None, &s).unwrap_err();
         assert!(e.contains("FASTMOCK_CAPTURE_KAFKA_TOPICS"), "{e}");
         s.from_config = true;
         assert!(
-            allowed(&c, &s).is_ok(),
+            allowed(&c, None, &s).is_ok(),
             "configured sources need no allow-list"
         );
         s.from_config = false;
@@ -417,6 +532,115 @@ mod tests {
             kafka_topics: Some(vec!["*".into()]),
             ..Default::default()
         };
-        assert!(allowed(&c, &s).is_ok());
+        assert!(allowed(&c, None, &s).is_ok());
+    }
+
+    fn space(capture: Value) -> SpaceDef {
+        SpaceDef {
+            name: "payments".into(),
+            description: None,
+            path_prefixes: vec![],
+            hosts: vec![],
+            mail_domains: vec![],
+            capture: serde_json::from_value(capture).unwrap(),
+        }
+    }
+
+    #[test]
+    fn space_lists_narrow_and_never_widen() {
+        let c = CaptureConfig {
+            kafka_topics: Some(vec!["orders.*".into(), "billing.events".into()]),
+            mqtt_topics: Some(vec!["*".into()]),
+            ..Default::default()
+        };
+        let src = |v: Value| serde_json::from_value::<CaptureSource>(v).unwrap();
+        let kafka =
+            |t: &str| src(serde_json::json!({"name": "a", "protocol": "kafka", "topics": [t]}));
+        let wide = space(serde_json::json!({"kafkaTopics": ["*"]}));
+        assert!(allowed(&c, Some(&wide), &kafka("orders.created")).is_ok());
+        let e = allowed(&c, Some(&wide), &kafka("audit.log")).unwrap_err();
+        assert!(e.contains("FASTMOCK_CAPTURE_KAFKA_TOPICS"), "{e}");
+        let narrow = space(serde_json::json!({"kafkaTopics": ["orders.eu.*"]}));
+        assert!(allowed(&c, Some(&narrow), &kafka("orders.eu.created")).is_ok());
+        let e = allowed(&c, Some(&narrow), &kafka("orders.us.created")).unwrap_err();
+        assert!(
+            e.contains("space payments") && e.contains("kafkaTopics"),
+            "{e}"
+        );
+        assert!(allowed(&c, Some(&narrow), &kafka("billing.events")).is_err());
+        let none = space(serde_json::json!({"mqttTopics": []}));
+        assert!(
+            allowed(
+                &c,
+                Some(&none),
+                &src(serde_json::json!({"name": "a", "protocol": "mqtt", "topics": ["x/y"]}))
+            )
+            .is_err(),
+            "an empty space list allows nothing"
+        );
+        assert!(
+            allowed(&c, Some(&none), &kafka("orders.x")).is_ok(),
+            "other protocols keep the server-wide list"
+        );
+        let no_server = CaptureConfig::default();
+        assert!(
+            allowed(&no_server, Some(&wide), &kafka("orders.x")).is_err(),
+            "a space list does not replace a missing server-wide list"
+        );
+        let mut configured = kafka("audit.log");
+        configured.from_config = true;
+        assert!(allowed(&no_server, None, &configured).is_ok());
+        assert!(
+            allowed(&no_server, Some(&narrow), &configured).is_err(),
+            "configured sources must match the space list when it is set"
+        );
+    }
+
+    #[test]
+    fn effective_lists_are_intersections() {
+        let c = CaptureConfig {
+            kafka_topics: Some(vec![
+                "orders.*".into(),
+                "billing.events".into(),
+                "a*".into(),
+            ]),
+            amqp_exchanges: Some(vec!["*".into()]),
+            ..Default::default()
+        };
+        let sp = space(serde_json::json!({
+            "kafkaTopics": ["*", "orders.eu.*", "billing.*", "ab", "x"],
+            "amqpExchanges": ["billing"]
+        }));
+        assert_eq!(
+            effective_list(&c, Some(&sp), MessageProtocol::Kafka).unwrap(),
+            vec!["orders.*", "billing.events", "a*", "orders.eu.*", "ab"]
+        );
+        assert_eq!(
+            effective_list(&c, Some(&sp), MessageProtocol::Amqp).unwrap(),
+            vec!["billing"]
+        );
+        assert_eq!(effective_list(&c, Some(&sp), MessageProtocol::Mqtt), None);
+        assert_eq!(
+            effective_list(&c, None, MessageProtocol::Kafka).unwrap(),
+            vec!["orders.*", "billing.events", "a*"]
+        );
+        for name in [
+            "orders.eu.1",
+            "orders.us",
+            "billing.events",
+            "billing.x",
+            "ab",
+            "ac",
+            "x",
+        ] {
+            let both = fastmock_brokers::name_allowed(c.kafka_topics.as_deref(), name)
+                && fastmock_brokers::name_allowed(sp.capture.kafka_topics.as_deref(), name);
+            let eff = effective_list(&c, Some(&sp), MessageProtocol::Kafka).unwrap();
+            assert_eq!(
+                fastmock_brokers::name_allowed(Some(&eff), name),
+                both,
+                "{name}"
+            );
+        }
     }
 }

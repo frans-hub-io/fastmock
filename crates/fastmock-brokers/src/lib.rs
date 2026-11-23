@@ -445,7 +445,21 @@ pub fn error_category(text: &str) -> String {
     if has(&["refused the subscription"]) {
         return "the broker refused the subscription".into();
     }
-    if has(&["certificate", "tls", "handshake", "ssl"]) {
+    if has(&["fatal alert"])
+        && has(&[
+            "unknownca",
+            "badcertificate",
+            "certificaterequired",
+            "certificateunknown",
+            "certificaterevoked",
+            "certificateexpired",
+            "unsupportedcertificate",
+            "accessdenied",
+        ])
+    {
+        return "TLS handshake failed: the broker refused FastMock's client certificate".into();
+    }
+    if has(&["certificate", "tls", "handshake", "ssl", "fatal alert"]) {
         return "TLS handshake failed".into();
     }
     if has(&["connection refused"]) {
@@ -638,6 +652,18 @@ mod tests {
             (
                 "the MQTT connection failed: TLS: invalid peer certificate: UnknownIssuer",
                 "TLS handshake failed",
+            ),
+            (
+                "connecting to amqps://rabbit.example.com:5671/%2F: IO error: received fatal alert: UnknownCA",
+                "TLS handshake failed: the broker refused FastMock's client certificate",
+            ),
+            (
+                "connecting to amqps://rabbit.example.com:5671/%2F: IO error: received fatal alert: HandshakeFailure",
+                "TLS handshake failed",
+            ),
+            (
+                "connecting to amqps://198.51.100.7:5671/%2F: protocol error: AMQP soft error: ACCESS-REFUSED: ACCESS_REFUSED - Login was refused using authentication mechanism EXTERNAL. For details see the broker logfile.",
+                "the broker refused the credentials",
             ),
             (
                 "schema registry returned 404 Not Found for schema id 7: {\"error_code\":40403,\"message\":\"secret detail\"}",

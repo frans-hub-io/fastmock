@@ -182,6 +182,21 @@
                   "maxLength": 255,
                   "pattern": "^(\\*\\.)?[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\\.?$"
                 }
+              },
+              "capture": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kafkaTopics": {
+                    "$ref": "#/definitions/captureAllowList"
+                  },
+                  "mqttTopics": {
+                    "$ref": "#/definitions/captureAllowList"
+                  },
+                  "amqpExchanges": {
+                    "$ref": "#/definitions/captureAllowList"
+                  }
+                }
               }
             }
           }
@@ -1586,5 +1601,17 @@
       "type": "object"
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "definitions": {
+    "captureAllowList": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 255,
+        "pattern": "^[^*\\s]*\\*?$"
+      }
+    }
+  }
 }

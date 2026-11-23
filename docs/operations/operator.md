@@ -103,13 +103,23 @@ kubectl -n team-payments label configmap payments-mock-access fastmock.franshub.
 spaces:
   - name: team-payments
     pathPrefixes: [/payments/]
+    capture:
+      kafkaTopics: ["payments.*"]
   - name: team-billing
     pathPrefixes: [/billing/]
+    capture:
+      kafkaTopics: ["billing.*"]
+      amqpExchanges: [billing]
 bindings:
   - subject: token:ci-billing
     role: editor
     spaces: [team-billing]
 ```
+
+Per-space capture allow-lists are part of the same file: `spaces[].capture` (`kafkaTopics`, `mqttTopics`,
+`amqpExchanges`) narrows the server-wide `FASTMOCK_CAPTURE_*` lists (set through `env`) for the
+[capture sources](../guide/message-capture.md#allow-lists-per-space) of that space, so each team can read only its
+own topics through the shared broker credentials.
 
 The content is part of the pod template checksum, so editing the ConfigMap rolls the pods. The operator watches
 labelled ConfigMaps, so an edit applies right away, without waiting for the periodic resync. An invalid access file stops the new pods at

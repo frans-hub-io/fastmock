@@ -165,6 +165,11 @@ ingress (see [Helm: TLS](helm.md#tls-and-mtls)).
 | `FASTMOCK_GRPC_MAX_STREAM_BYTES` | bytes | `67108864` (64 MiB) | Decompressed request bytes one gRPC call may send; more end the call with `RESOURCE_EXHAUSTED`. Each message is also limited to `FASTMOCK_MAX_BODY_BYTES`, compressed and decompressed. |
 | `FASTMOCK_GRPC_STREAM_IDLE_TIMEOUT` | duration | `60s` | Longest wait for the next request message (or the end of the request stream); then the call ends with `DEADLINE_EXCEEDED`. |
 | `FASTMOCK_GRPC_MAX_STREAM_DURATION` | duration | `1h` | Longest duration of a gRPC call, reading and sending; also caps `grpc.closeAfterMs` of stubs. Reading stops with `DEADLINE_EXCEEDED`; a stream that is still sending ends with the stub's status. |
+| `FASTMOCK_GRPC_PROXY_MAX_CALLS` | integer | `256` | [Proxied gRPC calls](../guide/grpc.md#proxying-and-recording) in flight on one replica, 1..10000; more end with `RESOURCE_EXHAUSTED`. |
+| `FASTMOCK_GRPC_PROXY_CLIENT_CERT_FILE`, `FASTMOCK_GRPC_PROXY_CLIENT_KEY_FILE` | path | unset | PEM client certificate and key presented to gRPC upstreams over TLS (mTLS), only to the hosts in `FASTMOCK_GRPC_PROXY_CLIENT_CERT_HOSTS`. Both or neither; startup fails if they cannot be read or do not fit. |
+| `FASTMOCK_GRPC_PROXY_CLIENT_CERT_HOSTS` | list | unset | Upstream hosts (`name` or `*.domain`) that get the client certificate; required with it. Other upstreams get no certificate. |
+| `FASTMOCK_GRPC_RECORD_MAX_MESSAGES` | integer | `100` | Messages per direction a recorded gRPC call may have, 1..1000; longer calls are proxied but not recorded (`fastmock_recording_skipped_total{reason="too_large"}`). |
+| `FASTMOCK_GRPC_RECORD_MAX_BYTES` | bytes | `1048576` (1 MiB) | JSON bytes of all messages of a recorded gRPC call, 1 KiB..16 MiB; each message also at most 1 MiB. Larger calls are proxied but not recorded. |
 
 ## Request journal
 
@@ -202,7 +207,7 @@ always see the original request. See [Security: redaction](security.md#redaction
 | `FASTMOCK_CALLBACK_RETENTION` | duration | `24h` | Delivered and failed callbacks older than this are deleted. Pending callbacks are kept. |
 | `FASTMOCK_CALLBACK_ALLOWED_HOSTS` | list | none (any host) | Host allow-list for callbacks, proxy stubs and recording: exact names (`hooks.example.com`) or suffixes (`*.svc.cluster.local`, which matches `a.svc.cluster.local` but not `svc.cluster.local`). |
 | `FASTMOCK_CALLBACK_DENIED_CIDRS` | list | see below | Address ranges that callbacks, proxy stubs and recording never connect to. Checked on literal IPs in the URL and on every address the host name resolves to. Replaces the default list. |
-| `FASTMOCK_OUTBOUND_CA_FILE` | path | unset | PEM bundle of extra CA certificates trusted for outgoing HTTPS (callbacks, proxy stubs, recording, contract tests), in addition to the built-in public roots. Startup fails if the file is missing or holds no certificate. |
+| `FASTMOCK_OUTBOUND_CA_FILE` | path | unset | PEM bundle of extra CA certificates trusted for outgoing HTTPS (callbacks, proxy stubs, recording, contract tests, gRPC upstreams), in addition to the built-in public roots. Startup fails if the file is missing or holds no certificate. |
 | `FASTMOCK_STUB_SECRETS` | list | none | Names of secrets that stubs may reference in `callbacks[].hmac.secretRef`. Any other name fails the callback with `secret ... is not configured`. Plugins have their own secrets and are not limited by this list. These secrets can never be sent by contract tests. |
 | `FASTMOCK_CONTRACT_SECRETS` | list | none | Secrets that contract tests may send in `secretHeaders`, each bound to the hosts that may receive it: `name=host1\|host2`, for example `petstore-token=petstore.example.com\|*.petstore.example.com`. Hosts are exact names or IP addresses, or `*.suffix` for subdomains. A name may not also appear in `FASTMOCK_STUB_SECRETS`; a malformed entry is a start-up error. Starting a run with `secretHeaders` needs the global permission `contracts:secrets` (the `admin` role bound globally). See [Contract testing: secrets](../guide/contract-testing.md#secrets-and-redaction). |
 

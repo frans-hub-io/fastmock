@@ -264,6 +264,13 @@ pub fn decode_message(method: &MethodDescriptor, payload: &[u8]) -> Result<Value
     serde_json::to_value(&msg).map_err(|e| e.to_string())
 }
 
+/// Decodes a message of the method's output type (the answer of a proxied upstream).
+pub fn decode_output(method: &MethodDescriptor, payload: &[u8]) -> Result<Value, String> {
+    let msg = DynamicMessage::decode(method.output(), payload)
+        .map_err(|e| format!("cannot decode {}: {e}", method.output().full_name()))?;
+    serde_json::to_value(&msg).map_err(|e| e.to_string())
+}
+
 pub fn percent(s: &str) -> String {
     s.bytes()
         .map(|b| {

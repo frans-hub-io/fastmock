@@ -244,6 +244,101 @@ pub struct Config {
     pub amqp_allowed_exchanges: Option<Vec<String>>,
     /// Message capture (`FASTMOCK_CAPTURE_*`).
     pub capture: crate::broker_settings::CaptureConfig,
+    /// Proxying and recording of gRPC calls (`FASTMOCK_GRPC_PROXY_*`, `FASTMOCK_GRPC_RECORD_*`).
+    pub grpc_proxy: GrpcProxyConfig,
+}
+
+/// Proxying and recording of gRPC calls.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GrpcProxyConfig {
+    /// Client certificate presented to upstreams in `client_cert_hosts`
+    /// (`FASTMOCK_GRPC_PROXY_CLIENT_CERT_FILE`, `FASTMOCK_GRPC_PROXY_CLIENT_KEY_FILE`).
+    pub client_cert: Option<fastmock_kafka::ClientCertFiles>,
+    /// Hosts (`name` or `*.domain`) that get the client certificate (`FASTMOCK_GRPC_PROXY_CLIENT_CERT_HOSTS`).
+    pub client_cert_hosts: Vec<String>,
+    /// Proxied gRPC calls in flight on one replica (`FASTMOCK_GRPC_PROXY_MAX_CALLS`).
+    pub max_calls: usize,
+    /// Messages per direction a recorded gRPC call may have (`FASTMOCK_GRPC_RECORD_MAX_MESSAGES`).
+    pub record_max_messages: usize,
+    /// JSON bytes of the messages of a recorded gRPC call (`FASTMOCK_GRPC_RECORD_MAX_BYTES`).
+    pub record_max_bytes: usize,
+}
+
+impl Default for GrpcProxyConfig {
+    fn default() -> Self {
+        Self {
+            client_cert: None,
+            client_cert_hosts: vec![],
+            max_calls: 256,
+            record_max_messages: 100,
+            record_max_bytes: 1024 * 1024,
+        }
+    }
+}
+
+fn grpc_proxy_settings(env: &dyn Fn(&str) -> Option<String>) -> anyhow::Result<GrpcProxyConfig> {
+    let d = GrpcProxyConfig::default();
+    let num = |name: &str, default: usize| -> anyhow::Result<usize> {
+        match env(name) {
+            Some(v) => v
+                .trim()
+                .parse::<usize>()
+                .with_context(|| format!("FASTMOCK_{name} must be a number")),
+            None => Ok(default),
+        }
+    };
+    let cert = env("GRPC_PROXY_CLIENT_CERT_FILE");
+    let key = env("GRPC_PROXY_CLIENT_KEY_FILE");
+    let client_cert = match (cert, key) {
+        (Some(c), Some(k)) => Some(fastmock_kafka::ClientCertFiles {
+            cert_file: PathBuf::from(c.trim()),
+            key_file: PathBuf::from(k.trim()),
+        }),
+        (None, None) => None,
+        _ => bail!(
+            "set both FASTMOCK_GRPC_PROXY_CLIENT_CERT_FILE and FASTMOCK_GRPC_PROXY_CLIENT_KEY_FILE, or neither"
+        ),
+    };
+    let client_cert_hosts = env("GRPC_PROXY_CLIENT_CERT_HOSTS")
+        .map(|v| list(&v))
+        .unwrap_or_default();
+    let c = GrpcProxyConfig {
+        client_cert,
+        client_cert_hosts,
+        max_calls: num("GRPC_PROXY_MAX_CALLS", d.max_calls)?,
+        record_max_messages: num("GRPC_RECORD_MAX_MESSAGES", d.record_max_messages)?,
+        record_max_bytes: num("GRPC_RECORD_MAX_BYTES", d.record_max_bytes)?,
+    };
+    c.validate()?;
+    Ok(c)
+}
+
+impl GrpcProxyConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.client_cert.is_some() && self.client_cert_hosts.is_empty() {
+            bail!(
+                "FASTMOCK_GRPC_PROXY_CLIENT_CERT_HOSTS must name the upstream hosts that get the client certificate"
+            );
+        }
+        if self.client_cert.is_none() && !self.client_cert_hosts.is_empty() {
+            bail!(
+                "FASTMOCK_GRPC_PROXY_CLIENT_CERT_HOSTS needs FASTMOCK_GRPC_PROXY_CLIENT_CERT_FILE and FASTMOCK_GRPC_PROXY_CLIENT_KEY_FILE"
+            );
+        }
+        if !(1..=10_000).contains(&self.max_calls) {
+            bail!("FASTMOCK_GRPC_PROXY_MAX_CALLS must be between 1 and 10000");
+        }
+        if !(1..=fastmock_core::grpc_model::MAX_GRPC_MESSAGES).contains(&self.record_max_messages) {
+            bail!(
+                "FASTMOCK_GRPC_RECORD_MAX_MESSAGES must be between 1 and {}",
+                fastmock_core::grpc_model::MAX_GRPC_MESSAGES
+            );
+        }
+        if !(1024..=16 * 1024 * 1024).contains(&self.record_max_bytes) {
+            bail!("FASTMOCK_GRPC_RECORD_MAX_BYTES must be between 1024 and 16777216");
+        }
+        Ok(())
+    }
 }
 
 pub const DEFAULT_TOKEN_DAYS: u32 = 90;
@@ -659,6 +754,7 @@ impl Config {
             amqp: None,
             amqp_allowed_exchanges: None,
             capture: Default::default(),
+            grpc_proxy: Default::default(),
         }
     }
 
@@ -801,6 +897,7 @@ impl Config {
             amqp: crate::broker_settings::amqp_settings(&env)?,
             amqp_allowed_exchanges: env("AMQP_ALLOWED_EXCHANGES").map(|v| list(&v)),
             capture: crate::broker_settings::capture_settings(&env)?,
+            grpc_proxy: grpc_proxy_settings(&env)?,
         };
         if cfg.grpc_stream_idle_timeout.is_zero() || cfg.grpc_max_stream_duration.is_zero() {
             bail!(

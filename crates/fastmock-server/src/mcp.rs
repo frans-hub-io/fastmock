@@ -356,6 +356,25 @@ struct WaitForMessageArgs {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ListCaptureSourcesArgs {
+    /// Only the sources of this space.
+    space: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PutCaptureSourceArgs {
+    /// Source id (UUID); a new id is generated when missing. An existing id replaces that source.
+    id: Option<Uuid>,
+    /// The source: {"name", "protocol": "kafka"|"mqtt"|"amqp", "topics" (Kafka, MQTT), "exchange" and
+    /// "bindingKeys" (AMQP), "qos", "startFrom", "maxMessages", "enabled", "description"}.
+    source: Map<String, Value>,
+    /// Space of the source (default: the token's only space, or the global area).
+    space: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct VerifyMessagesArgs {
     /// Message matcher, as in find_messages.
     #[serde(rename = "match", default)]
@@ -648,6 +667,34 @@ const TOOLS: &[ToolSpec] = &[
         read_only: true,
         destructive: false,
         module: Module::Mail,
+    },
+    ToolSpec {
+        name: "list_capture_sources",
+        title: "List capture sources",
+        description: "The Kafka, MQTT and AMQP capture sources the token can read, with the state of their consumer (running, connecting, error with lastError, disabled, stopped) and stored message counts, plus `allowLists`: per area, the Kafka topics, MQTT topic filters and AMQP exchanges that sources created through the API may read there (the server-wide lists narrowed by the space; null: that protocol is not allowed). REST: GET /__admin/capture/sources.",
+        permission: Permission::MessagesRead,
+        input: schema::<ListCaptureSourcesArgs>,
+        output: || {
+            out_object(json!({
+                "sources": {"type": "array", "items": {"type": "object"}},
+                "allowLists": {"type": "array", "items": {"type": "object"}},
+                "maxSources": {"type": "integer"}, "maxMessages": {"type": "integer"},
+            }))
+        },
+        read_only: true,
+        destructive: false,
+        module: Module::Capture,
+    },
+    ToolSpec {
+        name: "put_capture_source",
+        title: "Create or replace a capture source",
+        description: "Create (or, with the id of an existing source, replace) a capture source so FastMock subscribes to what the application publishes: {\"name\": \"orders\", \"protocol\": \"kafka\", \"topics\": [\"orders.events\"]}, MQTT with topic filters in `topics`, AMQP with `exchange` and `bindingKeys`. Destinations must be in the allow-lists of the space (see list_capture_sources); the source runs within about 5 seconds. Audited. REST: PUT /__admin/capture/sources/{id}.",
+        permission: Permission::MessagesWrite,
+        input: schema::<PutCaptureSourceArgs>,
+        output: out_any,
+        read_only: false,
+        destructive: false,
+        module: Module::Capture,
     },
     ToolSpec {
         name: "find_messages",
@@ -1280,6 +1327,24 @@ impl McpServer {
                     "codes": codes.get("codes").cloned().unwrap_or(json!([])),
                 }))
             }
+            "list_capture_sources" => {
+                let x: ListCaptureSourcesArgs = args(a)?;
+                let q = Query::new().opt("space", x.space);
+                self.ok(call, Method::GET, q.to("/capture/sources"), RestBody::None)
+                    .await
+            }
+            "put_capture_source" => {
+                let x: PutCaptureSourceArgs = args(a)?;
+                let id = x.id.unwrap_or_else(Uuid::now_v7);
+                let q = Query::new().opt("space", x.space);
+                self.ok(
+                    call,
+                    Method::PUT,
+                    q.to(&format!("/capture/sources/{id}")),
+                    RestBody::Json(Value::Object(x.source)),
+                )
+                .await
+            }
             "find_messages" => {
                 let x: FindMessagesArgs = args(a)?;
                 let limit = limit(x.limit, 20, 100)?;
@@ -1764,7 +1829,8 @@ mod tests {
             assert_eq!((t.input)()["type"], "object", "{}", t.name);
             assert_eq!((t.output)()["type"], "object", "{}", t.name);
         }
-        assert_eq!(tools_for(None, false, false).len(), TOOLS.len() - 5);
+        assert_eq!(tools_for(None, false, false).len(), TOOLS.len() - 7);
+        assert_eq!(tools_for(None, false, true).len(), TOOLS.len() - 2);
         assert_eq!(tools_for(None, true, true).len(), TOOLS.len());
     }
 

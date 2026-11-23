@@ -297,8 +297,68 @@ pub struct SpaceDef {
     pub hosts: Vec<String>,
     /// Mail domains whose messages go to the space (lowercase; `*.domain` for subdomains).
     pub mail_domains: Vec<String>,
+    /// Capture allow-lists of the space; they narrow the server-wide `FASTMOCK_CAPTURE_*` lists.
+    #[serde(skip_serializing_if = "SpaceCapture::is_empty")]
+    pub capture: SpaceCapture,
 }
 
+/// Allow-lists of what capture sources of one space may read. Each list narrows the server-wide list of
+/// its protocol (a destination must be allowed by both); an absent list leaves the server-wide one as it
+/// is, an empty list allows nothing.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SpaceCapture {
+    /// Kafka topics: names, `prefix*`, or `*`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!(["payments.*"]))]
+    pub kafka_topics: Option<Vec<String>>,
+    /// MQTT topic filters: names, `prefix*`, or `*`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mqtt_topics: Option<Vec<String>>,
+    /// AMQP exchanges: names, `prefix*`, or `*`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amqp_exchanges: Option<Vec<String>>,
+}
+
+/// Entries of one capture allow-list of a space, at most.
+pub const MAX_SPACE_CAPTURE_ENTRIES: usize = 100;
+
+impl SpaceCapture {
+    pub fn is_empty(&self) -> bool {
+        self.kafka_topics.is_none() && self.mqtt_topics.is_none() && self.amqp_exchanges.is_none()
+    }
+
+    /// The lists with the access-file field names.
+    pub fn lists(&self) -> [(&'static str, Option<&[String]>); 3] {
+        [
+            ("kafkaTopics", self.kafka_topics.as_deref()),
+            ("mqttTopics", self.mqtt_topics.as_deref()),
+            ("amqpExchanges", self.amqp_exchanges.as_deref()),
+        ]
+    }
+
+    fn check(&self) -> anyhow::Result<()> {
+        for (field, list) in self.lists() {
+            let Some(list) = list else { continue };
+            if list.len() > MAX_SPACE_CAPTURE_ENTRIES {
+                bail!("capture.{field}: at most {MAX_SPACE_CAPTURE_ENTRIES} entries");
+            }
+            for e in list {
+                let star = e.find('*');
+                if e.is_empty()
+                    || e.len() > 255
+                    || e.chars().any(|c| c.is_control() || c.is_whitespace())
+                    || star.is_some_and(|i| i != e.len() - 1)
+                {
+                    bail!(
+                        "capture.{field}: `{e}` is not a name, prefix* or *: 1 to 255 characters without spaces, `*` only at the end"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+}
 /// The `spaces` entry that stands for every space of the access file, current and future.
 pub const ALL_SPACES: &str = "*";
 
@@ -430,6 +490,8 @@ struct SpaceDoc {
     hosts: Vec<String>,
     #[serde(default)]
     mail_domains: Vec<String>,
+    #[serde(default)]
+    capture: SpaceCapture,
 }
 
 #[derive(Deserialize)]
@@ -581,6 +643,9 @@ impl AccessConfig {
                 .map(|h| check_host(h))
                 .collect::<anyhow::Result<Vec<_>>>()
                 .map_err(|e| anyhow::anyhow!("{at}: {e}"))?;
+            s.capture
+                .check()
+                .map_err(|e| anyhow::anyhow!("{at}: {e}"))?;
             let mut mail_domains: Vec<String> = Vec::new();
             for d in &s.mail_domains {
                 let d = fastmock_mail::routing::check_domain(d)
@@ -597,6 +662,7 @@ impl AccessConfig {
                     path_prefixes: s.path_prefixes,
                     hosts,
                     mail_domains,
+                    capture: s.capture,
                 },
             );
         }

@@ -34,15 +34,8 @@ pub struct Upstream {
     pub body: Bytes,
 }
 
-pub async fn forward(
-    app: &AppState,
-    def: &ProxyDef,
-    method: &str,
-    path: &str,
-    query: Option<&str>,
-    headers: &HeaderMap,
-    body: Bytes,
-) -> Result<Upstream, String> {
+/// The upstream URL of a proxied request: `baseUrl` + the path without `stripPrefix` + the query.
+pub fn target_url(def: &ProxyDef, path: &str, query: Option<&str>) -> Result<reqwest::Url, String> {
     let rel = match &def.strip_prefix {
         Some(p) => {
             let p = p.trim_end_matches('/');
@@ -66,7 +59,19 @@ pub async fn forward(
         url.push('?');
         url.push_str(q);
     }
-    let parsed = reqwest::Url::parse(&url).map_err(|e| format!("invalid upstream url: {e}"))?;
+    reqwest::Url::parse(&url).map_err(|e| format!("invalid upstream url: {e}"))
+}
+
+pub async fn forward(
+    app: &AppState,
+    def: &ProxyDef,
+    method: &str,
+    path: &str,
+    query: Option<&str>,
+    headers: &HeaderMap,
+    body: Bytes,
+) -> Result<Upstream, String> {
+    let parsed = target_url(def, path, query)?;
     app.policy
         .check_url(&parsed)
         .map_err(|e| format!("blocked by egress policy: {e}"))?;
@@ -168,6 +173,9 @@ pub fn bad_gateway(msg: &str) -> Response {
 #[serde(rename_all = "camelCase")]
 pub struct Recording {
     pub target_base_url: String,
+    /// Upstream of gRPC calls when it differs from `targetBaseUrl`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grpc_target_base_url: Option<String>,
     pub tag: String,
     #[serde(default)]
     pub capture_headers: Vec<String>,
@@ -177,6 +185,61 @@ pub struct Recording {
     pub started_by: String,
     #[serde(default)]
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Stores a stub recorded from a proxied exchange, unless a request with the same `identity` was recorded
+/// already or the daily limit (`FASTMOCK_RECORDING_MAX_STUBS`) is reached; returns the stored stub.
+pub async fn store_recorded(app: &AppState, identity: &str, stub: Stub) -> Option<Stub> {
+    let key = format!(
+        "recording:seen:{}",
+        fastmock_core::template::hmac_bytes("sha256", b"rec", identity.as_bytes())
+            .map(hex::encode)
+            .unwrap_or_default()
+    );
+    let fresh = app.stores.hot.get(&key).await.ok().flatten().is_none();
+    if !fresh {
+        return None;
+    }
+    let within_limit = app
+        .stores
+        .hot
+        .incr("recording:count", Some(Duration::from_secs(86_400)))
+        .await
+        .map(|n| n <= app.cfg.recording_max_stubs)
+        .unwrap_or(false);
+    if !within_limit {
+        metrics::counter!("fastmock_recording_skipped_total", "reason" => "limit").increment(1);
+        return None;
+    }
+    let saved = match app.engine.validate(&stub) {
+        Err(e) => Err(anyhow::anyhow!(e)),
+        Ok(()) => app.stores.stubs.upsert(&stub).await,
+    };
+    match saved {
+        Ok(()) => {
+            let _ = app
+                .stores
+                .hot
+                .set(
+                    &key,
+                    &stub.id.to_string(),
+                    Some(Duration::from_secs(86_400)),
+                )
+                .await;
+            metrics::counter!("fastmock_recorded_stubs_total").increment(1);
+            if let Err(e) = app.engine.refresh_if_changed().await {
+                tracing::warn!(error = %e, "stub refresh after recording failed");
+            }
+            Some(stub)
+        }
+        Err(e) => {
+            metrics::counter!("fastmock_recording_skipped_total", "reason" => "invalid")
+                .increment(1);
+            let path = stub.request.url_path.clone().unwrap_or_default();
+            tracing::warn!(error = %e, path = %path, "recorded exchange could not be stored");
+            None
+        }
+    }
 }
 
 pub async fn active_recording(app: &AppState) -> Option<Recording> {

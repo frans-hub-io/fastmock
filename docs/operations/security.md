@@ -229,7 +229,8 @@ inline or third-party scripts) and renders data as text, never as HTML. Publish 
 
 ## Egress policy
 
-Everything FastMock sends on behalf of stubs (callbacks, proxy stubs, recording) goes through one HTTP client:
+Everything FastMock sends on behalf of stubs (callbacks, proxy stubs, recording) goes through one HTTP client, and
+proxied gRPC calls through an HTTP/2 client with the same rules:
 
 - schemes `http` and `https` only; user names and passwords in URLs are refused;
 - redirects are never followed; proxy settings from the environment are ignored;
@@ -239,6 +240,8 @@ Everything FastMock sends on behalf of stubs (callbacks, proxy stubs, recording)
   link-local (cloud metadata endpoints), unspecified and multicast addresses; IPv4 addresses embedded in IPv6 are
   checked as IPv4. The check runs on every resolved address inside the DNS resolver, so the address that is
   checked is the address that is connected to.
+- gRPC upstreams get FastMock's client certificate (`FASTMOCK_GRPC_PROXY_CLIENT_CERT_FILE`) only when their host is
+  in `FASTMOCK_GRPC_PROXY_CLIENT_CERT_HOSTS`; any other upstream named by a stub gets no certificate.
 
 Recommended: set `FASTMOCK_CALLBACK_ALLOWED_HOSTS` to the services your mocks call back, and add a Kubernetes
 egress NetworkPolicy with the same scope ([Helm: NetworkPolicy](helm.md#networkpolicy)). Add internal ranges

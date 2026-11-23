@@ -41,6 +41,8 @@ pub struct AppState {
     /// Message capture; `None` unless `FASTMOCK_CAPTURE_ENABLED=true`.
     pub capture: Option<Arc<crate::capture::CaptureService>>,
     pub grpc: Arc<crate::grpc::Registry>,
+    /// Upstream TLS settings and the call budget of gRPC proxying.
+    pub grpc_proxy: Arc<crate::grpc_proxy::GrpcProxy>,
     pub body_budget: Arc<tokio::sync::Semaphore>,
     pub journal_tx: tokio::sync::mpsc::Sender<fastmock_core::JournalEntry>,
     pub scans: Arc<tokio::sync::Semaphore>,
