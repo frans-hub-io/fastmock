@@ -2,7 +2,7 @@
 
 `clients/java` is a small client for the FastMock admin API, written for Java 25 with one dependency (Jackson
 databind). It creates stubs with a fluent builder or raw JSON, waits for requests and callbacks, verifies the
-journal, reads and verifies [captured messages](message-capture.md), and manages scenarios, files and imports. All examples on this page were run against FastMock 0.1.0.
+journal, reads and verifies [captured messages](message-capture.md), and manages scenarios, files and imports. All examples on this page were run against FastMock 0.1.0-dev14.
 
 - [Setup](#setup)
 - [Connecting](#connecting)
@@ -19,13 +19,13 @@ Build and publish the client to your Maven repository (or to the local one):
 
 ```sh
 cd clients/java
-gradle publishToMavenLocal        # io.franshub:fastmock-client:0.1.0
+gradle publishToMavenLocal        # io.franshub:fastmock-client:0.1.0-dev14
 ```
 
 ```kotlin
 // build.gradle.kts
 dependencies {
-    testImplementation("io.franshub:fastmock-client:0.1.0")
+    testImplementation("io.franshub:fastmock-client:0.1.0-dev14")
 }
 ```
 
@@ -34,7 +34,7 @@ dependencies {
 <dependency>
   <groupId>io.franshub</groupId>
   <artifactId>fastmock-client</artifactId>
-  <version>0.1.0</version>
+  <version>0.1.0-dev14</version>
   <scope>test</scope>
 </dependency>
 ```

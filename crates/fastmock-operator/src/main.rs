@@ -24,6 +24,10 @@ fn crds_yaml() -> anyhow::Result<String> {
 async fn main() -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let args: Vec<String> = std::env::args().collect();
+    if matches!(args.get(1).map(String::as_str), Some("version" | "--version")) {
+        println!("fastmock-operator {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if args.get(1).map(String::as_str) == Some("crd") {
         print!("{}", crds_yaml()?);
         return Ok(());

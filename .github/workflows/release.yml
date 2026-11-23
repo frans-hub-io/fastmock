@@ -1,0 +1,190 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          sparse-checkout: Cargo.toml
+          sparse-checkout-cone-mode: false
+      - name: check the tag
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::tag $TAG is not v<semver>"
+            exit 1
+          fi
+          workspace=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"$/\1/p}' Cargo.toml)
+          if [ "$workspace" != "$version" ]; then
+            echo "::error::tag $TAG does not match the workspace version $workspace"
+            exit 1
+          fi
+          case "$version" in
+            *-*) prerelease=true ;;
+            *) prerelease=false ;;
+          esac
+          printf 'version=%s\nprerelease=%s\n' "$version" "$prerelease" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: true
+      matrix:
+        arch: [amd64, arm64]
+        image: [fastmock, fastmock-operator]
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+          - image: fastmock
+            target: server
+            binary: fastmock
+          - image: fastmock-operator
+            target: operator
+            binary: fastmock-operator
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: build the image for the checks
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: check:local
+          build-args: |
+            VERSION=${{ needs.version.outputs.version }}
+            REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }},mode=max
+      - name: check the version and the build paths of the binary
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          BINARY: ${{ matrix.binary }}
+        run: |
+          set -euo pipefail
+          reported=$(docker run --rm check:local version)
+          container=$(docker create check:local)
+          docker cp "$container:/usr/local/bin/$BINARY" "$RUNNER_TEMP/$BINARY"
+          docker rm "$container" > /dev/null
+          bash .github/scripts/check-binary.sh \
+            "$RUNNER_TEMP/$BINARY" "$reported" "$BINARY $VERSION" \
+            "$GITHUB_WORKSPACE" /src/crates /usr/local/cargo /usr/local/rustup /root/
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=docker.io/franshub/${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            VERSION=${{ needs.version.outputs.version }}
+            REVISION=${{ github.sha }}
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }},mode=max
+      - name: record the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: digest-${{ matrix.image }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: release
+      url: https://hub.docker.com/r/franshub/fastmock
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [fastmock, fastmock-operator]
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: digest-${{ matrix.image }}-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/digests
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302
+        with:
+          images: docker.io/franshub/${{ matrix.image }}
+          flavor: |
+            latest=false
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ needs.version.outputs.prerelease == 'false' }}
+            type=raw,value=latest,enable=${{ needs.version.outputs.prerelease == 'false' }}
+      - name: create the multi-arch manifest
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          IMAGE: docker.io/franshub/${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          test "$(ls | wc -l)" -eq 2
+          tags=$(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          refs=$(printf "$IMAGE@sha256:%s " *)
+          docker buildx imagetools create $tags $refs
+      - name: check both architectures and the version of the pushed image
+        env:
+          IMAGE: docker.io/franshub/${{ matrix.image }}
+          VERSION: ${{ needs.version.outputs.version }}
+          BINARY: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "$IMAGE:$VERSION"
+          raw=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --raw)
+          for arch in amd64 arm64; do
+            jq -e --arg arch "$arch" '.manifests | any(.platform.os == "linux" and .platform.architecture == $arch)' <<< "$raw" > /dev/null \
+              || { echo "::error::$IMAGE:$VERSION has no linux/$arch manifest"; exit 1; }
+          done
+          out=$(docker run --rm --platform linux/amd64 "$IMAGE:$VERSION" version)
+          if [ "$out" != "$BINARY $VERSION" ]; then
+            echo "::error::$IMAGE:$VERSION reports '$out'"
+            exit 1
+          fi

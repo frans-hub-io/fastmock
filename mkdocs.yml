@@ -132,3 +132,4 @@ nav:
       - operations/troubleshooting.md
   - Extending:
       - guide/plugins.md
+  - Release notes: release-notes.md
