@@ -3,7 +3,7 @@ name: fastmock-operator
 description: Kubernetes operator for FastMock - FastMock and MockApi custom resources
 type: application
 version: 0.2.0
-appVersion: "0.1.0-dev14"
+appVersion: "0.1.0-dev15"
 kubeVersion: ">=1.30.0-0"
 annotations:
   artifacthub.io/license: Apache-2.0

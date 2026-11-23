@@ -722,7 +722,7 @@ start-up: after rotating it, `kubectl rollout restart deploy/<fullname>`.
   in `postgres` mode and a restricted Valkey ACL user, add the channel rule `&<prefix>mail:events:*` and
   `+publish +psubscribe`; otherwise the pods stop at start-up. With per-table grants, grant the new tables before
   upgrading.
-- **0.3.0** (FastMock 0.1.0-dev14): per-space capture allow-lists (`access.spaces[].capture`), gRPC proxy and
+- **0.3.0** (FastMock 0.1.0-dev15): per-space capture allow-lists (`access.spaces[].capture`), gRPC proxy and
   recording settings, and AMQP SASL EXTERNAL; no migration. Capture sources created through the API now belong to a
   space: a space with a `capture` list can read only what both its list and the server-wide list allow. Review
   `messaging.capture.allowed*` before upgrading if sources of several spaces share one broker login.

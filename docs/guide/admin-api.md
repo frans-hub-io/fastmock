@@ -392,7 +392,7 @@ Audit actions: `mail.message.delete`, `mail.messages.delete`, `mail.message.labe
 
 ```sh
 curl -s -H "Authorization: Bearer $FASTMOCK_TOKEN" http://localhost:9090/__admin/version
-# {"version":"0.1.0-dev14","gitSha":"3f2c1ab","features":["grpc","kafka","sse","chaos","recording","verification","files","import-openapi","import-wiremock","import-postman","import-har"]}
+# {"version":"0.1.0-dev15","gitSha":"3f2c1ab","features":["grpc","kafka","sse","chaos","recording","verification","files","import-openapi","import-wiremock","import-postman","import-har"]}
 ```
 
 `features` lists `tokens` when the server supports [managed tokens](#managed-tokens), and `mail`,

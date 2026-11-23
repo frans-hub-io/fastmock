@@ -1357,7 +1357,7 @@ dependencies = [
 
 [[package]]
 name = "fastmock-brokers"
-version = "0.1.0-dev14"
+version = "0.1.0-dev15"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1380,7 +1380,7 @@ dependencies = [
 
 [[package]]
 name = "fastmock-core"
-version = "0.1.0-dev14"
+version = "0.1.0-dev15"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1412,7 +1412,7 @@ dependencies = [
 
 [[package]]
 name = "fastmock-kafka"
-version = "0.1.0-dev14"
+version = "0.1.0-dev15"
 dependencies = [
  "anyhow",
  "apache-avro",
@@ -1432,7 +1432,7 @@ dependencies = [
 
 [[package]]
 name = "fastmock-mail"
-version = "0.1.0-dev14"
+version = "0.1.0-dev15"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -1469,7 +1469,7 @@ dependencies = [
 
 [[package]]
 name = "fastmock-operator"
-version = "0.1.0-dev14"
+version = "0.1.0-dev15"
 dependencies = [
  "anyhow",
  "axum",
@@ -1496,7 +1496,7 @@ dependencies = [
 
 [[package]]
 name = "fastmock-server"
-version = "0.1.0-dev14"
+version = "0.1.0-dev15"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -1567,7 +1567,7 @@ dependencies = [
 
 [[package]]
 name = "fastmock-store"
-version = "0.1.0-dev14"
+version = "0.1.0-dev15"
 dependencies = [
  "anyhow",
  "async-trait",

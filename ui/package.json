@@ -2,7 +2,7 @@
   "name": "fastmock-ui",
   "private": true,
   "license": "Apache-2.0",
-  "version": "0.1.0-dev14",
+  "version": "0.1.0-dev15",
   "type": "module",
   "engines": {
     "node": ">=22"

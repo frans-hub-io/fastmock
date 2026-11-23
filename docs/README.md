@@ -258,4 +258,4 @@ section for what you do.
 - `FASTMOCK_TOKEN` holds an admin token (`fastmock hash-token --generate`); calls that change something need the
   `editor` role, a few need `admin`.
 - Example host names use `example.com`, example addresses `198.51.100.0/24` and `203.0.113.0/24`.
-- Outputs shown on these pages come from real runs of FastMock 0.1.0-dev14, shortened where marked.
+- Outputs shown on these pages come from real runs of FastMock 0.1.0-dev15, shortened where marked.

@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "io.franshub"
-version = "0.1.0-dev14"
+version = "0.1.0-dev15"
 
 java {
     toolchain {

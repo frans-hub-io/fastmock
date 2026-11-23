@@ -27,7 +27,7 @@ RUN cargo build --release --locked -p fastmock-server --bin fastmock -p fastmock
  && install -D -m 0755 target/release/fastmock-operator /out/operator/usr/local/bin/fastmock-operator
 
 FROM ${RUNTIME_IMAGE} AS operator
-ARG VERSION=0.1.0-dev14
+ARG VERSION=0.1.0-dev15
 ARG REVISION=unknown
 LABEL org.opencontainers.image.title="FastMock operator" \
       org.opencontainers.image.description="Kubernetes operator for FastMock servers and mock APIs" \
@@ -44,7 +44,7 @@ EXPOSE 8081
 ENTRYPOINT ["/usr/local/bin/fastmock-operator"]
 
 FROM ${RUNTIME_IMAGE} AS server
-ARG VERSION=0.1.0-dev14
+ARG VERSION=0.1.0-dev15
 ARG REVISION=unknown
 LABEL org.opencontainers.image.title="FastMock" \
       org.opencontainers.image.description="API mock server with durable callbacks, shared state, message brokers and full observability" \

@@ -1,8 +1,8 @@
 # Release notes
 
-## 0.1.0-dev14
+## 0.1.0-dev15
 
-Published as `franshub/fastmock:0.1.0-dev14` and `franshub/fastmock-operator:0.1.0-dev14` for `linux/amd64` and
+Published as `franshub/fastmock:0.1.0-dev15` and `franshub/fastmock-operator:0.1.0-dev15` for `linux/amd64` and
 `linux/arm64`. Helm charts: `fastmock` 0.3.0 and `fastmock-operator` 0.2.0. This is a development release.
 
 ### New
