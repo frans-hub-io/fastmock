@@ -15535,7 +15535,7 @@
               "string",
               "null"
             ],
-            "description": "Schema Registry subject of `avroSchema` (letters, digits, `.`, `_`, `-`, at most 249 characters).\nDefault: `<topic>-value` for Kafka, `<topic>-value` for MQTT, `<exchange>.<routingKey>-value` for\nAMQP (`<routingKey>-value` on the default exchange). MQTT and AMQP messages whose topic, exchange or\nrouting key is a template need it, so a request cannot make FastMock register arbitrary subjects."
+            "description": "Schema Registry subject of `avroSchema` (letters, digits, `.`, `_`, `-`, at most 249 characters, not only dots).\nDefault: `<topic>-value` for Kafka and MQTT, `<exchange>.<routingKey>-value` for\nAMQP (`<routingKey>-value` on the default exchange). Messages whose topic, exchange or routing key\nis a template need it, so a request cannot make FastMock register arbitrary subjects."
           },
           "contentType": {
             "type": [

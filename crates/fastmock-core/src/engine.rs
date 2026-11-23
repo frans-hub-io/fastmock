@@ -163,6 +163,8 @@ pub struct RenderedMessage {
     pub avro_schema: Option<Value>,
     /// Schema Registry subject of `avro_schema`; when `None` the publisher derives it from the destination.
     pub avro_subject: Option<String>,
+    /// Why the message must not be published (a stub saved before a rule existed); the publisher fails it.
+    pub invalid: Option<String>,
     pub content_type: Option<String>,
     /// Publish this long after the match.
     pub delay_ms: u64,
@@ -1090,6 +1092,9 @@ impl Engine {
                 headers,
                 avro_schema: m.avro_schema.clone(),
                 avro_subject: m.avro_subject.clone(),
+                invalid: m.needs_avro_subject().then(|| {
+                    "avroSubject is required when the topic, exchange or routingKey is a template".to_string()
+                }),
                 content_type: opt("contentType", &m.content_type, short)?,
                 delay_ms: m.delay_ms.unwrap_or(0),
                 mqtt,
@@ -1346,6 +1351,37 @@ mod tests {
         assert_eq!(plan.json_body.unwrap()["n"], "{{size request.json}}");
         assert_eq!(plan.context["request"]["json"][1]["a"], 2);
         assert_eq!(plan.def.unwrap().messages.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stored_avro_stubs_with_templated_destinations_publish_nothing() {
+        let (e, s) = engine();
+        let stub: Stub = serde_json::from_value(json!({"request": {"urlPath": "/old"}, "response": {"status": 202},
+            "messages": [{"topic": "orders.{{request.body}}", "avroSchema": {"type": "string"}, "value": "x"},
+                         {"topic": "fixed", "avroSchema": {"type": "string"}, "value": "x"}]}))
+        .unwrap();
+        assert!(e.validate(&stub).is_err());
+        s.stubs.upsert(&stub).await.unwrap();
+        e.reload().await.unwrap();
+        let r = e
+            .handle(&CapturedRequest::new(
+                "POST",
+                "/old",
+                None,
+                vec![],
+                Bytes::from("a"),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            r.messages[0]
+                .invalid
+                .as_ref()
+                .unwrap()
+                .contains("avroSubject")
+        );
+        assert!(r.messages[1].invalid.is_none());
     }
 
     #[tokio::test]

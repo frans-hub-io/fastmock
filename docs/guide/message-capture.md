@@ -364,7 +364,7 @@ replicas it reads the store again every 500 ms. With `FASTMOCK_STORAGE=memory` t
 | list page | 1 to 500 |
 | find, wait, verify | 10,000 stored messages looked at and 64 MiB of bodies loaded, counting only the bodies of messages that meet the other conditions (`422` beyond; narrow with `space`, `since`, or conditions on source, topic or headers) |
 | concurrent find, wait, verify | 8 per replica, at most 2 of them per space (or, for reads across spaces, per caller); a request waits up to 5 s for a slot, then `503` |
-| Avro bodies | decoded only for JSON body matchers (`equalToJson`, `jsonPath`, `jsonSchema`); at most 16 schema registry requests per find, wait or verify; a failed lookup is answered from memory for 30 s |
+| Avro bodies | decoded only for JSON body matchers (`equalToJson`, `jsonPath`, `jsonSchema`); at most 16 schema registry requests per find, wait or verify; a failed lookup is answered from memory for 30 s; a value that declares more than the message size limit (at least 64 KiB) is not decoded |
 | wait | 1 to 500 messages, 60 s |
 
 Verification reports near misses from the messages it looked at. Body conditions are checked only on messages that

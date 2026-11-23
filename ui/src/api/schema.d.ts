@@ -3368,10 +3368,10 @@ export interface components {
              */
             avroSchema?: unknown;
             /**
-             * @description Schema Registry subject of `avroSchema` (letters, digits, `.`, `_`, `-`, at most 249 characters).
-             *     Default: `<topic>-value` for Kafka, `<topic>-value` for MQTT, `<exchange>.<routingKey>-value` for
-             *     AMQP (`<routingKey>-value` on the default exchange). MQTT and AMQP messages whose topic, exchange or
-             *     routing key is a template need it, so a request cannot make FastMock register arbitrary subjects.
+             * @description Schema Registry subject of `avroSchema` (letters, digits, `.`, `_`, `-`, at most 249 characters, not only dots).
+             *     Default: `<topic>-value` for Kafka and MQTT, `<exchange>.<routingKey>-value` for
+             *     AMQP (`<routingKey>-value` on the default exchange). Messages whose topic, exchange or routing key
+             *     is a template need it, so a request cannot make FastMock register arbitrary subjects.
              */
             avroSubject?: string | null;
             /**

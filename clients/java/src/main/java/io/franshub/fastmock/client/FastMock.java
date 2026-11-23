@@ -33,13 +33,15 @@ public final class FastMock {
     private final HttpClient http;
     private final Duration timeout;
     private final String space;
+    private final boolean payloadsInErrors;
 
     private FastMock(URI admin, String token, Duration timeout) {
-        this(admin, token, timeout, null, null);
+        this(admin, token, timeout, null, null, false);
     }
 
-    private FastMock(URI admin, String token, Duration timeout, String space, HttpClient shared) {
+    private FastMock(URI admin, String token, Duration timeout, String space, HttpClient shared, boolean payloadsInErrors) {
         this.space = space;
+        this.payloadsInErrors = payloadsInErrors;
         this.admin = URI.create(admin.toString().replaceAll("/+$", "") + "/");
         this.token = Objects.requireNonNull(token, "token");
         this.timeout = timeout;
@@ -52,7 +54,16 @@ public final class FastMock {
      * the given space; the other calls are unchanged. Without it the caller's only space applies.
      */
     public FastMock inSpace(String space) {
-        return new FastMock(admin, token, timeout, Objects.requireNonNull(space, "space"), http);
+        return new FastMock(admin, token, timeout, Objects.requireNonNull(space, "space"), http, payloadsInErrors);
+    }
+
+    /**
+     * A client whose {@link #waitForMessages} timeout errors list the received messages with their payload
+     * previews. Off by default: captured payloads can hold secrets, and assertion messages end up in CI logs and
+     * test reports. The default error names only how many messages arrived, with their sources and topics.
+     */
+    public FastMock withPayloadsInErrors() {
+        return new FastMock(admin, token, timeout, space, http, true);
     }
 
     /** Connects to the admin endpoint, for example {@code http://fastmock-admin:9090}, with a bearer token. */
@@ -338,7 +349,7 @@ public final class FastMock {
             List<String> details = new ArrayList<>();
             r.path("details").forEach(n -> details.add(n.asText()));
             throw new AssertionError(r.path("error").asText() + (details.isEmpty() ? "" : "; " + String.join("; ", details))
-                    + "; received so far: " + r.path("messages"));
+                    + "; received so far: " + describeReceived(r.path("messages")));
         }
         List<CapturedMessage> out = new ArrayList<>();
         r.path("messages").forEach(n -> out.add(JSON.convertValue(n, CapturedMessage.class)));
@@ -347,6 +358,15 @@ public final class FastMock {
 
     public List<CapturedMessage> waitForMessages(MessageMatch match, Duration timeout, Instant since) {
         return waitForMessages(match, 1, timeout, since);
+    }
+
+    private String describeReceived(JsonNode messages) {
+        if (payloadsInErrors) {
+            return messages.toString();
+        }
+        List<String> out = new ArrayList<>();
+        messages.forEach(n -> out.add(n.path("source").asText() + " " + n.path("topic").asText()));
+        return out.size() + (out.isEmpty() ? "" : " " + out) + " (payloads left out; see FastMock.withPayloadsInErrors())";
     }
 
     /** Counts stored messages without waiting; never throws on a failed expectation, check {@link VerifyResult#verified()}. */

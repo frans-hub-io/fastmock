@@ -70,6 +70,7 @@ pub fn topic_allowed(allowed: Option<&[String]>, topic: &str) -> bool {
 
 impl KafkaHub {
     pub fn new(cfg: &crate::config::Config) -> anyhow::Result<Self> {
+        fastmock_kafka::limit_decode_allocation(cfg.capture.max_message_bytes);
         Ok(Self {
             settings: cfg.kafka_bootstrap.clone().map(|b| KafkaSettings {
                 bootstrap: b,

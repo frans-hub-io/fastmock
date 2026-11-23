@@ -582,10 +582,10 @@ pub struct MessageDef {
     /// registered in the Schema Registry under the subject `avroSubject`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avro_schema: Option<Value>,
-    /// Schema Registry subject of `avroSchema` (letters, digits, `.`, `_`, `-`, at most 249 characters).
-    /// Default: `<topic>-value` for Kafka, `<topic>-value` for MQTT, `<exchange>.<routingKey>-value` for
-    /// AMQP (`<routingKey>-value` on the default exchange). MQTT and AMQP messages whose topic, exchange or
-    /// routing key is a template need it, so a request cannot make FastMock register arbitrary subjects.
+    /// Schema Registry subject of `avroSchema` (letters, digits, `.`, `_`, `-`, at most 249 characters, not only dots).
+    /// Default: `<topic>-value` for Kafka and MQTT, `<exchange>.<routingKey>-value` for
+    /// AMQP (`<routingKey>-value` on the default exchange). Messages whose topic, exchange or routing key
+    /// is a template need it, so a request cannot make FastMock register arbitrary subjects.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avro_subject: Option<String>,
     /// Content type (template): MQTT 5 `content-type` property, AMQP `content_type` property, Kafka
@@ -649,11 +649,27 @@ pub struct MessageDef {
 /// A Schema Registry subject a stub or async mock may name: no characters that need escaping in a URL.
 pub fn valid_avro_subject(s: &str) -> bool {
     (1..=249).contains(&s.len())
+        && !s.bytes().all(|b| b == b'.')
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
 impl MessageDef {
+    /// An Avro message whose destination is a template must name its registry subject: otherwise every
+    /// distinct rendered destination would register a new subject.
+    pub fn needs_avro_subject(&self) -> bool {
+        self.avro_schema.is_some()
+            && self.avro_subject.is_none()
+            && [
+                Some(&self.topic),
+                self.exchange.as_ref(),
+                self.routing_key.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            .any(|t| t.contains("{{"))
+    }
+
     /// The name of the destination for logs and errors: the topic, or `exchange/routing key`.
     pub fn destination(&self) -> String {
         match self.protocol {
@@ -733,18 +749,7 @@ impl MessageDef {
         if self.qos.is_some_and(|q| q > 2) {
             return Err("qos must be 0, 1 or 2".into());
         }
-        if self.avro_schema.is_some()
-            && self.avro_subject.is_none()
-            && self.protocol != MessageProtocol::Kafka
-            && [
-                Some(&self.topic),
-                self.exchange.as_ref(),
-                self.routing_key.as_ref(),
-            ]
-            .into_iter()
-            .flatten()
-            .any(|t| t.contains("{{"))
-        {
+        if self.needs_avro_subject() {
             return Err(
                 "avroSubject is required when the topic, exchange or routingKey is a template, so a request cannot choose the registry subject".into(),
             );

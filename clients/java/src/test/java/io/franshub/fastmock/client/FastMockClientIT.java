@@ -174,6 +174,13 @@ class FastMockClientIT {
             var late = assertThrows(AssertionError.class,
                     () -> fm.waitForMessages(MessageMatch.source(source).bodyJsonPath("$.orderId", "nope"), Duration.ofMillis(300), before));
             assertTrue(late.getMessage().contains("timed out"), late.getMessage());
+            var plain = assertThrows(AssertionError.class,
+                    () -> fm.waitForMessages(MessageMatch.source(source), 3, Duration.ofMillis(300), before));
+            assertTrue(plain.getMessage().contains("received so far: 2"), plain.getMessage());
+            assertTrue(!plain.getMessage().contains("SHIPPED"), plain.getMessage());
+            var verbose = assertThrows(AssertionError.class,
+                    () -> fm.withPayloadsInErrors().waitForMessages(MessageMatch.source(source), 3, Duration.ofMillis(300), before));
+            assertTrue(verbose.getMessage().contains("SHIPPED"), verbose.getMessage());
             var wrong = assertThrows(AssertionError.class, () -> fm.verifyMessageCount(match, 2, before));
             assertTrue(wrong.getMessage().contains("exactly 2"), wrong.getMessage());
 

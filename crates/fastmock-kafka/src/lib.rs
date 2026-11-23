@@ -333,7 +333,7 @@ pub struct SchemaRegistry {
     base: String,
     http: reqwest::Client,
     auth: Option<BasicAuth>,
-    cache: Mutex<HashMap<(String, String), i32>>,
+    cache: Mutex<HashMap<(String, [u8; 32]), i32>>,
     by_id: Mutex<HashMap<i32, Arc<Schema>>>,
     /// Schema ids whose lookup failed, with the time and the error, answered without a request until
     /// [`SCHEMA_FAILURE_TTL`] passes.
@@ -431,15 +431,15 @@ impl SchemaRegistry {
     }
 
     pub async fn register(&self, subject: &str, schema: &str) -> anyhow::Result<i32> {
-        let key = (subject.to_string(), schema.to_string());
+        use sha2::{Digest, Sha256};
+        let url = self.versions_url(subject)?;
+        let key = (
+            subject.to_string(),
+            <[u8; 32]>::from(Sha256::digest(schema.as_bytes())),
+        );
         if let Some(id) = self.cache.lock().await.get(&key) {
             return Ok(*id);
         }
-        let url = format!(
-            "{}/subjects/{}/versions",
-            self.base,
-            escape_subject(subject)
-        );
         let mut req = self
             .http
             .post(&url)
@@ -459,9 +459,49 @@ impl SchemaRegistry {
             .get("id")
             .and_then(|v| v.as_i64())
             .context("schema registry response has no id")? as i32;
-        self.cache.lock().await.insert(key, id);
+        let mut cache = self.cache.lock().await;
+        if cache.len() >= SCHEMA_CACHE_ENTRIES {
+            cache.clear();
+        }
+        cache.insert(key, id);
         Ok(id)
     }
+
+    /// `{base}/subjects/{subject}/versions`, checked to be exactly that path after the URL is parsed: a
+    /// subject of `.` or `..` would otherwise be a dot segment that moves the request elsewhere.
+    fn versions_url(&self, subject: &str) -> anyhow::Result<String> {
+        let url = format!(
+            "{}/subjects/{}/versions",
+            self.base,
+            escape_subject(subject)
+        );
+        let parsed = reqwest::Url::parse(&url).context("the registry URL is invalid")?;
+        let expected = format!(
+            "{}/subjects/{}/versions",
+            reqwest::Url::parse(&self.base)
+                .context("the registry URL is invalid")?
+                .path()
+                .trim_end_matches('/'),
+            escape_subject(subject)
+        );
+        if subject.is_empty() || parsed.path() != expected {
+            anyhow::bail!("the schema subject is not valid");
+        }
+        Ok(url)
+    }
+
+    /// Registrations remembered in memory (at most [`SCHEMA_CACHE_ENTRIES`]).
+    #[doc(hidden)]
+    pub async fn registered_entries(&self) -> usize {
+        self.cache.lock().await.len()
+    }
+}
+
+/// Limits what apache-avro allocates while decoding to `max_body_bytes` (at least 64 KiB), so a few bytes
+/// that declare a huge string, bytes value or array fail instead of allocating. The limit is process-wide and
+/// set once; the first call wins. Returns the limit in force.
+pub fn limit_decode_allocation(max_body_bytes: usize) -> usize {
+    apache_avro::util::max_allocation_bytes(max_body_bytes.max(64 * 1024))
 }
 
 /// Percent-encodes everything but unreserved characters, so a subject (an MQTT topic, say) stays one path segment.
