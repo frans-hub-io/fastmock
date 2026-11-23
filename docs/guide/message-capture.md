@@ -161,7 +161,8 @@ across restarts):
 |---|---|---|
 | `GET /capture/sources` | `messages:read` | Sources with their state, message counts and the limits. |
 | `GET /capture/sources/{id}` | `messages:read` | One source. |
-| `PUT /capture/sources/{id}` | `messages:write` | Create or replace (audit `capture.source.put`). Sources from the configuration answer `409`. |
+| `POST /capture/sources` | `messages:write` | Create with an id chosen by the server (audit `capture.source.put`). |
+| `PUT /capture/sources/{id}` | `messages:write` | Create or replace (audit `capture.source.put`). Sources from the configuration answer `409`. Ids are global across spaces: an id used by a source of another area answers `409` (`this id is in use ...`), so use random ids or `POST` rather than fixed ids in shared test code. |
 | `DELETE /capture/sources/{id}` | `messages:write` | Delete (audit `capture.source.delete`); `?purge=true` also deletes its messages and needs `messages:delete`, checked before anything is deleted. Without `purge`, the messages stay until the age limit or the byte budgets remove them. |
 
 Every source in a list has a `status`:

@@ -184,6 +184,7 @@ fn descriptor_set() -> Vec<u8> {
 }
 
 struct Srv {
+    app: fastmock_server::state::AppState,
     data: SocketAddr,
     admin: SocketAddr,
     http: reqwest::Client,
@@ -203,7 +204,7 @@ impl Srv {
             .as_ref()
             .map(|t| fastmock_server::tls::server_config(t).unwrap());
         let streams = cfg.http2_max_concurrent_streams;
-        let (_app, data, admin, _p) = fastmock_server::build(cfg, prom()).await.unwrap();
+        let (app, data, admin, _p) = fastmock_server::build(cfg, prom()).await.unwrap();
         let dl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let al = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let (daddr, aaddr) = (dl.local_addr().unwrap(), al.local_addr().unwrap());
@@ -219,6 +220,7 @@ impl Srv {
         ));
         tokio::spawn(async move { axum::serve(al, admin).await.unwrap() });
         let srv = Srv {
+            app,
             data: daddr,
             admin: aaddr,
             http: reqwest::Client::new(),
@@ -321,7 +323,7 @@ async fn upstream(tune: impl FnOnce(&mut Config)) -> Srv {
                 {"jsonBody": {"orderId": "{{request.json.id}}", "status": "SHIPPED", "seq": "{{stream.index}}"}},
                 {"jsonBody": {"orderId": "{{request.json.id}}", "status": "DELIVERED", "seq": "{{stream.index}}"}}
             ],
-            "trailers": {"x-shard": "7"}
+            "trailers": {"x-shard": "7", "x-fastmock-leak": "1"}
         }}
     }))
     .await;
@@ -493,7 +495,12 @@ async fn proxy_stubs_forward_every_kind_of_call() {
         ["PACKED", "SHIPPED", "DELIVERED"]
     );
     assert_eq!(events[2].seq, 2);
-    assert_eq!(trailers.unwrap().get("x-shard").unwrap(), "7");
+    let trailers = trailers.unwrap();
+    assert_eq!(trailers.get("x-shard").unwrap(), "7");
+    assert!(
+        trailers.get("x-fastmock-leak").is_none(),
+        "x-fastmock-* trailers of the upstream are dropped"
+    );
 
     let s = upload(&mut g, &["S-1", "S-2", "S-3"]).await;
     assert_eq!(
@@ -667,7 +674,7 @@ async fn upstreams_over_tls_and_mtls() {
             c.grpc_proxy.client_cert_hosts = hosts;
         }
     };
-    let front = Srv::start(with_cert(vec!["localhost".into()])).await;
+    let front = Srv::start(with_cert(vec![format!("localhost:{}", up.data.port())])).await;
     front
         .stub(json!({
             "request": {"urlPathPattern": "/shop\\.v1\\..*"},
@@ -876,4 +883,314 @@ async fn recording_limits_skip_large_calls_but_still_proxy_them() {
         metrics.contains("fastmock_recording_skipped_total{reason=\"too_large\"}"),
         "{metrics}"
     );
+}
+
+fn access_file(text: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("fm-grpc-proxy-access-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("access.yaml");
+    std::fs::write(&f, text).unwrap();
+    f
+}
+
+#[tokio::test]
+async fn the_client_certificate_is_only_for_global_stubs_and_its_host_and_port() {
+    let p = pki();
+    let up = upstream(|c| {
+        c.tls = Some(TlsSettings {
+            cert_file: p.dir.join("server.pem"),
+            key_file: p.dir.join("server.key"),
+            client_ca_file: Some(p.dir.join("ca.pem")),
+            client_auth_required: true,
+        });
+    })
+    .await;
+    let port = up.data.port();
+    let base = format!("https://localhost:{port}");
+    let dir = p.dir.clone();
+    let cert = move |hosts: Vec<String>| {
+        let dir = dir.clone();
+        move |c: &mut Config| {
+            c.outbound_ca_file = Some(dir.join("ca.pem"));
+            c.grpc_proxy.client_cert = Some(fastmock_kafka::ClientCertFiles {
+                cert_file: dir.join("client.pem"),
+                key_file: dir.join("client.key"),
+            });
+            c.grpc_proxy.client_cert_hosts = hosts;
+            c.access_file = Some(access_file("spaces:\n  - name: team\n"));
+        }
+    };
+    let front = Srv::start(cert(vec![format!("localhost:{port}")])).await;
+    let (st, v) = front
+        .admin(
+            reqwest::Method::POST,
+            "/stubs?space=team",
+            Some(json!({"request": {"urlPathPattern": "/shop\\.v1\\..*"},
+                        "response": {"proxy": {"baseUrl": base}}})),
+        )
+        .await;
+    assert_eq!(
+        st, 400,
+        "a space stub cannot proxy to a certificate host: {v}"
+    );
+    assert!(
+        v.to_string().contains("only stubs of the global area"),
+        "{v}"
+    );
+    let (st, v) = front
+        .admin(
+            reqwest::Method::POST,
+            "/stubs?space=team",
+            Some(json!({"request": {"urlPathPattern": "/shop\\.v1\\..*"},
+                        "responses": [{"proxy": {"baseUrl": base}}]})),
+        )
+        .await;
+    assert_eq!(st, 400, "also inside response sequences: {v}");
+
+    let stub: fastmock_core::Stub = serde_json::from_value(json!({
+        "space": "team",
+        "request": {"urlPathPattern": "/shop\\.v1\\..*"},
+        "response": {"proxy": {"baseUrl": base}}
+    }))
+    .unwrap();
+    front.app.stores.stubs.upsert(&stub).await.unwrap();
+    front.app.engine.refresh_if_changed().await.unwrap();
+    let e = get_order(&mut front.channel().await, "A-1")
+        .await
+        .unwrap_err();
+    assert_eq!(
+        e.code(),
+        tonic::Code::Unavailable,
+        "a space stub that got stored anyway is proxied without the certificate: {e:?}"
+    );
+    front
+        .admin(
+            reqwest::Method::DELETE,
+            &format!("/stubs/{}", stub.id),
+            None,
+        )
+        .await;
+    front
+        .stub(json!({"request": {"urlPathPattern": "/shop\\.v1\\..*"},
+                     "response": {"proxy": {"baseUrl": base}}}))
+        .await;
+    assert_eq!(
+        get_order(&mut front.channel().await, "A-1")
+            .await
+            .unwrap()
+            .into_inner()
+            .status,
+        "PAID",
+        "a global stub gets the certificate"
+    );
+
+    let other_port = Srv::start(cert(vec!["localhost:1".into()])).await;
+    other_port
+        .stub(json!({"request": {"urlPathPattern": "/shop\\.v1\\..*"},
+                     "response": {"proxy": {"baseUrl": base}}}))
+        .await;
+    assert_eq!(
+        get_order(&mut other_port.channel().await, "A-1")
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::Unavailable,
+        "the certificate goes to the listed port only"
+    );
+
+    for bad in ["*.com", "*", "https://localhost"] {
+        let mut cfg = Config::for_tests(
+            StorageKind::Memory,
+            vec![format!("ops:admin:{}", hash_token(ADMIN))],
+        );
+        cert(vec![bad.into()])(&mut cfg);
+        let Err(e) = fastmock_server::build(cfg, prom()).await else {
+            panic!("{bad} must stop the start");
+        };
+        assert!(
+            format!("{e:#}").contains("FASTMOCK_GRPC_PROXY_CLIENT_CERT_HOSTS"),
+            "{e:#}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_client_that_does_not_read_releases_the_proxy_permit() {
+    let up = Srv::start(|_| {}).await;
+    up.stub(json!({
+        "request": {"urlPath": "/shop.v1.OrderService/WatchOrder"},
+        "response": {"grpc": {
+            "messages": [{"jsonBody": {"orderId": "x".repeat(4000), "status": "TICK"}, "delayMs": 2}],
+            "repeat": true, "maxMessages": 100000
+        }}
+    }))
+    .await;
+    up.stub(json!({
+        "request": {"urlPath": "/shop.v1.OrderService/GetOrder"},
+        "response": {"jsonBody": {"id": "A-1", "status": "PAID"}}
+    }))
+    .await;
+    let front = Srv::start(|c| {
+        c.grpc_proxy.max_calls = 1;
+        c.grpc_stream_idle_timeout = Duration::from_millis(800);
+    })
+    .await;
+    front
+        .stub(json!({"request": {"urlPathPattern": "/shop\\.v1\\..*"},
+                     "response": {"proxy": {"baseUrl": format!("http://{}", up.data)}}}))
+        .await;
+    let tcp = tokio::net::TcpStream::connect(front.data).await.unwrap();
+    let (h2c, conn) = h2::client::Builder::new()
+        .initial_window_size(1024)
+        .handshake::<_, bytes::Bytes>(tcp)
+        .await
+        .unwrap();
+    tokio::spawn(conn);
+    let mut h2c = h2c.ready().await.unwrap();
+    let req = http::Request::post(format!(
+        "http://{}/shop.v1.OrderService/WatchOrder",
+        front.data
+    ))
+    .header("content-type", "application/grpc")
+    .header("te", "trailers")
+    .body(())
+    .unwrap();
+    let (resp, mut stream) = h2c.send_request(req, false).unwrap();
+    let msg = GetOrderRequest { id: "S-1".into() }.encode_to_vec();
+    let mut framed = vec![0u8];
+    framed.extend_from_slice(&(msg.len() as u32).to_be_bytes());
+    framed.extend_from_slice(&msg);
+    stream.send_data(bytes::Bytes::from(framed), true).unwrap();
+    let _held = resp.await.unwrap();
+    let mut g = front.channel().await;
+    let busy = get_order(&mut g, "A-1").await.unwrap_err();
+    assert_eq!(busy.code(), tonic::Code::ResourceExhausted, "{busy:?}");
+    let mut ok = None;
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        if let Ok(r) = get_order(&mut g, "A-1").await {
+            ok = Some(r.into_inner());
+            break;
+        }
+    }
+    assert_eq!(
+        ok.expect("the stalled call released its permit").status,
+        "PAID"
+    );
+}
+
+#[tokio::test]
+async fn proxied_messages_are_charged_to_the_inflight_budget() {
+    let up = Srv::start(|_| {}).await;
+    up.stub(json!({
+        "request": {"urlPath": "/shop.v1.OrderService/GetOrder"},
+        "response": {"jsonBody": {"id": "y".repeat(40_000), "status": "BIG"}}
+    }))
+    .await;
+    let front = Srv::start(|c| {
+        c.max_body_bytes = 64 * 1024;
+        c.max_inflight_body_bytes = 64 * 1024;
+    })
+    .await;
+    front
+        .stub(json!({"request": {"urlPathPattern": "/shop\\.v1\\..*"},
+                     "response": {"proxy": {"baseUrl": format!("http://{}", up.data)}}}))
+        .await;
+    let e = get_order(&mut front.channel().await, "A-1")
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), tonic::Code::ResourceExhausted, "{e:?}");
+    assert!(e.message().contains("server busy"), "{}", e.message());
+}
+
+#[tokio::test]
+async fn proxy_loops_end_after_a_few_hops() {
+    let a = Srv::start(|_| {}).await;
+    let b = Srv::start(|_| {}).await;
+    for (from, to) in [(&a, &b), (&b, &a)] {
+        from.stub(json!({"request": {"urlPathPattern": "/shop\\.v1\\..*"},
+                         "response": {"proxy": {"baseUrl": format!("http://{}", to.data)}}}))
+            .await;
+        from.stub(json!({"request": {"urlPathPattern": "/http/.*"},
+                         "response": {"proxy": {"baseUrl": format!("http://{}", to.data)}}}))
+            .await;
+    }
+    let e = get_order(&mut a.channel().await, "A-1").await.unwrap_err();
+    assert_eq!(e.code(), tonic::Code::Unavailable, "{e:?}");
+    let total = a.journal("/shop.v1.OrderService/GetOrder", 1).await.len()
+        + b.journal("/shop.v1.OrderService/GetOrder", 1).await.len();
+    assert!(total <= 4, "the loop stops after a few hops: {total} calls");
+
+    let r = a
+        .http
+        .get(format!("http://{}/http/x", a.data))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 502);
+    let total = a.journal("/http/x", 1).await.len() + b.journal("/http/x", 1).await.len();
+    assert!(total <= 4, "HTTP proxy loops stop too: {total} requests");
+
+    let r = a
+        .http
+        .get(format!("http://{}/http/y", a.data))
+        .header("x-fastmock-proxy-hops", "3")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status(),
+        502,
+        "a request that went through enough proxies is not forwarded"
+    );
+    assert!(b.journal("/http/y", 0).await.is_empty());
+}
+
+#[tokio::test]
+async fn upstreams_that_do_not_speak_http2_get_no_request_bytes() {
+    for answer in [&b""[..], &b"+OK\r\n"[..]] {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel::<Vec<u8>>();
+        let answer = answer.to_vec();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut s, _) = l.accept().await.unwrap();
+            if !answer.is_empty() {
+                let _ = s.write_all(&answer).await;
+            }
+            let mut got = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                match tokio::time::timeout(Duration::from_millis(1500), s.read(&mut buf)).await {
+                    Ok(Ok(n)) if n > 0 => got.extend_from_slice(&buf[..n]),
+                    _ => break,
+                }
+            }
+            let _ = tx.send(got);
+        });
+        let front = Srv::start(|c| {
+            c.grpc_stream_idle_timeout = Duration::from_millis(1000);
+        })
+        .await;
+        front
+            .stub(json!({"request": {"urlPathPattern": "/shop\\.v1\\..*"},
+                         "response": {"proxy": {"baseUrl": format!("http://{addr}")}}}))
+            .await;
+        let e = get_order(&mut front.channel().await, "SECRET-MARKER-1")
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), tonic::Code::Unavailable, "{e:?}");
+        let got = rx.await.unwrap();
+        assert!(got.starts_with(b"PRI * HTTP/2.0"), "{got:?}");
+        assert!(
+            got.len() <= 24 + 9 + 64,
+            "only the preface: {} bytes",
+            got.len()
+        );
+        assert!(
+            !got.windows(15).any(|w| w == b"SECRET-MARKER-1"),
+            "no message bytes reach a server that is not HTTP/2"
+        );
+    }
 }

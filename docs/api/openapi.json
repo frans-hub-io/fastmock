@@ -1673,6 +1673,99 @@
             "bearer": []
           }
         ]
+      },
+      "post": {
+        "tags": [
+          "capture"
+        ],
+        "summary": "Create a capture source with an id chosen by the server",
+        "description": "Like `PUT /__admin/capture/sources/{id}` with a new random id, which the answer carries. Prefer it to fixed ids in shared test code: source ids are global across spaces. Audited as `capture.source.put`.",
+        "operationId": "createCaptureSource",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "description": "Space to act on. Without it, reads cover everything the caller may read and writes go to the global\narea, or to the caller's only space when it is bound to spaces.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaptureSource"
+              },
+              "example": {
+                "name": "orders",
+                "protocol": "kafka",
+                "topics": [
+                  "orders.events"
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid source, broker not configured, not allowed, name taken or too many sources",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller lacks messages:write",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Capture is not enabled, or an unknown space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
       }
     },
     "/__admin/capture/sources/{id}": {
@@ -1840,7 +1933,7 @@
             }
           },
           "409": {
-            "description": "The source comes from the configuration",
+            "description": "The source comes from the configuration, or the id is used by a source of another area (ids are global)",
             "content": {
               "application/json": {
                 "schema": {

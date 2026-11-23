@@ -65,7 +65,7 @@ everywhere.
 | `mail:write` | `POST /mail/messages` (inject), `PUT /mail/messages/{id}/labels`, mailbox passwords (together with `mail:read`), mail chaos rules and webhooks, `POST /mail/inbound` | space |
 | `mail:delete` | `DELETE /mail/messages`, `/mail/messages/{id}` | space |
 | `messages:read` | [message capture](../guide/message-capture.md): `GET /capture/sources*`, `GET /capture/messages*`; `POST /capture/messages/find`, `/capture/messages/wait`, `/capture/verify` | space |
-| `messages:write` | `PUT` and `DELETE /capture/sources/{id}` | space |
+| `messages:write` | `POST /capture/sources`, `PUT` and `DELETE /capture/sources/{id}` | space |
 | `messages:delete` | `DELETE /capture/messages`, `/capture/messages/{id}` (and `?purge=true` when deleting a source) | space |
 
 Mail permissions also apply outside the admin API ([Mail: spaces](../guide/mail.md#spaces)): a managed token with

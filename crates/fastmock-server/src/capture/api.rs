@@ -54,7 +54,7 @@ const SCAN_QUEUE_WAIT: Duration = Duration::from_secs(5);
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/capture/sources", get(list_sources))
+        .route("/capture/sources", get(list_sources).post(post_source))
         .route(
             "/capture/sources/{id}",
             get(get_source).put(put_source).delete(delete_source),
@@ -251,7 +251,7 @@ pub async fn get_source(
         (status = 401, description = "Missing or invalid token", body = ErrorBody),
         (status = 403, description = "The caller lacks messages:write", body = ErrorBody),
         (status = 404, description = "Capture is not enabled, or an unknown space", body = ErrorBody),
-        (status = 409, description = "The source comes from the configuration", body = ErrorBody),
+        (status = 409, description = "The source comes from the configuration, or the id is used by a source of another area (ids are global)", body = ErrorBody),
     ),
     security(("bearer" = []))
 )]
@@ -261,6 +261,40 @@ pub async fn put_source(
     Path(id): Path<Uuid>,
     Query(q): Query<SpaceQuery>,
     Json(body): Json<Value>,
+) -> ApiResult<Json<SourceView>> {
+    store_source(app, p, id, q, body).await
+}
+
+#[utoipa::path(
+    post, path = "/__admin/capture/sources", tag = "capture", operation_id = "createCaptureSource",
+    summary = "Create a capture source with an id chosen by the server",
+    description = "Like `PUT /__admin/capture/sources/{id}` with a new random id, which the answer carries. Prefer it to fixed ids in shared test code: source ids are global across spaces. Audited as `capture.source.put`.",
+    params(SpaceQuery),
+    request_body(content = CaptureSource, example = json!({"name": "orders", "protocol": "kafka", "topics": ["orders.events"]})),
+    responses(
+        (status = 200, description = "Stored", body = SourceView),
+        (status = 400, description = "Invalid source, broker not configured, not allowed, name taken or too many sources", body = ErrorBody),
+        (status = 401, description = "Missing or invalid token", body = ErrorBody),
+        (status = 403, description = "The caller lacks messages:write", body = ErrorBody),
+        (status = 404, description = "Capture is not enabled, or an unknown space", body = ErrorBody),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn post_source(
+    State(app): State<AppState>,
+    Extension(p): Extension<Principal>,
+    Query(q): Query<SpaceQuery>,
+    Json(body): Json<Value>,
+) -> ApiResult<Json<SourceView>> {
+    store_source(app, p, Uuid::now_v7(), q, body).await
+}
+
+async fn store_source(
+    app: AppState,
+    p: Principal,
+    id: Uuid,
+    q: SpaceQuery,
+    body: Value,
 ) -> ApiResult<Json<SourceView>> {
     let svc = service(&app)?;
     let mut s: CaptureSource =
@@ -291,13 +325,20 @@ pub async fn put_source(
             ));
         }
         if existing.space != space {
-            spaces::item(
+            if spaces::item(
                 &p,
                 Permission::MessagesRead,
                 Permission::MessagesWrite,
                 existing.space.as_deref(),
                 "capture source",
-            )?;
+            )
+            .is_err()
+            {
+                return Err(ApiError(
+                    StatusCode::CONFLICT,
+                    "this id is in use: capture source ids are global across spaces; use another id, or POST /__admin/capture/sources to get one".into(),
+                ));
+            }
             return Err(bad(
                 "the space of a source cannot change; delete it and create it again",
             ));
@@ -1521,6 +1562,7 @@ fn sort_misses(misses: &mut [MessageNearMiss]) {
         list_sources,
         get_source,
         put_source,
+        post_source,
         delete_source,
         list_messages,
         get_message,

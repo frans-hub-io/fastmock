@@ -400,7 +400,18 @@ async fn capture_sources_do_not_cross_spaces() {
                 Some(json!({"name": "invoices", "protocol": "kafka", "topics": ["payments.x"]})),
             )
             .await;
-        assert_eq!(st, 404, "another space's source is not found: {v}");
+        assert_eq!(
+            st, 409,
+            "ids are global; another space's id cannot be taken: {v}"
+        );
+        assert!(
+            v["error"].as_str().unwrap().contains("ids are global"),
+            "{v}"
+        );
+        assert!(
+            !v.to_string().contains("billing"),
+            "the answer names nothing of the other space: {v}"
+        );
         let (st, v) = h
             .call(
                 Method::PUT,
@@ -426,6 +437,27 @@ async fn capture_sources_do_not_cross_spaces() {
 
         let (_, list) = h.call(Method::GET, "/capture/sources", PAY, None).await;
         assert!(list["sources"].as_array().unwrap().is_empty(), "{list}");
+        let (st, v) = h
+            .call(
+                Method::POST,
+                "/capture/sources",
+                PAY,
+                Some(json!({"name": "orders", "protocol": "kafka", "topics": ["payments.orders"]})),
+            )
+            .await;
+        assert_eq!(st, 200, "{v}");
+        assert_eq!(v["space"], "payments");
+        let new_id = v["id"].as_str().unwrap().to_string();
+        assert_ne!(new_id, id.to_string());
+        let (st, _) = h
+            .call(
+                Method::GET,
+                &format!("/capture/sources/{new_id}"),
+                PAY,
+                None,
+            )
+            .await;
+        assert_eq!(st, 200, "the server-chosen id is the source's id");
         let (st, _) = h
             .call(Method::GET, "/capture/sources?space=billing", PAY, None)
             .await;
@@ -561,6 +593,17 @@ async fn sources_outside_a_space_list_do_not_start() {
         )
         .await
         .unwrap();
+    let orphan = Uuid::now_v7();
+    h.app
+        .stores
+        .data
+        .put(
+            fastmock_server::capture::NAMESPACE,
+            &orphan.to_string(),
+            &json!({"id": orphan, "name": "orphan", "space": "removed", "protocol": "kafka", "topics": ["shared.events"]}),
+        )
+        .await
+        .unwrap();
     let (stop, rx) = watch::channel(false);
     tokio::spawn(fastmock_server::capture::runtime::run_with(
         h.app.clone(),
@@ -591,6 +634,26 @@ async fn sources_outside_a_space_list_do_not_start() {
             .unwrap()
             .contains("capture allow-list of space payments"),
         "{last}"
+    );
+    let mut orphan_status = Value::Null;
+    for _ in 0..100 {
+        let (_, v) = h.call(Method::GET, "/capture/sources", ADMIN, None).await;
+        if let Some(s) = v["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == "orphan" && s["status"]["state"] == "error")
+        {
+            orphan_status = s["status"].clone();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        orphan_status["lastError"]
+            .as_str()
+            .is_some_and(|e| e.contains("space removed is not defined")),
+        "a source of a removed space does not run on the server-wide list: {orphan_status}"
     );
     let _ = stop.send(true);
 }

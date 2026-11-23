@@ -325,6 +325,8 @@ impl GrpcProxyConfig {
                 "FASTMOCK_GRPC_PROXY_CLIENT_CERT_HOSTS needs FASTMOCK_GRPC_PROXY_CLIENT_CERT_FILE and FASTMOCK_GRPC_PROXY_CLIENT_KEY_FILE"
             );
         }
+        crate::grpc_proxy::CertHosts::parse(&self.client_cert_hosts)
+            .map_err(|e| anyhow::anyhow!(e))?;
         if !(1..=10_000).contains(&self.max_calls) {
             bail!("FASTMOCK_GRPC_PROXY_MAX_CALLS must be between 1 and 10000");
         }

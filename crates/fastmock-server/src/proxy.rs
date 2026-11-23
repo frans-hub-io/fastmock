@@ -71,6 +71,12 @@ pub async fn forward(
     headers: &HeaderMap,
     body: Bytes,
 ) -> Result<Upstream, String> {
+    let hop = crate::grpc_proxy::hops(headers);
+    if hop >= crate::grpc_proxy::MAX_PROXY_HOPS {
+        return Err(format!(
+            "proxy loop: the request already went through {hop} FastMock proxies"
+        ));
+    }
     let parsed = target_url(def, path, query)?;
     app.policy
         .check_url(&parsed)
@@ -85,18 +91,22 @@ pub async fn forward(
         .collect();
     for (k, v) in headers {
         let name = k.as_str();
-        if blocked_outbound_header(name) || removed.iter().any(|r| r == name) {
+        if blocked_outbound_header(name)
+            || removed.iter().any(|r| r == name)
+            || name == crate::grpc_proxy::HOPS_HEADER
+        {
             continue;
         }
         rb = rb.header(name, v.as_bytes());
     }
     for (k, v) in &def.additional_headers {
-        if blocked_outbound_header(k) {
+        if blocked_outbound_header(k) || k.eq_ignore_ascii_case(crate::grpc_proxy::HOPS_HEADER) {
             continue;
         }
         rb = rb.header(k, v);
     }
     let resp = rb
+        .header(crate::grpc_proxy::HOPS_HEADER, (hop + 1).to_string())
         .body(body)
         .send()
         .await
@@ -157,6 +167,8 @@ pub fn bad_gateway(msg: &str) -> Response {
     tracing::warn!(error = %msg, "proxying failed");
     let reason = if msg.starts_with("blocked by egress policy") {
         "blocked by egress policy"
+    } else if msg.starts_with("proxy loop") {
+        "proxy loop"
     } else if msg.contains("exceeds") {
         "upstream body too large"
     } else {
