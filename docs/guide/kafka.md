@@ -147,7 +147,9 @@ With `avroSchema`, FastMock:
 3. writes the Confluent wire format: byte `0`, the 4-byte schema id, then the Avro binary encoding.
 
 Consumers that use the Confluent `KafkaAvroDeserializer` read these records without changes. `avroSubject` replaces
-the subject `<topic>-value`. MQTT and AMQP messages take `avroSchema` too, see
+the subject `<topic>-value` and is required when `topic` is a template (a request must not choose registry
+subjects); stubs that lack it publish nothing until it is added (see
+[Avro payloads](mqtt-amqp.md#avro-payloads)). MQTT and AMQP messages take `avroSchema` too, see
 [Avro payloads](mqtt-amqp.md#avro-payloads).
 
 ```json

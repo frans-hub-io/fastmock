@@ -204,12 +204,18 @@ configured.
 }
 ```
 
-The Schema Registry subject is `avroSubject` when set. Otherwise it is `<topic>-value` for MQTT and
+The Schema Registry subject is `avroSubject` when set. Otherwise it is `<topic>-value` for MQTT (as for Kafka) and
 `<exchange>.<routingKey>-value` for AMQP (`<routingKey>-value` on the default exchange); characters outside
 letters, digits, `.`, `_` and `-` (the `/` of MQTT topics) are percent-encoded in the registry request, so a subject
-is always one path segment. `avroSubject` takes 1 to 249 characters of letters, digits, `.`, `_` and `-` and is
-required when the topic, the exchange or the routing key is a template: otherwise a request could make FastMock
-register one subject per value of a request field. Saving the stub fails with `avroSubject is required when ...`.
+is always one path segment. `avroSubject` takes 1 to 249 characters of letters, digits, `.`, `_` and `-`, not only
+dots (`.` and `..` would move the request to another registry route).
+
+A message whose topic, exchange or routing key is a template must set `avroSubject`, for every protocol including
+Kafka: without it every distinct rendered destination (`orders.{{request.pathParams.id}}`) would register a new
+subject in the shared registry, and any caller of the data plane could create them. Saving such a stub fails with
+`avroSubject is required when ...`, and a stub stored by an earlier version that lacks it publishes nothing
+(the message fails with that text and is counted as `failed`; the HTTP response is not affected) until it gets an `avroSubject`. FastMock also keeps
+at most 1024 registrations in memory, keyed by subject and a hash of the schema.
 
 The conversion rules, the limits and the registry errors (`schema registry returned 409 ...`) are those of
 [Kafka Avro](kafka.md#avro): the rendered value follows the same 16 MiB budget as every message field, and the
@@ -221,7 +227,9 @@ is derived from the channel (and the exchange for AMQP).
 `FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL` set, a captured MQTT or AMQP message in the Confluent frame has
 `body.encoding` `avro`, and JSON body matchers (`jsonPath`, `equalToJson`, `jsonSchema`) see the decoded record.
 Avro without the Confluent frame (raw binary datum) cannot be decoded, because nothing says which schema wrote it;
-it is shown as `base64`.
+it is shown as `base64`. Decoding is limited to the capture message size
+(`FASTMOCK_CAPTURE_MAX_MESSAGE_BYTES`, at least 64 KiB): a few bytes that declare a huge string or array are shown
+as `base64` instead of allocating memory.
 
 ## Connections, reconnects and readiness
 

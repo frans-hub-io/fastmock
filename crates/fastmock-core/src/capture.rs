@@ -1203,7 +1203,23 @@ mod tests {
                 .contains("avroSubject is required")
         );
         assert!(def(json!({"protocol": "mqtt", "topic": "a/{{uuid}}", "avroSchema": avro, "avroSubject": "a-value"})).is_ok());
-        assert!(def(json!({"topic": "a-{{uuid}}", "avroSchema": avro})).is_ok());
+        assert!(
+            def(json!({"topic": "a-{{uuid}}", "avroSchema": avro}))
+                .unwrap_err()
+                .contains("avroSubject is required")
+        );
+        assert!(
+            def(json!({"topic": "a-{{uuid}}", "avroSchema": avro, "avroSubject": "a-value"}))
+                .is_ok()
+        );
+        assert!(def(json!({"topic": "a-{{uuid}}"})).is_ok());
+        for bad in [".", "..", "...", ""] {
+            assert!(
+                def(json!({"topic": "t", "avroSchema": avro, "avroSubject": bad})).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(def(json!({"topic": "t", "avroSchema": avro, "avroSubject": "a.b..c"})).is_ok());
         assert!(
             def(json!({"topic": "t", "avroSubject": "t-value"}))
                 .unwrap_err()

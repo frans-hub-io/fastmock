@@ -1140,6 +1140,46 @@ fn reading_schema() -> Value {
 }
 
 #[tokio::test]
+async fn avro_stubs_with_templated_destinations_need_a_subject() {
+    let mut cfg = capture_cfg(StorageKind::Memory);
+    cfg.kafka_bootstrap = Some(vec!["127.0.0.1:1".into()]);
+    cfg.mqtt = Some(MqttSettings::new("mqtt://127.0.0.1:1").unwrap());
+    let h = H::start(cfg, false).await;
+    let kafka = |extra: Value| {
+        let mut m = json!({"topic": "orders.{{request.pathParams.id}}", "avroSchema": reading_schema(), "jsonValue": {}});
+        m.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        json!({"request": {"method": "POST", "urlPathTemplate": "/k/{id}"}, "response": {"status": 202}, "messages": [m]})
+    };
+    let (st, v) = h
+        .call(Method::POST, "/stubs", EDITOR, Some(kafka(json!({}))))
+        .await;
+    assert_eq!(st, 400, "{v}");
+    assert!(v.to_string().contains("avroSubject is required"), "{v}");
+    let (st, v) = h
+        .call(
+            Method::POST,
+            "/stubs",
+            EDITOR,
+            Some(kafka(json!({"avroSubject": "orders-value"}))),
+        )
+        .await;
+    assert_eq!(st, 201, "{v}");
+    for bad in [".", "..", "a/b", "x y"] {
+        let (st, _) = h
+            .call(
+                Method::POST,
+                "/stubs",
+                EDITOR,
+                Some(kafka(json!({"avroSubject": bad}))),
+            )
+            .await;
+        assert_eq!(st, 400, "{bad}");
+    }
+}
+
+#[tokio::test]
 async fn mqtt_stubs_publish_avro_that_capture_decodes() {
     let Ok(url) = std::env::var("FASTMOCK_TEST_MQTT") else {
         eprintln!("FASTMOCK_TEST_MQTT not set: skipped");

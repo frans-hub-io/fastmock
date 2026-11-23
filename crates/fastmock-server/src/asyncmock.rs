@@ -134,6 +134,7 @@ pub fn render(app: &AppState, m: &AsyncMock, seq: u64) -> anyhow::Result<Rendere
         headers,
         avro_schema: m.avro_schema.clone(),
         avro_subject: None,
+        invalid: None,
         content_type,
         delay_ms: 0,
         mqtt: m.mqtt.as_ref().map(|o| RenderedMqtt {

@@ -201,6 +201,7 @@ source's protocol must cover the source, or `createCaptureSource` throws `FastMo
 | `VerifyResult verifyMessageCount(MessageMatch, long, Instant since)`, `verifyMessagesAtLeast`, `verifyMessagesAtMost`, `verifyNoMessages(MessageMatch, Instant)` | `POST /capture/verify` | Count stored messages without waiting; throw `AssertionError` with the reason on failure. `verifyMessages(JsonNode)` never throws on a failed expectation. |
 | `long clearCapturedMessages(String source)` | `DELETE /capture/messages` | The messages of one source (name or id), or of the whole space with `null`. |
 | `FastMock inSpace(String)` | `?space=` | A client whose capture calls work in that space. |
+| `FastMock withPayloadsInErrors()` | | A client whose `waitForMessages` timeout error lists the received messages with payload previews. By default the error says how many messages arrived (with source and topic) and leaves payloads out, because captured payloads can hold secrets and assertion messages end up in CI logs. |
 
 `MessageMatch` builds the `match` object: `MessageMatch.source("orders")`, `.topic`, `.topicMatching(regex)`,
 `.exchange`, `.key`, `.header(name, value)`, `.property(name, value)`, `.contentType`, `.protocol`, `.bodyContains`,

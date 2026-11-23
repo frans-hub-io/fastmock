@@ -252,6 +252,9 @@ impl Brokers {
     }
 
     pub async fn publish_one(&self, m: &RenderedMessage) -> anyhow::Result<Receipt> {
+        if let Some(why) = &m.invalid {
+            return Err(public(why.clone()));
+        }
         match m.protocol {
             MessageProtocol::Kafka => {
                 let (partition, offset) = self.kafka.publish_one(m).await?;
@@ -623,5 +626,15 @@ mod tests {
             .await
             .unwrap_err();
         assert!(e.to_string().contains("FASTMOCK_AMQP_URL"));
+        let e = b
+            .publish_one(&RenderedMessage {
+                protocol: MessageProtocol::Kafka,
+                topic: "orders.1".into(),
+                invalid: Some("avroSubject is required".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("avroSubject is required"));
     }
 }
