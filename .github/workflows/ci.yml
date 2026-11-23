@@ -142,9 +142,9 @@ jobs:
             -v "$dir/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro" \
             "rabbitmq:${RABBITMQ_VERSION}"
           for i in $(seq 1 60); do
-            if docker exec rabbitmq rabbitmq-diagnostics -q check_port_connectivity >/dev/null 2>&1; then
-              docker exec rabbitmq rabbitmqctl -q add_user fastmock-capture "$(openssl rand -hex 16)"
-              docker exec rabbitmq rabbitmqctl -q set_permissions -p / fastmock-capture '.*' '.*' '.*'
+            if docker exec -u rabbitmq rabbitmq rabbitmq-diagnostics -q check_port_connectivity >/dev/null 2>&1; then
+              docker exec -u rabbitmq rabbitmq rabbitmqctl -q add_user fastmock-capture "$(openssl rand -hex 16)"
+              docker exec -u rabbitmq rabbitmq rabbitmqctl -q set_permissions -p / fastmock-capture '.*' '.*' '.*'
               echo "FASTMOCK_TEST_AMQPS_TLS_DIR=$dir" >> "$GITHUB_ENV"
               exit 0
             fi
