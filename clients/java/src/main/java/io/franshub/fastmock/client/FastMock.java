@@ -32,12 +32,27 @@ public final class FastMock {
     private final String token;
     private final HttpClient http;
     private final Duration timeout;
+    private final String space;
 
     private FastMock(URI admin, String token, Duration timeout) {
+        this(admin, token, timeout, null, null);
+    }
+
+    private FastMock(URI admin, String token, Duration timeout, String space, HttpClient shared) {
+        this.space = space;
         this.admin = URI.create(admin.toString().replaceAll("/+$", "") + "/");
         this.token = Objects.requireNonNull(token, "token");
         this.timeout = timeout;
-        this.http = HttpClient.newBuilder().connectTimeout(timeout).followRedirects(HttpClient.Redirect.NEVER).build();
+        this.http = shared != null ? shared
+                : HttpClient.newBuilder().connectTimeout(timeout).followRedirects(HttpClient.Redirect.NEVER).build();
+    }
+
+    /**
+     * A client whose message capture calls ({@code createCaptureSource}, {@code waitForMessages}, ...) work in
+     * the given space; the other calls are unchanged. Without it the caller's only space applies.
+     */
+    public FastMock inSpace(String space) {
+        return new FastMock(admin, token, timeout, Objects.requireNonNull(space, "space"), http);
     }
 
     /** Connects to the admin endpoint, for example {@code http://fastmock-admin:9090}, with a bearer token. */
@@ -240,6 +255,140 @@ public final class FastMock {
         call("DELETE", "requests", null);
     }
 
+    // ---- message capture
+
+    private String capturePath(String path, String query) {
+        StringBuilder b = new StringBuilder("capture/").append(path);
+        String sep = "?";
+        if (space != null) {
+            b.append(sep).append("space=").append(q(space));
+            sep = "&";
+        }
+        if (query != null && !query.isEmpty()) {
+            b.append(sep).append(query);
+        }
+        return b.toString();
+    }
+
+    /** Creates a capture source (needs {@code messages:write}) and returns it with its state. */
+    public CaptureSourceView createCaptureSource(CaptureSource source) {
+        UUID id = source.idOrNew();
+        return JSON.convertValue(call("PUT", capturePath("sources/" + id, null), source.toJson()), CaptureSourceView.class);
+    }
+
+    public List<CaptureSourceView> captureSources() {
+        List<CaptureSourceView> out = new ArrayList<>();
+        call("GET", capturePath("sources", null), null).path("sources")
+                .forEach(n -> out.add(JSON.convertValue(n, CaptureSourceView.class)));
+        return out;
+    }
+
+    /** Waits until the source consumes ({@code state} {@code running}), so messages published next are captured. */
+    public CaptureSourceView awaitCaptureSourceRunning(UUID id, Duration within) {
+        return await(() -> JSON.convertValue(call("GET", capturePath("sources/" + id, null), null), CaptureSourceView.class),
+                v -> v.status() != null && "running".equals(v.status().state()), within,
+                "capture source " + id + " is not running");
+    }
+
+    /** Deletes a source; with {@code purge} also its messages (needs {@code messages:delete}). */
+    public void deleteCaptureSource(UUID id, boolean purge) {
+        call("DELETE", capturePath("sources/" + id, purge ? "purge=true" : null), null);
+    }
+
+    /** Lists captured messages, newest first (oldest first with {@link CaptureFilter#oldestFirst()}). */
+    public List<CapturedMessage> capturedMessages(CaptureFilter filter) {
+        List<CapturedMessage> out = new ArrayList<>();
+        call("GET", capturePath("messages", filter.toQuery()), null).path("messages")
+                .forEach(n -> out.add(JSON.convertValue(n, CapturedMessage.class)));
+        return out;
+    }
+
+    /** Messages matching the conditions, newest first, at most {@code limit} (1 to 500) of them. */
+    public List<CapturedMessage> findMessages(MessageMatch match, Instant since, int limit) {
+        ObjectNode b = JSON.createObjectNode().put("limit", limit);
+        b.set("match", match.toJson());
+        if (since != null) {
+            b.put("since", since.toString());
+        }
+        List<CapturedMessage> out = new ArrayList<>();
+        call("POST", capturePath("messages/find", null), b).path("messages")
+                .forEach(n -> out.add(JSON.convertValue(n, CapturedMessage.class)));
+        return out;
+    }
+
+    /** One message with its decoded body. */
+    public CapturedMessageDetail capturedMessage(UUID id) {
+        return JSON.convertValue(call("GET", capturePath("messages/" + id, null), null), CapturedMessageDetail.class);
+    }
+
+    /**
+     * Blocks until {@code count} messages matching {@code match} were captured, at most {@code timeout} (up to
+     * 60 s), and returns them oldest first. Only messages received at or after {@code since} (or arriving
+     * during the wait, when {@code since} is null) count. Throws {@link AssertionError} with what arrived on
+     * timeout.
+     */
+    public List<CapturedMessage> waitForMessages(MessageMatch match, int count, Duration timeout, Instant since) {
+        ObjectNode b = JSON.createObjectNode().put("count", count).put("timeoutMs", timeout.toMillis());
+        b.set("match", match.toJson());
+        if (since != null) {
+            b.put("since", since.toString());
+        }
+        JsonNode r = call("POST", capturePath("messages/wait", null), b, 408);
+        if (r.has("error")) {
+            List<String> details = new ArrayList<>();
+            r.path("details").forEach(n -> details.add(n.asText()));
+            throw new AssertionError(r.path("error").asText() + (details.isEmpty() ? "" : "; " + String.join("; ", details))
+                    + "; received so far: " + r.path("messages"));
+        }
+        List<CapturedMessage> out = new ArrayList<>();
+        r.path("messages").forEach(n -> out.add(JSON.convertValue(n, CapturedMessage.class)));
+        return out;
+    }
+
+    public List<CapturedMessage> waitForMessages(MessageMatch match, Duration timeout, Instant since) {
+        return waitForMessages(match, 1, timeout, since);
+    }
+
+    /** Counts stored messages without waiting; never throws on a failed expectation, check {@link VerifyResult#verified()}. */
+    public VerifyResult verifyMessages(JsonNode body) {
+        return JSON.convertValue(call("POST", capturePath("verify", null), body, 422), VerifyResult.class);
+    }
+
+    /** Asserts that exactly {@code times} stored messages (received at or after {@code since}, if given) match. */
+    public VerifyResult verifyMessageCount(MessageMatch match, long times, Instant since) {
+        return expectMessages(match, since, JSON.createObjectNode().put("count", times));
+    }
+
+    public VerifyResult verifyMessagesAtLeast(MessageMatch match, long times, Instant since) {
+        return expectMessages(match, since, JSON.createObjectNode().put("atLeast", times));
+    }
+
+    public VerifyResult verifyMessagesAtMost(MessageMatch match, long times, Instant since) {
+        return expectMessages(match, since, JSON.createObjectNode().put("atMost", times));
+    }
+
+    public VerifyResult verifyNoMessages(MessageMatch match, Instant since) {
+        return verifyMessagesAtMost(match, 0, since);
+    }
+
+    private VerifyResult expectMessages(MessageMatch match, Instant since, ObjectNode body) {
+        body.set("match", match.toJson());
+        if (since != null) {
+            body.put("since", since.toString());
+        }
+        VerifyResult r = verifyMessages(body);
+        if (!r.verified()) {
+            throw new AssertionError(r.error() + (r.details() == null || r.details().isEmpty() ? "" : "; " + String.join("; ", r.details())));
+        }
+        return r;
+    }
+
+    /** Deletes the messages of the space, or of one source (name or id); returns how many were removed. */
+    public long clearCapturedMessages(String source) {
+        String query = source == null ? null : "source=" + q(source);
+        return call("DELETE", capturePath("messages", query), null).path("deleted").asLong();
+    }
+
     // ---- callbacks
 
     public List<CallbackRecord> callbacks(String correlation) {
@@ -319,6 +468,32 @@ public final class FastMock {
                 throw new FastMockException("request body is not JSON", e);
             }
         }
+    }
+
+    public record CaptureSourceView(String id, String name, String space, String protocol, List<String> topics,
+                                    String exchange, List<String> bindingKeys, Integer qos, String startFrom,
+                                    Integer maxMessages, boolean enabled, String description, boolean fromConfig,
+                                    String updatedAt, CaptureStatus status) {
+    }
+
+    public record CaptureStatus(String state, long received, long dropped, String lastMessageAt, String since,
+                                long stored, long connects, String lastError) {
+    }
+
+    public record CapturedMessage(String id, String space, String sourceId, String source, String protocol,
+                                  String topic, String exchange, String key, Map<String, String> headers,
+                                  JsonNode properties, String contentType, long size, boolean truncated,
+                                  String preview, String receivedAt) {
+    }
+
+    /** A message with its decoded body: {@code encoding} is json, avro, text, base64 or empty. */
+    public record CapturedMessageDetail(String id, String space, String sourceId, String source, String protocol,
+                                        String topic, String exchange, String key, Map<String, String> headers,
+                                        JsonNode properties, String contentType, long size, boolean truncated,
+                                        String preview, String receivedAt, DecodedBody body) {
+    }
+
+    public record DecodedBody(String encoding, JsonNode value, Long schemaId, String error) {
     }
 
     public record CallbackRecord(String id, String source, String correlation, String url, String method,

@@ -14,6 +14,7 @@ POST /orders/A-1/ship ──► application ──► Kafka "orders.events" ─�
 - [Allow-lists per space](#allow-lists-per-space)
 - [Capture sources](#capture-sources)
 - [How each broker is read](#how-each-broker-is-read)
+- [MQTT shared subscriptions](#mqtt-shared-subscriptions)
 - [Reading captured messages](#reading-captured-messages)
 - [Waiting and verifying in tests](#waiting-and-verifying-in-tests)
 - [Matching messages](#matching-messages)
@@ -102,8 +103,8 @@ spaces:
 A source refused by a space list answers
 `400 {"error": "billing.invoices is not in the capture allow-list of space payments (spaces[].capture.kafkaTopics in the access file)"}`.
 
-Whatever the allow-lists say, sources never read broker internals: MQTT filters starting with `$` (`$SYS/#`, shared
-subscriptions `$share/<group>/...`, which would take messages away from the application's subscribers), Kafka topics
+Whatever the allow-lists say, sources never read broker internals: MQTT filters starting with `$` (`$SYS/#` and shared
+subscriptions, see [MQTT shared subscriptions](#mqtt-shared-subscriptions)), Kafka topics
 starting with `__` (`__consumer_offsets`, `__transaction_state`) and AMQP exchanges `amq.rabbitmq.*` are refused.
 
 A start with an invalid source, a source whose broker is not configured, a source outside an allow-list or a space
@@ -199,6 +200,20 @@ FastMock never takes messages away from the application's own consumers:
   messages as before. The queue belongs to FastMock's connection and disappears with it. The user needs the
   `configure` permission on server-named queues (`amq.gen-*`), `write` on them and `read` on the exchange.
 
+## MQTT shared subscriptions
+
+A capture source cannot subscribe to `$share/<group>/<filter>` (nor to any filter starting with `$`); saving it
+answers `400` with `starts with $`. This is deliberate. A shared subscription does not give every subscriber a
+copy: the broker hands each message to one member of the group. If FastMock joined the group of the application
+under test, it would take part of the messages away from the application, and the test would fail or pass for
+the wrong reason. A normal subscription gets its own copy of every message, so capture subscribes to the plain
+filter (`orders/#`) next to the application's shared subscription and sees every message the application's group
+gets, without taking any of them.
+
+So to check what a group of consumers receives, capture the plain topic (the messages are the same ones the
+group gets) and assert on those. To feed a group, a stub or async mock publishes to the plain topic as usual;
+see [Topics consumed through shared subscriptions](mqtt-amqp.md#topics-consumed-through-shared-subscriptions).
+
 ## Reading captured messages
 
 | Route | Permission | Returns |
@@ -239,7 +254,7 @@ Kafka headers, MQTT 5 user properties or AMQP headers (values as text; a name pr
 | `encoding` | When | `value` |
 |---|---|---|
 | `json` | The body is JSON. | The JSON value. |
-| `avro` | The body is Confluent-framed Avro (byte 0, then the schema id) and `FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL` knows the id. | The record as JSON, with `schemaId`. |
+| `avro` | The body is Confluent-framed Avro (byte 0, then the schema id; Kafka, MQTT or AMQP) and `FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL` knows the id. | The record as JSON, with `schemaId`. |
 | `text` | Other UTF-8 text (also a truncated JSON body). | The text. |
 | `base64` | Binary data, or Avro that cannot be decoded (then `error` says why, for example `schema registry returned 404 Not Found for schema id 7`). | The base64 of the bytes. |
 | `empty` | No body. | `""` |

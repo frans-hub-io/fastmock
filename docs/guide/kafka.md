@@ -146,7 +146,9 @@ With `avroSchema`, FastMock:
 2. converts `jsonValue` to Avro according to the schema;
 3. writes the Confluent wire format: byte `0`, the 4-byte schema id, then the Avro binary encoding.
 
-Consumers that use the Confluent `KafkaAvroDeserializer` read these records without changes.
+Consumers that use the Confluent `KafkaAvroDeserializer` read these records without changes. `avroSubject` replaces
+the subject `<topic>-value`. MQTT and AMQP messages take `avroSchema` too, see
+[Avro payloads](mqtt-amqp.md#avro-payloads).
 
 ```json
 {

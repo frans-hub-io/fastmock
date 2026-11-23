@@ -249,7 +249,7 @@ templates cannot read them.
 | `FASTMOCK_KAFKA_TLS_CA_FILE` | path | none | PEM bundle trusted in addition to the public roots compiled into the binary, for `ssl` and `sasl_ssl`. Also trusted by an `https://` Schema Registry. With `plaintext` or `sasl_plaintext` it is refused unless the registry URL is `https://`. |
 | `FASTMOCK_KAFKA_TLS_CERT_FILE` | path | none | Client certificate (PEM, leaf first, optionally followed by intermediates) for mTLS. Set together with `FASTMOCK_KAFKA_TLS_KEY_FILE`; only for `ssl` and `sasl_ssl`. |
 | `FASTMOCK_KAFKA_TLS_KEY_FILE` | path | none | Private key of the client certificate (PEM: PKCS#8, PKCS#1 or SEC1, unencrypted). |
-| `FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL` | URL | none | Confluent-compatible Schema Registry (`http://` or `https://`), required for messages with `avroSchema`. |
+| `FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL` | URL | none | Confluent-compatible Schema Registry (`http://` or `https://`), required for messages with `avroSchema` (Kafka, MQTT and AMQP) and for decoding Avro bodies in message capture. |
 | `FASTMOCK_KAFKA_SCHEMA_REGISTRY_USERNAME` | string | none | HTTP basic authentication for the registry. Set together with the password. |
 | `FASTMOCK_KAFKA_SCHEMA_REGISTRY_PASSWORD` | string | none | Registry password. Never logged. |
 | `FASTMOCK_KAFKA_ALLOWED_TOPICS` | list | none (any topic) | Topics stub messages may publish to: exact names or prefixes ending in `*` (`orders.*`). It does not grant reading. |

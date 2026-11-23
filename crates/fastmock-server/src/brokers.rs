@@ -239,6 +239,18 @@ impl Brokers {
         )
     }
 
+    /// The bytes of an MQTT or AMQP message: the rendered value, or Confluent-framed Avro with `avroSchema`
+    /// registered under `avroSubject` (`default_subject` when the message names none).
+    async fn body(&self, m: &RenderedMessage, default_subject: &str) -> anyhow::Result<Vec<u8>> {
+        match &m.avro_schema {
+            None => Ok(payload(&m.value)),
+            Some(schema) => {
+                let subject = m.avro_subject.as_deref().unwrap_or(default_subject);
+                self.kafka.encode_avro(subject, schema, &m.value).await
+            }
+        }
+    }
+
     pub async fn publish_one(&self, m: &RenderedMessage) -> anyhow::Result<Receipt> {
         match m.protocol {
             MessageProtocol::Kafka => {
@@ -262,7 +274,7 @@ impl Brokers {
                 let o = m.mqtt.clone().unwrap_or_default();
                 let publish = MqttPublish {
                     topic: m.topic.clone(),
-                    payload: payload(&m.value),
+                    payload: self.body(m, &format!("{}-value", m.topic)).await?,
                     qos: o.qos,
                     retain: o.retain,
                     user_properties: m
@@ -309,7 +321,7 @@ impl Brokers {
                 let msg = AmqpMessage {
                     exchange: exchange.clone(),
                     routing_key: m.topic.clone(),
-                    payload: payload(&m.value),
+                    payload: self.body(m, &avro_subject(&exchange, &m.topic)).await?,
                     headers: m
                         .headers
                         .iter()
@@ -451,6 +463,16 @@ impl Brokers {
 
 /// The allow-list check of AMQP: exchanges by name; the default exchange only through
 /// `amq.default/<routing key>` entries (exact or `prefix*`). `None` allows everything.
+/// The default registry subject of an AMQP message: `<exchange>.<routing key>-value`, without the exchange on
+/// the default exchange.
+fn avro_subject(exchange: &str, routing_key: &str) -> String {
+    if exchange == fastmock_brokers::amqp::DEFAULT_EXCHANGE {
+        format!("{routing_key}-value")
+    } else {
+        format!("{exchange}.{routing_key}-value")
+    }
+}
+
 pub fn amqp_allowed(list: Option<&[String]>, exchange: &str, routing_key: &str) -> bool {
     let exchange = fastmock_brokers::amqp::api_exchange(exchange);
     if exchange == fastmock_brokers::amqp::DEFAULT_EXCHANGE {

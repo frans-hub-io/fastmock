@@ -578,9 +578,16 @@ pub struct MessageDef {
     /// Kafka headers, MQTT 5 user properties or AMQP headers (values are templates).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
-    /// Kafka only: publish as Confluent-framed Avro with this schema.
+    /// Publish `jsonValue` as Confluent-framed Avro with this schema (Kafka, MQTT and AMQP). The schema is
+    /// registered in the Schema Registry under the subject `avroSubject`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avro_schema: Option<Value>,
+    /// Schema Registry subject of `avroSchema` (letters, digits, `.`, `_`, `-`, at most 249 characters).
+    /// Default: `<topic>-value` for Kafka, `<topic>-value` for MQTT, `<exchange>.<routingKey>-value` for
+    /// AMQP (`<routingKey>-value` on the default exchange). MQTT and AMQP messages whose topic, exchange or
+    /// routing key is a template need it, so a request cannot make FastMock register arbitrary subjects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avro_subject: Option<String>,
     /// Content type (template): MQTT 5 `content-type` property, AMQP `content_type` property, Kafka
     /// `content-type` header unless `headers` sets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -639,6 +646,13 @@ pub struct MessageDef {
     pub app_id: Option<String>,
 }
 
+/// A Schema Registry subject a stub or async mock may name: no characters that need escaping in a URL.
+pub fn valid_avro_subject(s: &str) -> bool {
+    (1..=249).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
 impl MessageDef {
     /// The name of the destination for logs and errors: the topic, or `exchange/routing key`.
     pub fn destination(&self) -> String {
@@ -677,10 +691,7 @@ impl MessageDef {
             ("messageType", self.message_type.is_some()),
             ("appId", self.app_id.is_some()),
         ];
-        let kafka = [
-            ("key", self.key.is_some()),
-            ("avroSchema", self.avro_schema.is_some()),
-        ];
+        let kafka = [("key", self.key.is_some())];
         let foreign: Vec<&str> = match self.protocol {
             MessageProtocol::Kafka => mqtt.iter().chain(amqp.iter()).collect::<Vec<_>>(),
             MessageProtocol::Mqtt => kafka.iter().chain(amqp.iter()).collect(),
@@ -721,6 +732,33 @@ impl MessageDef {
         }
         if self.qos.is_some_and(|q| q > 2) {
             return Err("qos must be 0, 1 or 2".into());
+        }
+        if self.avro_schema.is_some()
+            && self.avro_subject.is_none()
+            && self.protocol != MessageProtocol::Kafka
+            && [
+                Some(&self.topic),
+                self.exchange.as_ref(),
+                self.routing_key.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            .any(|t| t.contains("{{"))
+        {
+            return Err(
+                "avroSubject is required when the topic, exchange or routingKey is a template, so a request cannot choose the registry subject".into(),
+            );
+        }
+        if let Some(subject) = &self.avro_subject {
+            if self.avro_schema.is_none() {
+                return Err("avroSubject needs avroSchema".into());
+            }
+            if !valid_avro_subject(subject) {
+                return Err(
+                    "avroSubject must be 1 to 249 characters of letters, digits, `.`, `_` and `-`"
+                        .into(),
+                );
+            }
         }
         if self.delay_ms.is_some_and(|d| d > 3_600_000) {
             return Err("delayMs must be at most 3600000".into());

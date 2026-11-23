@@ -435,7 +435,11 @@ impl SchemaRegistry {
         if let Some(id) = self.cache.lock().await.get(&key) {
             return Ok(*id);
         }
-        let url = format!("{}/subjects/{}/versions", self.base, subject);
+        let url = format!(
+            "{}/subjects/{}/versions",
+            self.base,
+            escape_subject(subject)
+        );
         let mut req = self
             .http
             .post(&url)
@@ -458,6 +462,19 @@ impl SchemaRegistry {
         self.cache.lock().await.insert(key, id);
         Ok(id)
     }
+}
+
+/// Percent-encodes everything but unreserved characters, so a subject (an MQTT topic, say) stays one path segment.
+fn escape_subject(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 /// The schema id of a Confluent-framed value (magic byte 0, then the id).
@@ -866,6 +883,16 @@ mod tests {
         assert!(
             matches!(defaults, AvroValue::Record(ref f) if f[1].1 == AvroValue::Union(0, Box::new(AvroValue::Null)))
         );
+    }
+
+    #[test]
+    fn subjects_stay_one_path_segment() {
+        assert_eq!(escape_subject("orders.events-value"), "orders.events-value");
+        assert_eq!(
+            escape_subject("devices/d1/state-value"),
+            "devices%2Fd1%2Fstate-value"
+        );
+        assert_eq!(escape_subject("../x y?"), "..%2Fx%20y%3F");
     }
 
     #[test]

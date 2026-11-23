@@ -109,20 +109,32 @@ impl KafkaHub {
                 other => serde_json::to_vec(other)?,
             }),
             Some(schema_json) => {
-                let reg = self.registry.as_ref().ok_or_else(|| {
-                    anyhow::anyhow!("avroSchema needs FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL")
-                })?;
-                let schema = apache_avro::Schema::parse(schema_json)?;
-                let id = reg
-                    .register(&format!("{}-value", m.topic), &schema_json.to_string())
-                    .await?;
-                let avro_value = fastmock_kafka::json_to_avro(&schema, &m.value)?;
-                Ok(confluent_frame(
-                    id,
-                    &fastmock_kafka::encode(&schema, avro_value)?,
-                ))
+                let subject = m
+                    .avro_subject
+                    .clone()
+                    .unwrap_or_else(|| format!("{}-value", m.topic));
+                self.encode_avro(&subject, schema_json, &m.value).await
             }
         }
+    }
+
+    /// Registers the schema under `subject` and returns the value as Confluent-framed Avro.
+    pub async fn encode_avro(
+        &self,
+        subject: &str,
+        schema_json: &Value,
+        value: &Value,
+    ) -> anyhow::Result<Vec<u8>> {
+        let reg = self.registry.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("avroSchema needs FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL")
+        })?;
+        let schema = apache_avro::Schema::parse(schema_json)?;
+        let id = reg.register(subject, &schema_json.to_string()).await?;
+        let avro_value = fastmock_kafka::json_to_avro(&schema, value)?;
+        Ok(confluent_frame(
+            id,
+            &fastmock_kafka::encode(&schema, avro_value)?,
+        ))
     }
 
     /// The Schema Registry, when `FASTMOCK_KAFKA_SCHEMA_REGISTRY_URL` is set.

@@ -2,12 +2,13 @@
 
 `clients/java` is a small client for the FastMock admin API, written for Java 25 with one dependency (Jackson
 databind). It creates stubs with a fluent builder or raw JSON, waits for requests and callbacks, verifies the
-journal, and manages scenarios, files and imports. All examples on this page were run against FastMock 0.1.0.
+journal, reads and verifies [captured messages](message-capture.md), and manages scenarios, files and imports. All examples on this page were run against FastMock 0.1.0.
 
 - [Setup](#setup)
 - [Connecting](#connecting)
 - [Stub builder](#stub-builder)
 - [Method reference](#method-reference)
+- [Message capture](#message-capture)
 - [JUnit 5 patterns](#junit-5-patterns)
 - [Testcontainers](#testcontainers)
 - [Errors](#errors)
@@ -179,6 +180,61 @@ CallbackRecord[id=01a1f297-23ff-750f-b120-5e83231d7dbb, source=stubs, correlatio
 | `void putValue(key, value, Duration ttl)` | `PUT /kv/{key}` (`ttl` may be null) |
 | `void reset()` | `POST /reset` (admin role): clears journal, callbacks, scenario states; stubs stay |
 | `JsonNode plugin(plugin, method, path, body)` | any call under `/plugins/{plugin}/` |
+
+## Message capture
+
+The client covers the [message capture](message-capture.md) API (Kafka, MQTT and AMQP messages your application
+publishes). The token needs `messages:write` to create sources, `messages:read` to read, wait and verify, and
+`messages:delete` to clear. Capture must be enabled (`FASTMOCK_CAPTURE_ENABLED=true`) and the allow-list of the
+source's protocol must cover the source, or `createCaptureSource` throws `FastMockException` with status `400`.
+
+| Method | Admin call | Behaviour |
+|---|---|---|
+| `CaptureSourceView createCaptureSource(CaptureSource)` | `PUT /capture/sources/{id}` | Creates or replaces a source; the id is random unless `CaptureSource.id(...)` sets it. |
+| `List<CaptureSourceView> captureSources()` | `GET /capture/sources` | Sources with their `status`. |
+| `CaptureSourceView awaitCaptureSourceRunning(UUID, Duration)` | polls `GET /capture/sources/{id}` | Returns when the consumer subscribed (`state` `running`); throws `AssertionError` otherwise. A Kafka source starts at the latest offsets only once it runs. |
+| `void deleteCaptureSource(UUID, boolean purge)` | `DELETE /capture/sources/{id}` | `purge` also deletes the messages. |
+| `List<CapturedMessage> capturedMessages(CaptureFilter)` | `GET /capture/messages` | Summaries, newest first. |
+| `List<CapturedMessage> findMessages(MessageMatch, Instant since, int limit)` | `POST /capture/messages/find` | Matching summaries, newest first. |
+| `CapturedMessageDetail capturedMessage(UUID)` | `GET /capture/messages/{id}` | The message with its decoded `body` (`encoding`, `value`). |
+| `List<CapturedMessage> waitForMessages(MessageMatch, int count, Duration, Instant since)` | `POST /capture/messages/wait` | Blocks up to the timeout (at most 60 s), returns the messages oldest first; throws `AssertionError` with what arrived on timeout. `since` counts messages stored from that time; `null` counts only messages arriving during the wait. |
+| `VerifyResult verifyMessageCount(MessageMatch, long, Instant since)`, `verifyMessagesAtLeast`, `verifyMessagesAtMost`, `verifyNoMessages(MessageMatch, Instant)` | `POST /capture/verify` | Count stored messages without waiting; throw `AssertionError` with the reason on failure. `verifyMessages(JsonNode)` never throws on a failed expectation. |
+| `long clearCapturedMessages(String source)` | `DELETE /capture/messages` | The messages of one source (name or id), or of the whole space with `null`. |
+| `FastMock inSpace(String)` | `?space=` | A client whose capture calls work in that space. |
+
+`MessageMatch` builds the `match` object: `MessageMatch.source("orders")`, `.topic`, `.topicMatching(regex)`,
+`.exchange`, `.key`, `.header(name, value)`, `.property(name, value)`, `.contentType`, `.protocol`, `.bodyContains`,
+`.bodyEqualsJson(json, ignoreExtraElements)` and `.bodyJsonPath(path, value)` (Avro bodies are decoded for JSON
+matchers). `CaptureSource` has `kafka(name, topics...)`, `mqtt(name, filters...)` and
+`amqp(name, exchange, bindingKeys...)` with `.qos`, `.startFrom`, `.maxMessages`, `.enabled` and `.description`.
+
+```java
+@Test
+void shippingPublishesAnEvent() throws Exception {
+    String orderId = "A-" + UUID.randomUUID();
+    var source = fastmock.createCaptureSource(CaptureSource.kafka("orders-" + orderId, "orders.events"));
+    var id = UUID.fromString(source.id());
+    try {
+        fastmock.awaitCaptureSourceRunning(id, Duration.ofSeconds(20));
+        Instant since = Instant.now();
+
+        shipOrder(orderId);   // the system under test publishes to Kafka
+
+        var match = MessageMatch.source(source.name()).key(orderId).bodyJsonPath("$.status", "SHIPPED");
+        var messages = fastmock.waitForMessages(match, Duration.ofSeconds(15), since);
+        assertEquals("OrderShipped", messages.getFirst().headers().get("event-type"));
+        assertEquals("DHL", fastmock.capturedMessage(UUID.fromString(messages.getFirst().id()))
+                .body().value().get("carrier").asText());
+        fastmock.verifyMessageCount(MessageMatch.source(source.name()).key(orderId), 1, since);
+    } finally {
+        fastmock.deleteCaptureSource(id, true);
+    }
+}
+```
+
+The same pattern works for MQTT and AMQP sources. `CapturedMessage` is a record with `id`, `space`, `sourceId`,
+`source`, `protocol`, `topic`, `exchange`, `key`, `headers`, `properties` (a `JsonNode`), `contentType`, `size`,
+`truncated`, `preview` and `receivedAt`.
 
 ## JUnit 5 patterns
 
