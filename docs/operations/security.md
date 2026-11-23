@@ -240,8 +240,18 @@ proxied gRPC calls through an HTTP/2 client with the same rules:
   link-local (cloud metadata endpoints), unspecified and multicast addresses; IPv4 addresses embedded in IPv6 are
   checked as IPv4. The check runs on every resolved address inside the DNS resolver, so the address that is
   checked is the address that is connected to.
-- gRPC upstreams get FastMock's client certificate (`FASTMOCK_GRPC_PROXY_CLIENT_CERT_FILE`) only when their host is
-  in `FASTMOCK_GRPC_PROXY_CLIENT_CERT_HOSTS`; any other upstream named by a stub gets no certificate.
+- gRPC upstreams get FastMock's client certificate (`FASTMOCK_GRPC_PROXY_CLIENT_CERT_FILE`) only when their
+  `host:port` is in `FASTMOCK_GRPC_PROXY_CLIENT_CERT_HOSTS`, and only through proxy stubs of the global area (which
+  need `stubs:write` granted globally) and recordings; stubs of spaces cannot target these upstreams. A proxy stub
+  to such an upstream makes it reachable, as FastMock, by every client that reaches the data plane, so list only
+  upstreams meant for that and keep the data plane on a test network.
+- Proxied calls carry `x-fastmock-proxy-hops`; a request that already went through 3 FastMock proxies is not
+  forwarded again, and gRPC calls are never proxied to FastMock's own listeners.
+- gRPC upstreams receive request data only after they answered with an HTTP/2 SETTINGS frame (and, over TLS,
+  negotiated ALPN `h2`). Add the cluster's pod and Service ranges to `FASTMOCK_CALLBACK_DENIED_CIDRS` when stubs
+  should not reach in-cluster services at all.
+- Unmatched requests and gRPC calls of every space go to the global recording target and become global stubs; a
+  recording needs `recordings:write` granted globally.
 
 Recommended: set `FASTMOCK_CALLBACK_ALLOWED_HOSTS` to the services your mocks call back, and add a Kubernetes
 egress NetworkPolicy with the same scope ([Helm: NetworkPolicy](helm.md#networkpolicy)). Add internal ranges

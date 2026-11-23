@@ -273,6 +273,7 @@ pub fn ownership_problems<'a>(
 /// Validation of a stub before it is stored: the engine rules and the ownership rules of its space.
 pub fn check_stub(app: &AppState, stub: &Stub) -> Result<(), String> {
     app.engine.validate(stub)?;
+    app.grpc_proxy.check_stub(stub)?;
     if let Some(space) = &stub.space {
         let def = app
             .auth

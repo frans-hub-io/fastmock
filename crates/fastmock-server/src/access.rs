@@ -1086,7 +1086,9 @@ pub fn route_rule(method: &Method, full_path: &str) -> Option<(Permission, Scope
         ("PUT" | "DELETE", ["mail", "mailboxes", _, "password"]) => natural(MailWrite),
         ("POST", ["mail", "inbound"]) => natural(MailWrite),
         ("GET", ["capture", "sources"] | ["capture", "sources", _]) => natural(MessagesRead),
-        ("PUT" | "DELETE", ["capture", "sources", _]) => natural(MessagesWrite),
+        ("PUT" | "DELETE", ["capture", "sources", _]) | ("POST", ["capture", "sources"]) => {
+            natural(MessagesWrite)
+        }
         ("GET", ["capture", "messages"] | ["capture", "messages", _, ..]) => natural(MessagesRead),
         ("POST", ["capture", "messages", "find" | "wait"] | ["capture", "verify"]) => {
             natural(MessagesRead)

@@ -316,7 +316,11 @@ export interface paths {
          */
         get: operations["listCaptureSources"];
         put?: never;
-        post?: never;
+        /**
+         * Create a capture source with an id chosen by the server
+         * @description Like `PUT /__admin/capture/sources/{id}` with a new random id, which the answer carries. Prefer it to fixed ids in shared test code: source ids are global across spaces. Audited as `capture.source.put`.
+         */
+        post: operations["createCaptureSource"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5637,6 +5641,81 @@ export interface operations {
             };
         };
     };
+    createCaptureSource: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Space to act on. Without it, reads cover everything the caller may read and writes go to the global
+                 *     area, or to the caller's only space when it is bound to spaces.
+                 */
+                space?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                /**
+                 * @example {
+                 *       "name": "orders",
+                 *       "protocol": "kafka",
+                 *       "topics": [
+                 *         "orders.events"
+                 *       ]
+                 *     }
+                 */
+                "application/json": components["schemas"]["CaptureSource"];
+            };
+        };
+        responses: {
+            /** @description Stored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceView"];
+                };
+            };
+            /** @description Invalid source, broker not configured, not allowed, name taken or too many sources */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The caller lacks messages:write */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Capture is not enabled, or an unknown space */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     getCaptureSource: {
         parameters: {
             query?: never;
@@ -5764,7 +5843,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description The source comes from the configuration */
+            /** @description The source comes from the configuration, or the id is used by a source of another area (ids are global) */
             409: {
                 headers: {
                     [name: string]: unknown;

@@ -467,6 +467,8 @@ pub(crate) struct Out {
     pub(crate) log: Arc<CallLog>,
     pub(crate) kind: Kind,
     pub(crate) sent: u32,
+    /// Longest wait for room in the response stream (a client that does not read).
+    pub(crate) write_timeout: Duration,
 }
 
 impl Out {
@@ -485,7 +487,19 @@ impl Out {
         } else {
             bytes
         };
-        self.tx.send(Ok(Frame::data(b))).await.is_ok()
+        self.send(Ok(Frame::data(b))).await
+    }
+
+    /// Queues a frame; `false` when the client is gone or read nothing for `write_timeout`.
+    async fn send(&self, f: Result<Frame<Bytes>, std::io::Error>) -> bool {
+        match tokio::time::timeout(self.write_timeout, self.tx.send(f)).await {
+            Ok(r) => r.is_ok(),
+            Err(_) => {
+                metrics::counter!("fastmock_grpc_stream_limits_total", "limit" => "write")
+                    .increment(1);
+                false
+            }
+        }
     }
 
     /// Sends a message; `Err` when it does not fit the output type, `Ok(false)` when the client is gone.
@@ -505,10 +519,7 @@ impl Out {
         });
         match self.protocol {
             Protocol::Grpc => {
-                let _ = self
-                    .tx
-                    .send(Ok(Frame::trailers(outcome.header_map())))
-                    .await;
+                let _ = self.send(Ok(Frame::trailers(outcome.header_map()))).await;
             }
             _ => {
                 self.data(outcome.web_frame()).await;
@@ -540,7 +551,6 @@ impl Out {
             tokio::time::sleep(FAULT_FLUSH).await;
         }
         let _ = self
-            .tx
             .send(Err(std::io::Error::other("fault: stream reset")))
             .await;
     }
@@ -1007,6 +1017,7 @@ async fn call(
         log,
         kind,
         sent: 0,
+        write_timeout: app.cfg.grpc_stream_idle_timeout,
     };
     let driver = Driver {
         renderer: Renderer {

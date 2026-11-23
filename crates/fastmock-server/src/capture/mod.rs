@@ -230,7 +230,15 @@ pub fn allowed(
 
 /// [`allowed`] with the space of the source from the access configuration.
 pub fn allowed_in(app: &AppState, c: &CaptureConfig, s: &CaptureSource) -> Result<(), String> {
-    let space = s.space.as_deref().and_then(|n| app.auth.access().space(n));
+    let space = match s.space.as_deref() {
+        Some(n) => Some(
+            app.auth
+                .access()
+                .space(n)
+                .ok_or_else(|| format!("space {n} is not defined in the access file"))?,
+        ),
+        None => None,
+    };
     allowed(c, space, s)
 }
 
